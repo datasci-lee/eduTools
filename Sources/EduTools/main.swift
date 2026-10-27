@@ -27,7 +27,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let statusMenu = StatusMenu(state: appState, dispatcher: dispatcher)
         self.statusMenu = statusMenu
-        overlayController = OverlayController(state: appState, dispatcher: dispatcher)
+        let overlayController = OverlayController(state: appState, dispatcher: dispatcher)
+        self.overlayController = overlayController
+        dispatcher.overlayController = overlayController
 
         let hotkeyCenter = HotkeyCenter()
         self.hotkeyCenter = hotkeyCenter

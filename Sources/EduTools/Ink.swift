@@ -154,6 +154,7 @@ private enum InkLayerKey: Hashable {
 
 enum InkCommand {
     case addStroke(InkStroke)
+    case replaceStrokes(before: [InkStroke], after: [InkStroke])
     case addDisplayStroke(displayUUID: String, stroke: InkStroke)
     case replaceDisplayStrokes(
         displayUUID: String,
@@ -169,6 +170,8 @@ enum InkCommand {
         switch self {
         case let .addStroke(stroke):
             layers[.legacy, default: []].append(stroke)
+        case let .replaceStrokes(_, after):
+            layers[.legacy] = after
         case let .addDisplayStroke(displayUUID, stroke):
             layers[.display(displayUUID), default: []].append(stroke)
         case let .replaceDisplayStrokes(displayUUID, _, after):
@@ -187,6 +190,8 @@ enum InkCommand {
                 return
             }
             layers[.legacy]?.remove(at: index)
+        case let .replaceStrokes(before, _):
+            layers[.legacy] = before
         case let .addDisplayStroke(displayUUID, stroke):
             let key = InkLayerKey.display(displayUUID)
             guard let index = layers[key]?.lastIndex(where: {

@@ -68,6 +68,13 @@ final class OverlayController {
             currentScreens[identifier] = screen
         }
 
+        if let presentedBoard = state.presentedBoard,
+           currentScreens[presentedBoard.displayUUID] == nil,
+           let fallbackDisplayUUID = preferredDisplayUUID(in: currentScreens)
+        {
+            state.relocatePresentedBoard(to: fallbackDisplayUUID)
+        }
+
         let removedIdentifiers = panelsByDisplayUUID.keys.filter { currentScreens[$0] == nil }
         for identifier in removedIdentifiers {
             panelsByDisplayUUID.removeValue(forKey: identifier)?.close()
@@ -160,11 +167,35 @@ final class OverlayController {
     }
 
     private func focusPanelUnderMouse() {
-        let mouseLocation = NSEvent.mouseLocation
-        guard let entry = panelsByDisplayUUID.first(where: { $0.value.frame.contains(mouseLocation) }) else {
+        guard let displayUUID = displayUUIDUnderMouse() else {
             return
         }
-        focusPanel(displayUUID: entry.key)
+        focusPanel(displayUUID: displayUUID)
+    }
+
+    func displayUUIDUnderMouse() -> String? {
+        let mouseLocation = NSEvent.mouseLocation
+        return panelsByDisplayUUID.first(where: { $0.value.frame.contains(mouseLocation) })?.key
+    }
+
+    func focusPanelForBoard(on displayUUID: String) {
+        focusPanel(displayUUID: displayUUID)
+    }
+
+    @discardableResult
+    func forwardToUnderlyingApplication(_ event: NSEvent) -> Bool {
+        guard let previouslyFrontmostApplication,
+              !previouslyFrontmostApplication.isTerminated
+        else {
+            NSLog("EduTools: could not forward a board navigation key without an underlying app")
+            return false
+        }
+        guard let cgEvent = event.cgEvent else {
+            NSLog("EduTools: could not create a Core Graphics event for key forwarding")
+            return false
+        }
+        cgEvent.postToPid(previouslyFrontmostApplication.processIdentifier)
+        return true
     }
 
     private func focusPanel(displayUUID: String) {
@@ -176,6 +207,16 @@ final class OverlayController {
         state.setActiveDisplay(displayUUID)
         panel.makeKeyAndOrderFront(nil)
         panel.makeFirstResponder(panel.contentView)
+    }
+
+    private func preferredDisplayUUID(in screens: [String: NSScreen]) -> String? {
+        let mouseLocation = NSEvent.mouseLocation
+        if let displayUnderMouse = screens.first(where: {
+            $0.value.frame.contains(mouseLocation)
+        })?.key {
+            return displayUnderMouse
+        }
+        return NSScreen.screens.compactMap(displayUUID(for:)).first
     }
 
     deinit {

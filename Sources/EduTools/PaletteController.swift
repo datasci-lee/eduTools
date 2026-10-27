@@ -51,11 +51,13 @@ final class PaletteController: NSObject {
     private let eraserModeLabel = NSTextField(labelWithString: "")
     private let widthLabel = NSTextField(labelWithString: "")
     private var toolButtons: [InkTool: NSButton] = [:]
+    private var boardButtons: [BoardKind: NSButton] = [:]
     private var colorButtons: [NSButton] = []
     private var definitionByButtonIdentifier: [String: ShortcutDefinition] = [:]
     private var annotationObserverIdentifier: UUID?
     private var settingsObserverIdentifier: UUID?
     private var visibilityObserverIdentifier: UUID?
+    private var boardObserverIdentifier: UUID?
     private var notificationObservers: [NSObjectProtocol] = []
     private var orientation: Orientation
     private var isApplyingFrame = false
@@ -141,6 +143,9 @@ final class PaletteController: NSObject {
         eraserModeLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
         controlsStack.addArrangedSubview(eraserModeLabel)
 
+        addBoardButton(command: .toggleBoard(.white), kind: .white)
+        addBoardButton(command: .toggleBoard(.black), kind: .black)
+
         for index in InkDefaults.colors.indices {
             let button = makeColorButton(index: index)
             colorButtons.append(button)
@@ -163,6 +168,12 @@ final class PaletteController: NSObject {
     private func addToolButton(command: AppCommand, tool: InkTool) {
         let button = makeDefinitionButton(command: command)
         toolButtons[tool] = button
+        controlsStack.addArrangedSubview(button)
+    }
+
+    private func addBoardButton(command: AppCommand, kind: BoardKind) {
+        let button = makeDefinitionButton(command: command)
+        boardButtons[kind] = button
         controlsStack.addArrangedSubview(button)
     }
 
@@ -220,6 +231,9 @@ final class PaletteController: NSObject {
         visibilityObserverIdentifier = state.addPaletteVisibilityObserver { [weak self] _ in
             self?.updateVisibility()
         }
+        boardObserverIdentifier = state.addBoardObserver { [weak self] in
+            self?.updateBoardSelection()
+        }
 
         notificationObservers.append(
             NotificationCenter.default.addObserver(
@@ -273,6 +287,14 @@ final class PaletteController: NSObject {
             widthLabel.stringValue = "—"
         case .eraser:
             widthLabel.stringValue = formattedSize(state.eraserDiameter)
+        }
+    }
+
+    private func updateBoardSelection() {
+        for (kind, button) in boardButtons {
+            let isSelected = state.presentedBoard?.kind == kind
+            button.state = isSelected ? .on : .off
+            button.contentTintColor = isSelected ? .controlAccentColor : .labelColor
         }
     }
 
@@ -423,6 +445,9 @@ final class PaletteController: NSObject {
         }
         if let visibilityObserverIdentifier {
             state.removePaletteVisibilityObserver(visibilityObserverIdentifier)
+        }
+        if let boardObserverIdentifier {
+            state.removeBoardObserver(boardObserverIdentifier)
         }
         for observer in notificationObservers {
             NotificationCenter.default.removeObserver(observer)

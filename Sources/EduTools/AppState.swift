@@ -7,6 +7,7 @@ final class AppState {
     typealias ToolSettingsObserver = () -> Void
     typealias PaletteVisibilityObserver = (Bool) -> Void
     typealias InkObserver = (_ displayUUID: String, _ change: InkLayerChange) -> Void
+    typealias BoardObserver = () -> Void
 
     enum InkLayerChange {
         case added(InkStroke)
@@ -18,14 +19,25 @@ final class AppState {
     private var toolSettingsObservers: [UUID: ToolSettingsObserver] = [:]
     private var paletteVisibilityObservers: [UUID: PaletteVisibilityObserver] = [:]
     private var inkObservers: [UUID: InkObserver] = [:]
+    private var boardObservers: [UUID: BoardObserver] = [:]
     private let inkState = InkLayerState()
+    private let boardDocuments: [BoardKind: BoardDocument] = [
+        .white: BoardDocument(),
+        .black: BoardDocument(),
+    ]
     private var knownDisplayUUIDs: Set<String> = []
 
     private(set) var activeDisplayUUID: String?
+    private(set) var presentedBoard: BoardPresentation?
+    private(set) var blackboardBackground = BlackboardBackground.black
+    private(set) var boardBackgroundPattern = BoardBackgroundPattern.none
 
     private(set) var isAnnotationModeEnabled = false {
         didSet {
             guard oldValue != isAnnotationModeEnabled else { return }
+            if !isAnnotationModeEnabled {
+                dismissBoard()
+            }
             for observer in annotationModeObservers.values {
                 observer(isAnnotationModeEnabled)
             }
@@ -109,6 +121,78 @@ final class AppState {
         isPaletteVisible.toggle()
     }
 
+    func toggleBoard(_ kind: BoardKind, on displayUUID: String) {
+        knownDisplayUUIDs.insert(displayUUID)
+        activeDisplayUUID = displayUUID
+        if presentedBoard?.kind == kind {
+            presentedBoard = nil
+        } else {
+            presentedBoard = BoardPresentation(kind: kind, displayUUID: displayUUID)
+        }
+        notifyBoardObservers()
+    }
+
+    func dismissBoard() {
+        guard presentedBoard != nil else { return }
+        presentedBoard = nil
+        notifyBoardObservers()
+    }
+
+    func relocatePresentedBoard(to displayUUID: String) {
+        guard let presentedBoard, presentedBoard.displayUUID != displayUUID else { return }
+        knownDisplayUUIDs.insert(displayUUID)
+        activeDisplayUUID = displayUUID
+        self.presentedBoard = BoardPresentation(
+            kind: presentedBoard.kind,
+            displayUUID: displayUUID
+        )
+        notifyBoardObservers()
+    }
+
+    func boardKind(on displayUUID: String) -> BoardKind? {
+        guard presentedBoard?.displayUUID == displayUUID else { return nil }
+        return presentedBoard?.kind
+    }
+
+    func boardPagePosition(on displayUUID: String) -> BoardPagePosition? {
+        guard let document = presentedBoardDocument(on: displayUUID) else { return nil }
+        return document.pagePosition
+    }
+
+    @discardableResult
+    func moveToPreviousBoardPage(on displayUUID: String) -> Bool {
+        guard let document = presentedBoardDocument(on: displayUUID),
+              document.moveToPreviousPage()
+        else {
+            return false
+        }
+        notifyBoardObservers()
+        return true
+    }
+
+    @discardableResult
+    func moveToNextBoardPage(on displayUUID: String) -> Bool {
+        guard let document = presentedBoardDocument(on: displayUUID),
+              document.moveToNextPage()
+        else {
+            return false
+        }
+        notifyBoardObservers()
+        return true
+    }
+
+    func setBlackboardBackground(_ background: BlackboardBackground) {
+        guard blackboardBackground != background else { return }
+        blackboardBackground = background
+        notifyBoardObservers()
+    }
+
+    func setBoardBackgroundPattern(_ pattern: BoardBackgroundPattern) {
+        guard boardBackgroundPattern != pattern else { return }
+        boardBackgroundPattern = pattern
+        notifyBoardObservers()
+    }
+
     func selectTool(_ tool: InkTool) {
         currentTool = tool
     }
@@ -181,12 +265,19 @@ final class AppState {
 
     func strokes(for displayUUID: String) -> [InkStroke] {
         knownDisplayUUIDs.insert(displayUUID)
+        if let document = presentedBoardDocument(on: displayUUID) {
+            return document.strokes
+        }
         return inkState.strokes(for: displayUUID)
     }
 
     func addStroke(_ stroke: InkStroke, to displayUUID: String) {
         knownDisplayUUIDs.insert(displayUUID)
-        inkState.execute(.addDisplayStroke(displayUUID: displayUUID, stroke: stroke))
+        if let document = presentedBoardDocument(on: displayUUID) {
+            document.addStroke(stroke)
+        } else {
+            inkState.execute(.addDisplayStroke(displayUUID: displayUUID, stroke: stroke))
+        }
         notifyInkObservers(displayUUID: displayUUID, change: .added(stroke))
     }
 
@@ -198,7 +289,7 @@ final class AppState {
         canvasSize: CGSize
     ) -> Bool {
         knownDisplayUUIDs.insert(displayUUID)
-        let before = inkState.strokes(for: displayUUID)
+        let before = strokes(for: displayUUID)
         let after = EraserEngine.erase(
             strokes: before,
             gesture: gesture,
@@ -207,13 +298,17 @@ final class AppState {
         )
         guard before.map(\.identifier) != after.map(\.identifier) else { return false }
 
-        inkState.execute(
-            .replaceDisplayStrokes(
-                displayUUID: displayUUID,
-                before: before,
-                after: after
+        if let document = presentedBoardDocument(on: displayUUID) {
+            _ = document.replaceStrokes(with: after)
+        } else {
+            inkState.execute(
+                .replaceDisplayStrokes(
+                    displayUUID: displayUUID,
+                    before: before,
+                    after: after
+                )
             )
-        )
+        }
         notifyInkObservers(displayUUID: displayUUID, change: .rebuilt)
         return true
     }
@@ -221,15 +316,19 @@ final class AppState {
     @discardableResult
     func clearInk(on displayUUID: String) -> Bool {
         knownDisplayUUIDs.insert(displayUUID)
-        let before = inkState.strokes(for: displayUUID)
+        let before = strokes(for: displayUUID)
         guard !before.isEmpty else { return false }
-        inkState.execute(
-            .replaceDisplayStrokes(
-                displayUUID: displayUUID,
-                before: before,
-                after: []
+        if let document = presentedBoardDocument(on: displayUUID) {
+            _ = document.clear()
+        } else {
+            inkState.execute(
+                .replaceDisplayStrokes(
+                    displayUUID: displayUUID,
+                    before: before,
+                    after: []
+                )
             )
-        )
+        }
         notifyInkObservers(displayUUID: displayUUID, change: .rebuilt)
         return true
     }
@@ -242,6 +341,12 @@ final class AppState {
 
     @discardableResult
     func clearAllInk() -> Bool {
+        if let presentedBoard {
+            let document = boardDocument(for: presentedBoard.kind)
+            guard document.clear() else { return false }
+            notifyInkObservers(displayUUID: presentedBoard.displayUUID, change: .rebuilt)
+            return true
+        }
         let before = inkState.allDisplayStrokes
         guard before.values.contains(where: { !$0.isEmpty }) else { return false }
         inkState.execute(.replaceAllDisplayStrokes(before: before, after: [:]))
@@ -257,6 +362,11 @@ final class AppState {
     @discardableResult
     func undo(on displayUUID: String) -> Bool {
         knownDisplayUUIDs.insert(displayUUID)
+        if let document = presentedBoardDocument(on: displayUUID) {
+            guard document.undo() else { return false }
+            notifyInkObservers(displayUUID: displayUUID, change: .rebuilt)
+            return true
+        }
         guard inkState.undo() else { return false }
         notifyAllInkObservers()
         return true
@@ -265,6 +375,11 @@ final class AppState {
     @discardableResult
     func redo(on displayUUID: String) -> Bool {
         knownDisplayUUIDs.insert(displayUUID)
+        if let document = presentedBoardDocument(on: displayUUID) {
+            guard document.redo() else { return false }
+            notifyInkObservers(displayUUID: displayUUID, change: .rebuilt)
+            return true
+        }
         guard inkState.redo() else { return false }
         notifyAllInkObservers()
         return true
@@ -329,6 +444,18 @@ final class AppState {
         inkObservers.removeValue(forKey: identifier)
     }
 
+    @discardableResult
+    func addBoardObserver(_ observer: @escaping BoardObserver) -> UUID {
+        let identifier = UUID()
+        boardObservers[identifier] = observer
+        observer()
+        return identifier
+    }
+
+    func removeBoardObserver(_ identifier: UUID) {
+        boardObservers.removeValue(forKey: identifier)
+    }
+
     private func notifyInkObservers(displayUUID: String, change: InkLayerChange) {
         for observer in inkObservers.values {
             observer(displayUUID, change)
@@ -341,10 +468,28 @@ final class AppState {
         }
     }
 
+    private func notifyBoardObservers() {
+        for observer in boardObservers.values {
+            observer()
+        }
+    }
+
     private func notifyAllInkObservers() {
         for displayUUID in knownDisplayUUIDs {
             notifyInkObservers(displayUUID: displayUUID, change: .rebuilt)
         }
+    }
+
+    private func presentedBoardDocument(on displayUUID: String) -> BoardDocument? {
+        guard let presentedBoard, presentedBoard.displayUUID == displayUUID else { return nil }
+        return boardDocument(for: presentedBoard.kind)
+    }
+
+    private func boardDocument(for kind: BoardKind) -> BoardDocument {
+        guard let document = boardDocuments[kind] else {
+            preconditionFailure("Missing board document for \(kind)")
+        }
+        return document
     }
 }
 

@@ -87,9 +87,12 @@ final class InkView: NSView {
     private let dispatcher: AppCommandDispatcher
     private let displayUUID: String
     private let requestKeyFocus: () -> Void
+    private let boardBackgroundLayer = CALayer()
+    private let boardPatternLayer = CAShapeLayer()
     private let completedLayer = CALayer()
     private let activeLayer = CALayer()
     private let laserRenderer = LaserRenderer()
+    private let boardPageIndicatorLayer = CATextLayer()
     private let eraserCursorLayer = CAShapeLayer()
     private let eraserModeLayer = CATextLayer()
     private var activeStroke: ActiveStroke?
@@ -100,6 +103,7 @@ final class InkView: NSView {
     private var inkObserverIdentifier: UUID?
     private var modeObserverIdentifier: UUID?
     private var toolObserverIdentifier: UUID?
+    private var boardObserverIdentifier: UUID?
 
     override var acceptsFirstResponder: Bool { true }
 
@@ -118,9 +122,13 @@ final class InkView: NSView {
 
         wantsLayer = true
         layer?.masksToBounds = true
+        configureBoardLayers()
+        layer?.addSublayer(boardBackgroundLayer)
+        layer?.addSublayer(boardPatternLayer)
         layer?.addSublayer(completedLayer)
         layer?.addSublayer(activeLayer)
         layer?.addSublayer(laserRenderer.layer)
+        layer?.addSublayer(boardPageIndicatorLayer)
         configureEraserLayers()
         layer?.addSublayer(eraserCursorLayer)
         layer?.addSublayer(eraserModeLayer)
@@ -151,6 +159,13 @@ final class InkView: NSView {
                 self?.eraserCursorLayer.isHidden = true
             }
         }
+        boardObserverIdentifier = state.addBoardObserver { [weak self] in
+            guard let self else { return }
+            self.cancelActiveStroke()
+            self.laserRenderer.clear()
+            self.updateBoardPresentation()
+            self.rebuildCompletedLayers()
+        }
         rebuildCompletedLayers()
     }
 
@@ -163,6 +178,7 @@ final class InkView: NSView {
         super.layout()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        layoutBoardLayers()
         completedLayer.frame = bounds
         activeLayer.frame = bounds
         laserRenderer.layer.frame = bounds
@@ -189,6 +205,7 @@ final class InkView: NSView {
         let sizeChanged = frame.size != newSize
         super.setFrameSize(newSize)
         if sizeChanged {
+            updateBoardPresentation()
             rebuildCompletedLayers()
         }
     }
@@ -309,6 +326,14 @@ final class InkView: NSView {
             super.keyDown(with: event)
             return
         }
+        if definition.command.isBoardPageNavigation,
+           state.boardKind(on: displayUUID) == nil
+        {
+            if !dispatcher.forwardToUnderlyingApplication(event) {
+                super.keyDown(with: event)
+            }
+            return
+        }
 
         dispatcher.keyDown(
             definition: definition,
@@ -328,9 +353,19 @@ final class InkView: NSView {
     }
 
     override func keyUp(with event: NSEvent) {
-        guard let definition = ShortcutCatalog.matchingKeyUp(event, scope: .annotation),
-              definition.command == .showHelp
-        else {
+        guard let definition = ShortcutCatalog.matchingKeyUp(event, scope: .annotation) else {
+            super.keyUp(with: event)
+            return
+        }
+        if definition.command.isBoardPageNavigation {
+            if state.boardKind(on: displayUUID) == nil,
+               !dispatcher.forwardToUnderlyingApplication(event)
+            {
+                super.keyUp(with: event)
+            }
+            return
+        }
+        guard definition.command == .showHelp else {
             super.keyUp(with: event)
             return
         }
@@ -454,6 +489,81 @@ final class InkView: NSView {
         eraserModeLayer.backgroundColor = NSColor.black.withAlphaComponent(0.72).cgColor
         eraserModeLayer.cornerRadius = 8
         eraserModeLayer.isHidden = true
+    }
+
+    private func configureBoardLayers() {
+        boardBackgroundLayer.isHidden = true
+        boardPatternLayer.fillColor = nil
+        boardPatternLayer.lineWidth = 1
+        boardPatternLayer.isHidden = true
+
+        boardPageIndicatorLayer.alignmentMode = .center
+        boardPageIndicatorLayer.fontSize = 15
+        boardPageIndicatorLayer.cornerRadius = 8
+        boardPageIndicatorLayer.isHidden = true
+    }
+
+    private func updateBoardPresentation() {
+        guard let kind = state.boardKind(on: displayUUID),
+              let pagePosition = state.boardPagePosition(on: displayUUID)
+        else {
+            boardBackgroundLayer.isHidden = true
+            boardPatternLayer.isHidden = true
+            boardPageIndicatorLayer.isHidden = true
+            return
+        }
+
+        boardBackgroundLayer.backgroundColor = BoardAppearance.backgroundColor(
+            for: kind,
+            blackboardBackground: state.blackboardBackground
+        ).cgColor
+        boardBackgroundLayer.isHidden = false
+        boardPatternLayer.strokeColor = BoardAppearance.patternColor(for: kind).cgColor
+        boardPatternLayer.isHidden = state.boardBackgroundPattern == .none
+        boardPageIndicatorLayer.string = "\(pagePosition.current) / \(pagePosition.total)"
+        boardPageIndicatorLayer.foregroundColor = kind == .white
+            ? NSColor.black.withAlphaComponent(0.68).cgColor
+            : NSColor.white.withAlphaComponent(0.82).cgColor
+        boardPageIndicatorLayer.backgroundColor = kind == .white
+            ? NSColor.black.withAlphaComponent(0.08).cgColor
+            : NSColor.white.withAlphaComponent(0.12).cgColor
+        boardPageIndicatorLayer.isHidden = false
+        layoutBoardLayers()
+    }
+
+    private func layoutBoardLayers() {
+        boardBackgroundLayer.frame = bounds
+        boardPatternLayer.frame = bounds
+        boardPatternLayer.path = boardPatternPath()
+        let indicatorWidth = min(max(bounds.width - 32, 0), 84)
+        boardPageIndicatorLayer.frame = CGRect(
+            x: max(16, bounds.width - indicatorWidth - 20),
+            y: 20,
+            width: indicatorWidth,
+            height: 30
+        )
+        boardPageIndicatorLayer.contentsScale = window?.backingScaleFactor
+            ?? NSScreen.main?.backingScaleFactor
+            ?? 1
+    }
+
+    private func boardPatternPath() -> CGPath? {
+        guard state.boardKind(on: displayUUID) != nil else { return nil }
+        let path = CGMutablePath()
+        let spacing: CGFloat = 40
+        if state.boardBackgroundPattern == .grid {
+            for x in stride(from: spacing, through: bounds.width, by: spacing) {
+                path.move(to: CGPoint(x: x, y: 0))
+                path.addLine(to: CGPoint(x: x, y: bounds.height))
+            }
+        }
+        if state.boardBackgroundPattern == .grid || state.boardBackgroundPattern == .lines {
+            for y in stride(from: spacing, through: bounds.height, by: spacing) {
+                path.move(to: CGPoint(x: 0, y: y))
+                path.addLine(to: CGPoint(x: bounds.width, y: y))
+            }
+        }
+        return path
     }
 
     private func showEraserCursor(at location: CGPoint) {
@@ -649,8 +759,9 @@ final class InkView: NSView {
         samples: [(location: CGPoint, pressure: CGFloat)],
         in context: CGContext
     ) {
-        context.setStrokeColor(stroke.color.deviceRGBColor.cgColor)
-        context.setFillColor(stroke.color.deviceRGBColor.cgColor)
+        let color = displayColor(for: stroke.color)
+        context.setStrokeColor(color.cgColor)
+        context.setFillColor(color.cgColor)
 
         guard samples.count > 1 else {
             guard let sample = samples.first else { return }
@@ -688,6 +799,7 @@ final class InkView: NSView {
         samples: [(location: CGPoint, pressure: CGFloat)],
         to container: CALayer
     ) {
+        let color = displayColor(for: stroke.color)
         guard samples.count > 1 else {
             guard let sample = samples.first else { return }
             let width = effectiveWidth(for: stroke, pressure: sample.pressure)
@@ -701,7 +813,7 @@ final class InkView: NSView {
             shape.path = stroke.tool == .pen
                 ? CGPath(ellipseIn: rect, transform: nil)
                 : CGPath(rect: rect, transform: nil)
-            shape.fillColor = stroke.color.deviceRGBColor.cgColor
+            shape.fillColor = color.cgColor
             container.addSublayer(shape)
             return
         }
@@ -710,7 +822,7 @@ final class InkView: NSView {
             let shape = CAShapeLayer()
             shape.path = path(for: samples.map { $0.location })
             shape.fillColor = nil
-            shape.strokeColor = stroke.color.deviceRGBColor.cgColor
+            shape.strokeColor = color.cgColor
             shape.lineWidth = stroke.width
             shape.lineJoin = .round
             shape.lineCap = stroke.tool == .pen ? .round : .butt
@@ -720,8 +832,15 @@ final class InkView: NSView {
 
         let shape = CAShapeLayer()
         shape.path = variableWidthPath(for: stroke, samples: samples)
-        shape.fillColor = stroke.color.deviceRGBColor.cgColor
+        shape.fillColor = color.cgColor
         container.addSublayer(shape)
+    }
+
+    private func displayColor(for storedColor: NSColor) -> NSColor {
+        BoardAppearance.displayColor(
+            for: storedColor,
+            on: state.boardKind(on: displayUUID)
+        ).deviceRGBColor
     }
 
     private func path(for points: [CGPoint]) -> CGPath {
@@ -826,6 +945,9 @@ final class InkView: NSView {
         }
         if let toolObserverIdentifier {
             state.removeToolObserver(toolObserverIdentifier)
+        }
+        if let boardObserverIdentifier {
+            state.removeBoardObserver(boardObserverIdentifier)
         }
     }
 }
