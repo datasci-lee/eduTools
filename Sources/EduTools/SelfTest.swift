@@ -79,6 +79,105 @@ func runSelfTests() -> Int32 {
         "P without AppMod should be rejected"
     )
 
+    let screenSize = CGSize(width: 1_920, height: 1_080)
+    let screenPoint = CGPoint(x: 384, y: 810)
+    let normalizedPoint = InkGeometry.normalizedPoint(from: screenPoint, in: screenSize)
+    let roundTrippedPoint = InkGeometry.screenPoint(from: normalizedPoint, in: screenSize)
+    runner.expect(
+        hypot(roundTrippedPoint.x - screenPoint.x, roundTrippedPoint.y - screenPoint.y) < 0.000_001,
+        "normalized and screen coordinates should round-trip"
+    )
+
+    let curvePoints = [
+        InkPoint(location: CGPoint(x: 0.1, y: 0.2), pressure: 1, timestamp: 0),
+        InkPoint(location: CGPoint(x: 0.35, y: 0.8), pressure: 1, timestamp: 1),
+        InkPoint(location: CGPoint(x: 0.7, y: 0.3), pressure: 1, timestamp: 2),
+        InkPoint(location: CGPoint(x: 0.9, y: 0.6), pressure: 1, timestamp: 3),
+    ]
+    let smoothedCurve = InkGeometry.smoothedPoints(curvePoints)
+    let curvePassesOriginalPoints = curvePoints.allSatisfy { original in
+        smoothedCurve.contains { sample in
+            hypot(
+                sample.location.x - original.location.x,
+                sample.location.y - original.location.y
+            ) < 0.000_001
+        }
+    }
+    runner.expect(curvePassesOriginalPoints, "Catmull-Rom smoothing should pass through source points")
+
+    let penStart = CGPoint(x: 100, y: 100)
+    let penProposals = [
+        CGPoint(x: 220, y: 112),
+        CGPoint(x: 205, y: 198),
+        CGPoint(x: 112, y: 220),
+    ]
+    let expectedPenAngles = [CGFloat(0), CGFloat.pi / 4, CGFloat.pi / 2]
+    let penSnapsToThreeDirections = zip(penProposals, expectedPenAngles).allSatisfy {
+        proposal, expectedAngle in
+        let endpoint = InkGeometry.snappedPenEndpoint(from: penStart, to: proposal)
+        let actualAngle = atan2(endpoint.y - penStart.y, endpoint.x - penStart.x)
+        return abs(actualAngle - expectedAngle) < 0.000_001
+    }
+    runner.expect(penSnapsToThreeDirections, "pen Shift snapping should select 0, 45, and 90 degrees")
+
+    let highlighterEndpoint = InkGeometry.snappedHighlighterEndpoint(
+        from: CGPoint(x: 90, y: 140),
+        to: CGPoint(x: 260, y: 310)
+    )
+    runner.expect(
+        highlighterEndpoint == CGPoint(x: 260, y: 140),
+        "highlighter Shift snapping should stay horizontal"
+    )
+
+    let undoLayer = InkLayerState()
+    for index in 0..<101 {
+        undoLayer.execute(
+            .addStroke(
+                InkStroke(
+                    tool: .pen,
+                    color: .systemRed,
+                    width: 3,
+                    usesPressure: false,
+                    points: [
+                        InkPoint(
+                            location: CGPoint(x: CGFloat(index) / 101, y: 0.5),
+                            pressure: 1,
+                            timestamp: TimeInterval(index)
+                        ),
+                    ]
+                )
+            )
+        )
+    }
+    let completedOneHundredUndos = (0..<100).allSatisfy { _ in undoLayer.undo() }
+    runner.expect(
+        completedOneHundredUndos && undoLayer.strokes.count == 1,
+        "101 recorded strokes should permit 100 undos"
+    )
+
+    let redoLayer = InkLayerState()
+    let redoStroke = InkStroke(
+        tool: .pen,
+        color: .systemRed,
+        width: 3,
+        usesPressure: false,
+        points: []
+    )
+    redoLayer.execute(.addStroke(redoStroke))
+    _ = redoLayer.undo()
+    redoLayer.execute(
+        .addStroke(
+            InkStroke(
+                tool: .pen,
+                color: .systemBlue,
+                width: 3,
+                usesPressure: false,
+                points: []
+            )
+        )
+    )
+    runner.expect(!redoLayer.canRedo && !redoLayer.redo(), "a new stroke should clear redo history")
+
     if runner.failures.isEmpty {
         print("SelfTest: \(runner.passed) passed, 0 failed")
         return 0

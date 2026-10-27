@@ -18,24 +18,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let hotkeyCenter = HotkeyCenter()
         self.hotkeyCenter = hotkeyCenter
 
-        guard let shortcut = Shortcut(serialized: "AppMod+P") else {
-            let status = OSStatus(paramErr)
-            NSLog("EduTools: invalid built-in shortcut AppMod+P (OSStatus %d)", status)
-            statusMenu.setHotkeyRegistrationStatus(status)
-            return
-        }
+        let registrations: [(serialized: String, action: () -> Void)] = [
+            ("AppMod+P", { [weak appState] in appState?.toggleAnnotationMode() }),
+            ("AppMod+L", { [weak appState] in appState?.activateLaserShortcut() }),
+        ]
+        for registration in registrations {
+            guard let shortcut = Shortcut(serialized: registration.serialized) else {
+                let status = OSStatus(paramErr)
+                NSLog(
+                    "EduTools: invalid built-in shortcut %@ (OSStatus %d)",
+                    registration.serialized,
+                    status
+                )
+                statusMenu.setHotkeyRegistrationStatus(status)
+                continue
+            }
 
-        let status = hotkeyCenter.register(shortcut: shortcut) { [weak appState] in
-            appState?.toggleAnnotationMode()
+            let status = hotkeyCenter.register(shortcut: shortcut, action: registration.action)
+            if status != noErr {
+                NSLog(
+                    "EduTools: failed to register global shortcut %@ (OSStatus %d)",
+                    shortcut.serialized,
+                    status
+                )
+            }
+            statusMenu.setHotkeyRegistrationStatus(status)
         }
-        if status != noErr {
-            NSLog(
-                "EduTools: failed to register global shortcut %@ (OSStatus %d)",
-                shortcut.serialized,
-                status
-            )
-        }
-        statusMenu.setHotkeyRegistrationStatus(status)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
