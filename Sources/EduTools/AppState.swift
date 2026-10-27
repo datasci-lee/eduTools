@@ -4,6 +4,8 @@ import Foundation
 final class AppState {
     typealias AnnotationModeObserver = (Bool) -> Void
     typealias ToolObserver = (InkTool) -> Void
+    typealias ToolSettingsObserver = () -> Void
+    typealias PaletteVisibilityObserver = (Bool) -> Void
     typealias InkObserver = (_ displayUUID: String, _ change: InkLayerChange) -> Void
 
     enum InkLayerChange {
@@ -13,6 +15,8 @@ final class AppState {
 
     private var annotationModeObservers: [UUID: AnnotationModeObserver] = [:]
     private var toolObservers: [UUID: ToolObserver] = [:]
+    private var toolSettingsObservers: [UUID: ToolSettingsObserver] = [:]
+    private var paletteVisibilityObservers: [UUID: PaletteVisibilityObserver] = [:]
     private var inkObservers: [UUID: InkObserver] = [:]
     private let inkState = InkLayerState()
     private var knownDisplayUUIDs: Set<String> = []
@@ -34,16 +38,51 @@ final class AppState {
             for observer in toolObservers.values {
                 observer(currentTool)
             }
+            notifyToolSettingsObservers()
         }
     }
 
-    private(set) var selectedColorIndex = InkDefaults.initialColorIndex
-    private(set) var penWidth = InkDefaults.penWidth
-    private(set) var highlighterWidth = InkDefaults.highlighterWidth
-    private(set) var eraserDiameter = EraserDefaults.defaultDiameter
-    private(set) var eraserMode = EraserDefaults.defaultMode
+    private(set) var selectedColorIndex = InkDefaults.initialColorIndex {
+        didSet {
+            guard oldValue != selectedColorIndex else { return }
+            notifyToolSettingsObservers()
+        }
+    }
+    private(set) var penWidth = InkDefaults.penWidth {
+        didSet {
+            guard oldValue != penWidth else { return }
+            notifyToolSettingsObservers()
+        }
+    }
+    private(set) var highlighterWidth = InkDefaults.highlighterWidth {
+        didSet {
+            guard oldValue != highlighterWidth else { return }
+            notifyToolSettingsObservers()
+        }
+    }
+    private(set) var eraserDiameter = EraserDefaults.defaultDiameter {
+        didSet {
+            guard oldValue != eraserDiameter else { return }
+            notifyToolSettingsObservers()
+        }
+    }
+    private(set) var eraserMode = EraserDefaults.defaultMode {
+        didSet {
+            guard oldValue != eraserMode else { return }
+            notifyToolSettingsObservers()
+        }
+    }
     private(set) var eraserHitRule = EraserDefaults.defaultHitRule
     private(set) var eraserTargetFilter = EraserDefaults.defaultTargetFilter
+
+    private(set) var isPaletteVisible = true {
+        didSet {
+            guard oldValue != isPaletteVisible else { return }
+            for observer in paletteVisibilityObservers.values {
+                observer(isPaletteVisible)
+            }
+        }
+    }
 
     var selectedColor: NSColor {
         InkDefaults.colors[selectedColorIndex]
@@ -64,6 +103,10 @@ final class AppState {
 
     func setAnnotationModeEnabled(_ isEnabled: Bool) {
         isAnnotationModeEnabled = isEnabled
+    }
+
+    func togglePaletteVisibility() {
+        isPaletteVisible.toggle()
     }
 
     func selectTool(_ tool: InkTool) {
@@ -252,6 +295,30 @@ final class AppState {
     }
 
     @discardableResult
+    func addToolSettingsObserver(_ observer: @escaping ToolSettingsObserver) -> UUID {
+        let identifier = UUID()
+        toolSettingsObservers[identifier] = observer
+        observer()
+        return identifier
+    }
+
+    func removeToolSettingsObserver(_ identifier: UUID) {
+        toolSettingsObservers.removeValue(forKey: identifier)
+    }
+
+    @discardableResult
+    func addPaletteVisibilityObserver(_ observer: @escaping PaletteVisibilityObserver) -> UUID {
+        let identifier = UUID()
+        paletteVisibilityObservers[identifier] = observer
+        observer(isPaletteVisible)
+        return identifier
+    }
+
+    func removePaletteVisibilityObserver(_ identifier: UUID) {
+        paletteVisibilityObservers.removeValue(forKey: identifier)
+    }
+
+    @discardableResult
     func addInkObserver(_ observer: @escaping InkObserver) -> UUID {
         let identifier = UUID()
         inkObservers[identifier] = observer
@@ -265,6 +332,12 @@ final class AppState {
     private func notifyInkObservers(displayUUID: String, change: InkLayerChange) {
         for observer in inkObservers.values {
             observer(displayUUID, change)
+        }
+    }
+
+    private func notifyToolSettingsObservers() {
+        for observer in toolSettingsObservers.values {
+            observer()
         }
     }
 

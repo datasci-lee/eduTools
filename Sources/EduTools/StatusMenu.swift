@@ -3,6 +3,7 @@ import Carbon
 
 final class StatusMenu: NSObject {
     private let state: AppState
+    private let dispatcher: AppCommandDispatcher
     private let statusItem: NSStatusItem
     private let modeItem: NSMenuItem
     private let toolItem: NSMenuItem
@@ -10,16 +11,17 @@ final class StatusMenu: NSObject {
     private var toolObserverIdentifier: UUID?
     private var hotkeyRegistrationFailed = false
 
-    init(state: AppState) {
+    init(state: AppState, dispatcher: AppCommandDispatcher) {
         self.state = state
+        self.dispatcher = dispatcher
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        modeItem = NSMenuItem(title: "판서 모드", action: nil, keyEquivalent: "p")
+        modeItem = NSMenuItem(title: "판서 모드", action: nil, keyEquivalent: "")
         toolItem = NSMenuItem(title: "도구: 펜", action: nil, keyEquivalent: "")
         super.init()
 
         modeItem.target = self
         modeItem.action = #selector(toggleAnnotationMode(_:))
-        modeItem.keyEquivalentModifierMask = [.control, .option]
+        applyShortcut(.toggleAnnotationMode, scope: .global, to: modeItem)
 
         let menu = NSMenu()
         menu.addItem(modeItem)
@@ -29,9 +31,9 @@ final class StatusMenu: NSObject {
         let clearAllItem = NSMenuItem(
             title: "전체 지우기",
             action: #selector(clearAllInk(_:)),
-            keyEquivalent: "\u{8}"
+            keyEquivalent: ""
         )
-        clearAllItem.keyEquivalentModifierMask = .command
+        applyShortcut(.clearAll, scope: .annotation, to: clearAllItem)
         clearAllItem.target = self
         menu.addItem(clearAllItem)
 
@@ -42,6 +44,16 @@ final class StatusMenu: NSObject {
         )
         clearCurrentDisplayItem.target = self
         menu.addItem(clearCurrentDisplayItem)
+        menu.addItem(.separator())
+
+        let helpItem = NSMenuItem(
+            title: "도움말",
+            action: #selector(showHelp(_:)),
+            keyEquivalent: ""
+        )
+        applyShortcut(.showHelp, scope: .global, to: helpItem)
+        helpItem.target = self
+        menu.addItem(helpItem)
         menu.addItem(.separator())
 
         let quitItem = NSMenuItem(
@@ -66,6 +78,19 @@ final class StatusMenu: NSObject {
         updateAnnotationMode(state.isAnnotationModeEnabled)
     }
 
+    private func applyShortcut(
+        _ command: AppCommand,
+        scope: ShortcutScope,
+        to item: NSMenuItem
+    ) {
+        guard let binding = ShortcutCatalog.definition(for: command)?.binding(in: scope) else {
+            NSLog("EduTools: menu item has no shortcut definition for %@", String(describing: command))
+            return
+        }
+        item.keyEquivalent = binding.keyEquivalent
+        item.keyEquivalentModifierMask = binding.modifiers
+    }
+
     private func updateAnnotationMode(_ isEnabled: Bool) {
         modeItem.state = isEnabled ? .on : .off
         modeItem.title = hotkeyRegistrationFailed ? "⚠ 판서 모드" : "판서 모드"
@@ -88,6 +113,10 @@ final class StatusMenu: NSObject {
 
     @objc private func clearCurrentDisplayInk(_ sender: Any?) {
         state.clearCurrentDisplayInk()
+    }
+
+    @objc private func showHelp(_ sender: Any?) {
+        dispatcher.execute(.showHelp, scope: .global)
     }
 
     @objc private func terminateApplication(_ sender: Any?) {

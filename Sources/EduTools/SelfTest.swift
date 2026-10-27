@@ -79,6 +79,39 @@ func runSelfTests() -> Int32 {
         "P without AppMod should be rejected"
     )
 
+    let catalogBindings = ShortcutCatalog.definitions.flatMap(\.bindings)
+    let bindingKeys = catalogBindings.map(\.uniquenessKey)
+    runner.expect(
+        Set(bindingKeys).count == bindingKeys.count,
+        "shortcut catalog should not contain duplicate keys in the same scope"
+    )
+
+    let annotationDefinitions = ShortcutCatalog.definitions.filter {
+        $0.binding(in: .annotation) != nil
+    }
+    runner.expect(
+        annotationDefinitions.allSatisfy { AppCommandDispatcher.supports($0.command) },
+        "every annotation shortcut should be connected to the command dispatcher"
+    )
+
+    let koreanFilterResults = ShortcutCatalog.filtered(
+        ShortcutCatalog.definitions,
+        query: "형광펜"
+    )
+    runner.expect(
+        koreanFilterResults.map(\.id) == ["tool.highlighter"],
+        "help filtering should match a Korean feature name"
+    )
+
+    let keyFilterResults = ShortcutCatalog.filtered(
+        ShortcutCatalog.definitions,
+        query: "["
+    )
+    runner.expect(
+        keyFilterResults.map(\.id) == ["tool.width.decrease"],
+        "help filtering should match a displayed shortcut key"
+    )
+
     let screenSize = CGSize(width: 1_920, height: 1_080)
     let screenPoint = CGPoint(x: 384, y: 810)
     let normalizedPoint = InkGeometry.normalizedPoint(from: screenPoint, in: screenSize)

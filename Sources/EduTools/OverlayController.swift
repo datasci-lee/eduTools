@@ -19,14 +19,16 @@ private final class OverlayPanel: NSPanel {
 
 final class OverlayController {
     private let state: AppState
+    private let dispatcher: AppCommandDispatcher
     private var panelsByDisplayUUID: [String: OverlayPanel] = [:]
     private var observerIdentifier: UUID?
     private var refreshWorkItem: DispatchWorkItem?
     private var callbackRegistered = false
     private var previouslyFrontmostApplication: NSRunningApplication?
 
-    init(state: AppState) {
+    init(state: AppState, dispatcher: AppCommandDispatcher) {
         self.state = state
+        self.dispatcher = dispatcher
 
         let status = CGDisplayRegisterReconfigurationCallback(
             displayReconfigurationCallback,
@@ -90,16 +92,6 @@ final class OverlayController {
         }
     }
 
-    private func displayUUID(for screen: NSScreen) -> String? {
-        let screenNumberKey = NSDeviceDescriptionKey("NSScreenNumber")
-        guard let number = screen.deviceDescription[screenNumberKey] as? NSNumber else {
-            return nil
-        }
-
-        let uuid = CGDisplayCreateUUIDFromDisplayID(number.uint32Value).takeRetainedValue()
-        return CFUUIDCreateString(nil, uuid) as String
-    }
-
     private func makePanel(for screen: NSScreen, displayUUID: String) -> OverlayPanel {
         let panel = OverlayPanel(
             contentRect: screen.frame,
@@ -124,6 +116,7 @@ final class OverlayController {
         let inkView = InkView(
             frame: NSRect(origin: .zero, size: screen.frame.size),
             state: state,
+            dispatcher: dispatcher,
             displayUUID: displayUUID,
             requestKeyFocus: { [weak self] in
                 self?.focusPanel(displayUUID: displayUUID)

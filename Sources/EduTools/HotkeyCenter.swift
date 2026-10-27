@@ -23,34 +23,49 @@ private func hotKeyEventHandler(
     guard status == noErr else { return status }
 
     let center = Unmanaged<HotkeyCenter>.fromOpaque(userData).takeUnretainedValue()
-    return center.dispatch(identifier: hotKeyID.id)
+    return center.dispatch(identifier: hotKeyID.id, eventKind: GetEventKind(event))
 }
 
 final class HotkeyCenter {
+    private struct Actions {
+        let pressed: () -> Void
+        let released: (() -> Void)?
+    }
+
     private let signature: OSType = 0x4544_544C
     private var eventHandlerReference: EventHandlerRef?
     private var eventHandlerStatus: OSStatus = noErr
     private var hotKeyReferences: [UInt32: EventHotKeyRef] = [:]
-    private var actions: [UInt32: () -> Void] = [:]
+    private var actions: [UInt32: Actions] = [:]
     private var nextIdentifier: UInt32 = 1
 
     init() {
-        var eventType = EventTypeSpec(
-            eventClass: OSType(kEventClassKeyboard),
-            eventKind: UInt32(kEventHotKeyPressed)
-        )
+        var eventTypes = [
+            EventTypeSpec(
+                eventClass: OSType(kEventClassKeyboard),
+                eventKind: UInt32(kEventHotKeyPressed)
+            ),
+            EventTypeSpec(
+                eventClass: OSType(kEventClassKeyboard),
+                eventKind: UInt32(kEventHotKeyReleased)
+            ),
+        ]
         eventHandlerStatus = InstallEventHandler(
             GetApplicationEventTarget(),
             hotKeyEventHandler,
-            1,
-            &eventType,
+            eventTypes.count,
+            &eventTypes,
             Unmanaged.passUnretained(self).toOpaque(),
             &eventHandlerReference
         )
     }
 
     @discardableResult
-    func register(shortcut: Shortcut, action: @escaping () -> Void) -> OSStatus {
+    func register(
+        shortcut: Shortcut,
+        pressed: @escaping () -> Void,
+        released: (() -> Void)? = nil
+    ) -> OSStatus {
         guard eventHandlerStatus == noErr else { return eventHandlerStatus }
 
         let identifier = nextIdentifier
@@ -58,7 +73,7 @@ final class HotkeyCenter {
         let hotKeyID = EventHotKeyID(signature: signature, id: identifier)
         var reference: EventHotKeyRef?
 
-        actions[identifier] = action
+        actions[identifier] = Actions(pressed: pressed, released: released)
         let status = RegisterEventHotKey(
             shortcut.keyCode,
             shortcut.carbonModifiers,
@@ -77,12 +92,20 @@ final class HotkeyCenter {
         return noErr
     }
 
-    fileprivate func dispatch(identifier: UInt32) -> OSStatus {
-        guard let action = actions[identifier] else {
+    fileprivate func dispatch(identifier: UInt32, eventKind: UInt32) -> OSStatus {
+        guard let actions = actions[identifier] else {
             return OSStatus(eventNotHandledErr)
         }
-        action()
-        return noErr
+        switch eventKind {
+        case UInt32(kEventHotKeyPressed):
+            actions.pressed()
+            return noErr
+        case UInt32(kEventHotKeyReleased):
+            actions.released?()
+            return noErr
+        default:
+            return OSStatus(eventNotHandledErr)
+        }
     }
 
     func invalidate() {

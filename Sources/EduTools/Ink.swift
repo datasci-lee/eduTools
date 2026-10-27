@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-enum InkTool: String {
+enum InkTool: String, Hashable {
     case pen
     case highlighter
     case laser

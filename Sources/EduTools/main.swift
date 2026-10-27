@@ -6,35 +6,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let appState = AppState()
     private var statusMenu: StatusMenu?
     private var overlayController: OverlayController?
+    private var paletteController: PaletteController?
+    private var helpController: HelpController?
+    private var dispatcher: AppCommandDispatcher?
     private var hotkeyCenter: HotkeyCenter?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         _ = NSApp.setActivationPolicy(.accessory)
 
-        let statusMenu = StatusMenu(state: appState)
+        let dispatcher = AppCommandDispatcher(state: appState)
+        self.dispatcher = dispatcher
+
+        let helpController = HelpController(state: appState, dispatcher: dispatcher)
+        self.helpController = helpController
+        dispatcher.helpController = helpController
+
+        let paletteController = PaletteController(state: appState, dispatcher: dispatcher)
+        self.paletteController = paletteController
+        dispatcher.paletteController = paletteController
+
+        let statusMenu = StatusMenu(state: appState, dispatcher: dispatcher)
         self.statusMenu = statusMenu
-        overlayController = OverlayController(state: appState)
+        overlayController = OverlayController(state: appState, dispatcher: dispatcher)
 
         let hotkeyCenter = HotkeyCenter()
         self.hotkeyCenter = hotkeyCenter
 
-        let registrations: [(serialized: String, action: () -> Void)] = [
-            ("AppMod+P", { [weak appState] in appState?.toggleAnnotationMode() }),
-            ("AppMod+L", { [weak appState] in appState?.activateLaserShortcut() }),
-        ]
-        for registration in registrations {
-            guard let shortcut = Shortcut(serialized: registration.serialized) else {
+        for (definition, binding) in ShortcutCatalog.globalDefinitions {
+            guard let serialized = binding.serializedGlobalShortcut,
+                  let shortcut = Shortcut(serialized: serialized)
+            else {
                 let status = OSStatus(paramErr)
                 NSLog(
                     "EduTools: invalid built-in shortcut %@ (OSStatus %d)",
-                    registration.serialized,
+                    definition.id,
                     status
                 )
                 statusMenu.setHotkeyRegistrationStatus(status)
                 continue
             }
 
-            let status = hotkeyCenter.register(shortcut: shortcut, action: registration.action)
+            let status = hotkeyCenter.register(
+                shortcut: shortcut,
+                pressed: { [weak dispatcher] in
+                    dispatcher?.keyDown(definition: definition, scope: .global)
+                },
+                released: { [weak dispatcher] in
+                    dispatcher?.keyUp(definition: definition)
+                }
+            )
             if status != noErr {
                 NSLog(
                     "EduTools: failed to register global shortcut %@ (OSStatus %d)",
@@ -43,6 +63,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 )
             }
             statusMenu.setHotkeyRegistrationStatus(status)
+        }
+
+        DispatchQueue.main.async { [weak helpController] in
+            helpController?.showFirstRunIfNeeded()
         }
     }
 
