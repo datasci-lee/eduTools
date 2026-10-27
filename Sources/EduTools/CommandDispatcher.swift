@@ -6,6 +6,7 @@ final class AppCommandDispatcher {
     weak var paletteController: PaletteController?
     weak var helpController: HelpController?
     weak var overlayController: OverlayController?
+    weak var timerCoordinator: TimerCoordinator?
 
     init(state: AppState) {
         self.state = state
@@ -14,6 +15,8 @@ final class AppCommandDispatcher {
     static func supports(_ command: AppCommand) -> Bool {
         switch command {
         case .toggleAnnotationMode,
+             .toggleLessonTimer,
+             .showBreakTimerSetup,
              .toggleBoard,
              .previousBoardPage,
              .nextBoardPage,
@@ -60,6 +63,10 @@ final class AppCommandDispatcher {
         switch command {
         case .toggleAnnotationMode:
             state.toggleAnnotationMode()
+        case .toggleLessonTimer:
+            timerCoordinator?.toggleLessonTimer()
+        case .showBreakTimerSetup:
+            timerCoordinator?.openBreakTimerSetup()
         case let .toggleBoard(kind):
             guard let targetDisplayUUID = overlayController?.displayUUIDUnderMouse()
                 ?? displayUUID

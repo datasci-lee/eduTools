@@ -1,0 +1,687 @@
+import AppKit
+import Foundation
+
+private final class LessonTimerPanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
+
+private final class LessonTimerDragView: NSVisualEffectView {
+    var mouseDownHandler: ((NSEvent) -> Void)?
+    var mouseDraggedHandler: ((NSEvent) -> Void)?
+    var mouseUpHandler: ((NSEvent) -> Void)?
+
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        bounds.contains(point) ? self : nil
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        mouseDownHandler?(event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        mouseDraggedHandler?(event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        mouseUpHandler?(event)
+    }
+}
+
+private final class LessonTimerDragLabel: NSTextField {
+    override var mouseDownCanMoveWindow: Bool { false }
+}
+
+final class LessonTimerController: NSObject, NSMenuDelegate {
+    private enum DefaultsKey {
+        static let positions = "EduTools.lessonTimer.positions"
+        static let displayUUID = "EduTools.lessonTimer.displayUUID"
+        static let size = "EduTools.lessonTimer.size"
+        static let opacity = "EduTools.lessonTimer.opacity"
+        static let displayMode = "EduTools.lessonTimer.displayMode"
+        static let autoBreakEnabled = "EduTools.lessonTimer.autoBreakEnabled"
+        static let autoBreakMinutes = "EduTools.lessonTimer.autoBreakMinutes"
+    }
+
+    private enum SizePreset: String, CaseIterable {
+        case small
+        case medium
+        case large
+
+        var title: String {
+            switch self {
+            case .small: return "소"
+            case .medium: return "중"
+            case .large: return "대"
+            }
+        }
+
+        var size: CGSize {
+            switch self {
+            case .small: return CGSize(width: 140, height: 64)
+            case .medium: return CGSize(width: 180, height: 80)
+            case .large: return CGSize(width: 240, height: 104)
+            }
+        }
+    }
+
+    private enum DisplayMode: String {
+        case remaining
+        case elapsed
+    }
+
+    private let engine = LessonTimerEngine()
+    private let defaults: UserDefaults
+    private let panel: LessonTimerPanel
+    private let rootView = LessonTimerDragView()
+    private let timeLabel = LessonTimerDragLabel(labelWithString: "50:00")
+    private let modeLabel = LessonTimerDragLabel(labelWithString: "수업 타이머")
+    private let pauseItem = NSMenuItem()
+    private let displayModeItem = NSMenuItem()
+    private let autoBreakItem = NSMenuItem()
+    private var refreshTimer: Timer?
+    private var blinkTimer: Timer?
+    private var notificationObservers: [NSObjectProtocol] = []
+    private var currentDisplayUUID: String?
+    private var isApplyingFrame = false
+    private var blinkCount = 0
+    private var displayMode: DisplayMode
+    private var dragStartMouseLocation: CGPoint?
+    private var dragStartPanelOrigin: CGPoint?
+
+    var onDisplayTextChange: ((String) -> Void)?
+    var onAutoBreakRequested: ((Int) -> Void)?
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        displayMode = DisplayMode(
+            rawValue: defaults.string(forKey: DefaultsKey.displayMode) ?? ""
+        ) ?? .remaining
+        let savedSize = SizePreset(rawValue: defaults.string(forKey: DefaultsKey.size) ?? "")
+            ?? .medium
+        panel = LessonTimerPanel(
+            contentRect: NSRect(origin: .zero, size: savedSize.size),
+            styleMask: [.borderless, .nonactivatingPanel, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        super.init()
+
+        configurePanel()
+        buildContextMenu()
+        restorePosition()
+        observeSystemEvents()
+        startDisplayRefreshTimer()
+        refresh(now: Date())
+    }
+
+    func toggleFromShortcut() {
+        engine.toggleDefault(now: Date())
+        showPanel()
+        refresh(now: Date())
+    }
+
+    func startCountdown(minutes: Int) {
+        engine.startCountdown(duration: TimeInterval(minutes * 60), now: Date())
+        showPanel()
+        refresh(now: Date())
+    }
+
+    func startCountUp() {
+        engine.startCountUp(now: Date())
+        showPanel()
+        refresh(now: Date())
+    }
+
+    func setDisplayTextHandler(_ handler: @escaping (String) -> Void) {
+        onDisplayTextChange = handler
+        handler(statusText(now: Date()))
+    }
+
+    private func configurePanel() {
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = true
+        panel.hidesOnDeactivate = false
+        panel.isMovable = false
+        panel.isMovableByWindowBackground = false
+        panel.isReleasedWhenClosed = false
+        panel.animationBehavior = .none
+        panel.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 2)
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        panel.sharingType = .none
+        panel.contentMinSize = SizePreset.small.size
+        panel.contentMaxSize = CGSize(width: 420, height: 180)
+        panel.alphaValue = savedOpacity()
+
+        rootView.material = .hudWindow
+        rootView.blendingMode = .withinWindow
+        rootView.state = .active
+        rootView.wantsLayer = true
+        rootView.layer?.cornerRadius = 14
+        rootView.layer?.masksToBounds = true
+        rootView.mouseDownHandler = { [weak self] _ in
+            self?.beginDraggingPanel()
+        }
+        rootView.mouseDraggedHandler = { [weak self] _ in
+            self?.continueDraggingPanel()
+        }
+        rootView.mouseUpHandler = { [weak self] event in
+            self?.endDraggingPanel(snappingDisabled: event.modifierFlags.contains(.option))
+        }
+        panel.contentView = rootView
+
+        timeLabel.font = .monospacedDigitSystemFont(ofSize: 34, weight: .bold)
+        timeLabel.textColor = .labelColor
+        timeLabel.alignment = .center
+        timeLabel.maximumNumberOfLines = 1
+        timeLabel.translatesAutoresizingMaskIntoConstraints = false
+        timeLabel.setContentCompressionResistancePriority(.required, for: .vertical)
+
+        modeLabel.font = .systemFont(ofSize: 10, weight: .medium)
+        modeLabel.textColor = .secondaryLabelColor
+        modeLabel.alignment = .center
+        modeLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let stack = NSStackView(views: [timeLabel, modeLabel])
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 0
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        rootView.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.centerXAnchor.constraint(equalTo: rootView.centerXAnchor),
+            stack.centerYAnchor.constraint(equalTo: rootView.centerYAnchor),
+            stack.leadingAnchor.constraint(greaterThanOrEqualTo: rootView.leadingAnchor, constant: 8),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: rootView.trailingAnchor, constant: -8),
+        ])
+    }
+
+    private func buildContextMenu() {
+        let menu = NSMenu(title: "수업 타이머")
+        menu.delegate = self
+
+        let presets = NSMenu(title: "프리셋")
+        for minutes in [25, 45, 50, 90] {
+            let item = NSMenuItem(
+                title: "\(minutes)분",
+                action: #selector(startPreset(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = NSNumber(value: minutes)
+            presets.addItem(item)
+        }
+        let presetItem = NSMenuItem(title: "프리셋", action: nil, keyEquivalent: "")
+        presetItem.submenu = presets
+        menu.addItem(presetItem)
+
+        let countUpItem = NSMenuItem(
+            title: "카운트업",
+            action: #selector(startCountUpFromMenu(_:)),
+            keyEquivalent: ""
+        )
+        countUpItem.target = self
+        menu.addItem(countUpItem)
+        menu.addItem(.separator())
+
+        pauseItem.target = self
+        pauseItem.action = #selector(togglePause(_:))
+        menu.addItem(pauseItem)
+        let resetItem = NSMenuItem(
+            title: "리셋",
+            action: #selector(resetTimer(_:)),
+            keyEquivalent: ""
+        )
+        resetItem.target = self
+        menu.addItem(resetItem)
+        menu.addItem(.separator())
+
+        let sizes = NSMenu(title: "크기")
+        for preset in SizePreset.allCases {
+            let item = NSMenuItem(
+                title: preset.title,
+                action: #selector(selectSize(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = preset.rawValue
+            sizes.addItem(item)
+        }
+        let sizeItem = NSMenuItem(title: "크기", action: nil, keyEquivalent: "")
+        sizeItem.submenu = sizes
+        menu.addItem(sizeItem)
+
+        let opacityMenu = NSMenu(title: "투명도")
+        for percent in [100, 80, 60, 40] {
+            let item = NSMenuItem(
+                title: "\(percent)%",
+                action: #selector(selectOpacity(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = NSNumber(value: Double(percent) / 100)
+            opacityMenu.addItem(item)
+        }
+        let opacityItem = NSMenuItem(title: "투명도", action: nil, keyEquivalent: "")
+        opacityItem.submenu = opacityMenu
+        menu.addItem(opacityItem)
+
+        displayModeItem.target = self
+        displayModeItem.action = #selector(toggleDisplayMode(_:))
+        menu.addItem(displayModeItem)
+
+        let resetPositionItem = NSMenuItem(
+            title: "위치 초기화",
+            action: #selector(resetPosition(_:)),
+            keyEquivalent: ""
+        )
+        resetPositionItem.target = self
+        menu.addItem(resetPositionItem)
+        menu.addItem(.separator())
+
+        autoBreakItem.target = self
+        autoBreakItem.action = #selector(toggleAutoBreak(_:))
+        menu.addItem(autoBreakItem)
+        rootView.menu = menu
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        pauseItem.title = engine.phase == .paused ? "재시작" : "일시정지"
+        pauseItem.isEnabled = engine.isActive
+        displayModeItem.title = displayMode == .remaining ? "경과 시간 표시" : "남은 시간 표시"
+        autoBreakItem.title = "종료 후 \(autoBreakMinutes())분 쉬는 시간 자동 시작"
+        autoBreakItem.state = defaults.bool(forKey: DefaultsKey.autoBreakEnabled) ? .on : .off
+    }
+
+    @objc private func startPreset(_ sender: NSMenuItem) {
+        guard let minutes = (sender.representedObject as? NSNumber)?.intValue else {
+            NSLog("EduTools: lesson timer preset has no minute value")
+            return
+        }
+        startCountdown(minutes: minutes)
+    }
+
+    @objc private func startCountUpFromMenu(_ sender: Any?) {
+        startCountUp()
+    }
+
+    @objc private func togglePause(_ sender: Any?) {
+        let now = Date()
+        if engine.phase == .paused {
+            engine.resume(now: now)
+        } else {
+            engine.pause(now: now)
+        }
+        refresh(now: now)
+    }
+
+    @objc private func resetTimer(_ sender: Any?) {
+        engine.reset(now: Date())
+        showPanel()
+        refresh(now: Date())
+    }
+
+    @objc private func selectSize(_ sender: NSMenuItem) {
+        guard let rawValue = sender.representedObject as? String,
+              let preset = SizePreset(rawValue: rawValue)
+        else {
+            NSLog("EduTools: lesson timer size menu has no preset")
+            return
+        }
+        defaults.set(preset.rawValue, forKey: DefaultsKey.size)
+        resize(to: preset.size)
+    }
+
+    @objc private func selectOpacity(_ sender: NSMenuItem) {
+        guard let opacity = (sender.representedObject as? NSNumber)?.doubleValue else {
+            NSLog("EduTools: lesson timer opacity menu has no value")
+            return
+        }
+        panel.alphaValue = min(max(opacity, 0.4), 1)
+        defaults.set(panel.alphaValue, forKey: DefaultsKey.opacity)
+    }
+
+    @objc private func toggleDisplayMode(_ sender: Any?) {
+        displayMode = displayMode == .remaining ? .elapsed : .remaining
+        defaults.set(displayMode.rawValue, forKey: DefaultsKey.displayMode)
+        refresh(now: Date())
+    }
+
+    @objc private func resetPosition(_ sender: Any?) {
+        guard let screen = NSScreen.screens.first else {
+            NSLog("EduTools: lesson timer could not reset position because no screen is available")
+            return
+        }
+        placePanel(on: screen, identifier: displayUUID(for: screen), ratio: CGPoint(x: 0.95, y: 0.88))
+        saveCurrentPosition()
+    }
+
+    @objc private func toggleAutoBreak(_ sender: Any?) {
+        let enabled = !defaults.bool(forKey: DefaultsKey.autoBreakEnabled)
+        defaults.set(enabled, forKey: DefaultsKey.autoBreakEnabled)
+        autoBreakItem.state = enabled ? .on : .off
+    }
+
+    private func showPanel() {
+        ensureCurrentScreenExists()
+        panel.orderFrontRegardless()
+    }
+
+    private func startDisplayRefreshTimer() {
+        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
+            self?.refresh(now: Date())
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        refreshTimer = timer
+    }
+
+    private func refresh(now: Date) {
+        let didFinish = engine.synchronize(now: now)
+        let value: TimeInterval
+        if displayMode == .remaining, case .countdown = engine.mode {
+            value = engine.remaining(at: now)
+            modeLabel.stringValue = engine.phase == .paused ? "남은 시간 · 일시정지" : "남은 시간"
+        } else {
+            value = engine.elapsed(at: now)
+            modeLabel.stringValue = engine.phase == .paused ? "경과 시간 · 일시정지" : "경과 시간"
+        }
+        timeLabel.stringValue = Self.formattedDuration(value)
+
+        if engine.phase == .finished {
+            timeLabel.textColor = .systemRed
+            modeLabel.stringValue = "수업 종료"
+        } else if case .countdown = engine.mode, engine.remaining(at: now) <= 5 * 60 {
+            timeLabel.textColor = .systemOrange
+        } else {
+            timeLabel.textColor = .labelColor
+        }
+
+        updateLabelFont()
+        onDisplayTextChange?(statusText(now: now))
+        if didFinish {
+            handleCompletion()
+        }
+    }
+
+    private func statusText(now: Date) -> String {
+        switch engine.phase {
+        case .stopped:
+            return "수업 타이머 시작"
+        case .finished:
+            return "수업 타이머: 00:00"
+        case .running, .paused:
+            let value: TimeInterval
+            if displayMode == .remaining, case .countdown = engine.mode {
+                value = engine.remaining(at: now)
+            } else {
+                value = engine.elapsed(at: now)
+            }
+            let paused = engine.phase == .paused ? " · 일시정지" : ""
+            return "수업 타이머: \(Self.formattedDuration(value))\(paused)"
+        }
+    }
+
+    private func handleCompletion() {
+        TimerSound.playCompletion()
+        startBlinking()
+        if defaults.bool(forKey: DefaultsKey.autoBreakEnabled) {
+            onAutoBreakRequested?(autoBreakMinutes())
+        }
+    }
+
+    private func startBlinking() {
+        blinkTimer?.invalidate()
+        blinkCount = 0
+        let timer = Timer(timeInterval: 0.35, repeats: true) { [weak self] timer in
+            guard let self else {
+                timer.invalidate()
+                return
+            }
+            blinkCount += 1
+            rootView.layer?.backgroundColor = blinkCount.isMultiple(of: 2)
+                ? NSColor.systemRed.withAlphaComponent(0.45).cgColor
+                : NSColor.clear.cgColor
+            if blinkCount >= 8 {
+                timer.invalidate()
+                rootView.layer?.backgroundColor = NSColor.clear.cgColor
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        blinkTimer = timer
+    }
+
+    private func updateLabelFont() {
+        let size = min(64, max(24, panel.contentLayoutRect.height * 0.43))
+        timeLabel.font = .monospacedDigitSystemFont(ofSize: size, weight: .bold)
+    }
+
+    private func savedOpacity() -> CGFloat {
+        guard defaults.object(forKey: DefaultsKey.opacity) != nil else { return 0.9 }
+        return min(max(defaults.double(forKey: DefaultsKey.opacity), 0.4), 1)
+    }
+
+    private func autoBreakMinutes() -> Int {
+        let saved = defaults.integer(forKey: DefaultsKey.autoBreakMinutes)
+        return saved > 0 ? saved : 10
+    }
+
+    private func observeSystemEvents() {
+        notificationObservers.append(
+            NotificationCenter.default.addObserver(
+                forName: NSWindow.didResizeNotification,
+                object: panel,
+                queue: .main
+            ) { [weak self] _ in
+                self?.updateLabelFont()
+                self?.saveCurrentPosition()
+            }
+        )
+        notificationObservers.append(
+            NotificationCenter.default.addObserver(
+                forName: NSApplication.didChangeScreenParametersNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.ensureCurrentScreenExists()
+            }
+        )
+        notificationObservers.append(
+            NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.didWakeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.refresh(now: Date())
+            }
+        )
+    }
+
+    private func resize(to size: CGSize) {
+        let center = CGPoint(x: panel.frame.midX, y: panel.frame.midY)
+        var frame = NSRect(
+            x: center.x - size.width / 2,
+            y: center.y - size.height / 2,
+            width: size.width,
+            height: size.height
+        )
+        if let screen = screenContainingPanel() {
+            frame.origin = TimerGeometry.snappedOrigin(
+                proposed: frame.origin,
+                windowSize: frame.size,
+                visibleFrame: screen.visibleFrame,
+                snappingDisabled: true
+            )
+        }
+        isApplyingFrame = true
+        panel.setFrame(frame, display: true)
+        isApplyingFrame = false
+        updateLabelFont()
+        saveCurrentPosition()
+    }
+
+    private func beginDraggingPanel() {
+        dragStartMouseLocation = NSEvent.mouseLocation
+        dragStartPanelOrigin = panel.frame.origin
+    }
+
+    private func continueDraggingPanel() {
+        guard let dragStartMouseLocation, let dragStartPanelOrigin else { return }
+        let location = NSEvent.mouseLocation
+        isApplyingFrame = true
+        panel.setFrameOrigin(
+            CGPoint(
+                x: dragStartPanelOrigin.x + location.x - dragStartMouseLocation.x,
+                y: dragStartPanelOrigin.y + location.y - dragStartMouseLocation.y
+            )
+        )
+        isApplyingFrame = false
+    }
+
+    private func endDraggingPanel(snappingDisabled: Bool) {
+        dragStartMouseLocation = nil
+        dragStartPanelOrigin = nil
+        guard let screen = screenContainingPanel() else {
+            NSLog("EduTools: lesson timer could not find a screen after moving")
+            return
+        }
+        let snapped = TimerGeometry.snappedOrigin(
+            proposed: panel.frame.origin,
+            windowSize: panel.frame.size,
+            visibleFrame: screen.visibleFrame,
+            snappingDisabled: snappingDisabled
+        )
+        isApplyingFrame = true
+        panel.setFrameOrigin(snapped)
+        isApplyingFrame = false
+        saveCurrentPosition()
+    }
+
+    private func restorePosition() {
+        let screensByIdentifier = Dictionary(
+            uniqueKeysWithValues: NSScreen.screens.compactMap { screen in
+                displayUUID(for: screen).map { ($0, screen) }
+            }
+        )
+        let savedIdentifier = defaults.string(forKey: DefaultsKey.displayUUID)
+        let savedRatio = savedRatio(for: savedIdentifier)
+        if let savedIdentifier, let screen = screensByIdentifier[savedIdentifier] {
+            placePanel(on: screen, identifier: savedIdentifier, ratio: savedRatio)
+        } else if let primaryScreen = NSScreen.screens.first {
+            placePanel(
+                on: primaryScreen,
+                identifier: displayUUID(for: primaryScreen),
+                ratio: savedRatio
+            )
+        } else {
+            NSLog("EduTools: lesson timer could not restore position because no screen is available")
+        }
+    }
+
+    private func placePanel(on screen: NSScreen, identifier: String?, ratio: CGPoint?) {
+        let visibleFrame = screen.visibleFrame
+        let availableWidth = max(0, visibleFrame.width - panel.frame.width)
+        let availableHeight = max(0, visibleFrame.height - panel.frame.height)
+        let xRatio = min(max(ratio?.x ?? 0.95, 0), 1)
+        let yRatio = min(max(ratio?.y ?? 0.88, 0), 1)
+        let origin = CGPoint(
+            x: visibleFrame.minX + availableWidth * xRatio,
+            y: visibleFrame.minY + availableHeight * yRatio
+        )
+        isApplyingFrame = true
+        panel.setFrameOrigin(origin)
+        isApplyingFrame = false
+        currentDisplayUUID = identifier
+        if let identifier {
+            defaults.set(identifier, forKey: DefaultsKey.displayUUID)
+        }
+    }
+
+    private func savedRatio(for identifier: String?) -> CGPoint? {
+        guard let identifier,
+              let positions = defaults.dictionary(forKey: DefaultsKey.positions),
+              let entry = positions[identifier] as? [String: Any],
+              let x = entry["x"] as? NSNumber,
+              let y = entry["y"] as? NSNumber
+        else {
+            return nil
+        }
+        return CGPoint(x: x.doubleValue, y: y.doubleValue)
+    }
+
+    private func saveCurrentPosition() {
+        guard !isApplyingFrame,
+              let screen = screenContainingPanel(),
+              let identifier = displayUUID(for: screen)
+        else {
+            return
+        }
+        let visibleFrame = screen.visibleFrame
+        let availableWidth = max(1, visibleFrame.width - panel.frame.width)
+        let availableHeight = max(1, visibleFrame.height - panel.frame.height)
+        let xRatio = min(max((panel.frame.minX - visibleFrame.minX) / availableWidth, 0), 1)
+        let yRatio = min(max((panel.frame.minY - visibleFrame.minY) / availableHeight, 0), 1)
+        var positions = defaults.dictionary(forKey: DefaultsKey.positions) ?? [:]
+        positions[identifier] = ["x": xRatio, "y": yRatio]
+        defaults.set(positions, forKey: DefaultsKey.positions)
+        defaults.set(identifier, forKey: DefaultsKey.displayUUID)
+        currentDisplayUUID = identifier
+    }
+
+    private func screenContainingPanel() -> NSScreen? {
+        if let screen = panel.screen {
+            return screen
+        }
+        let center = CGPoint(x: panel.frame.midX, y: panel.frame.midY)
+        return NSScreen.screens.first { $0.frame.contains(center) }
+    }
+
+    private func ensureCurrentScreenExists() {
+        if let currentDisplayUUID,
+           let screen = NSScreen.screens.first(where: { displayUUID(for: $0) == currentDisplayUUID }) {
+            guard !screen.frame.intersects(panel.frame) else { return }
+            placePanel(on: screen, identifier: currentDisplayUUID, ratio: savedRatio(for: currentDisplayUUID))
+            return
+        }
+
+        guard let primaryScreen = NSScreen.screens.first else {
+            NSLog("EduTools: lesson timer could not move after a display change because no screen is available")
+            return
+        }
+        let priorRatio = savedRatio(for: currentDisplayUUID)
+        placePanel(
+            on: primaryScreen,
+            identifier: displayUUID(for: primaryScreen),
+            ratio: priorRatio
+        )
+        saveCurrentPosition()
+    }
+
+    static func formattedDuration(_ interval: TimeInterval) -> String {
+        let totalSeconds = max(0, Int(ceil(interval)))
+        return String(format: "%02d:%02d", totalSeconds / 60, totalSeconds % 60)
+    }
+
+    deinit {
+        refreshTimer?.invalidate()
+        blinkTimer?.invalidate()
+        for observer in notificationObservers {
+            NotificationCenter.default.removeObserver(observer)
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+        }
+        panel.close()
+    }
+}
+
+enum TimerSound {
+    static func playCompletion() {
+        if let sound = NSSound(named: NSSound.Name("Glass")) {
+            sound.play()
+        } else {
+            NSLog("EduTools: Glass system sound was unavailable; using the system beep")
+            NSSound.beep()
+        }
+    }
+}

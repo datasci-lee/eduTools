@@ -80,6 +80,8 @@ enum ShortcutGroup: Int, CaseIterable {
 
 enum AppCommand: Hashable {
     case toggleAnnotationMode
+    case toggleLessonTimer
+    case showBreakTimerSetup
     case toggleBoard(BoardKind)
     case previousBoardPage
     case nextBoardPage
@@ -193,6 +195,24 @@ enum ShortcutCatalog {
                 modes: [.global],
                 command: .toggleAnnotationMode,
                 bindings: [global("AppMod+P")]
+            ),
+            ShortcutDefinition(
+                id: "timer.lesson.toggle",
+                name: "수업 타이머 시작/일시정지",
+                iconName: "timer",
+                group: .timerAndOther,
+                modes: [.global],
+                command: .toggleLessonTimer,
+                bindings: [global("AppMod+M")]
+            ),
+            ShortcutDefinition(
+                id: "timer.break.open",
+                name: "쉬는 시간 타이머 열기",
+                iconName: "cup.and.saucer",
+                group: .timerAndOther,
+                modes: [.global],
+                command: .showBreakTimerSetup,
+                bindings: [global("AppMod+B")]
             ),
             ShortcutDefinition(
                 id: "tool.pen",
