@@ -9,6 +9,7 @@ final class AppCommandDispatcher {
     weak var timerCoordinator: TimerCoordinator?
     weak var zoomController: ZoomController?
     weak var presenterEffectsController: PresenterEffectsController?
+    weak var exportController: ExportController?
 
     init(state: AppState) {
         self.state = state
@@ -38,6 +39,8 @@ final class AppCommandDispatcher {
              .redo,
              .clearAll,
              .deleteSelection,
+             .saveCurrentContent,
+             .copyCurrentImage,
              .togglePalette,
              .stepBack,
              .showHelp,
@@ -84,6 +87,7 @@ final class AppCommandDispatcher {
     ) {
         switch command {
         case .toggleAnnotationMode:
+            overlayController?.finishAllActiveInteractions()
             state.toggleAnnotationMode()
         case .toggleZoom:
             zoomController?.toggleZoom()
@@ -146,11 +150,16 @@ final class AppCommandDispatcher {
                 _ = state.redo(on: targetDisplayUUID)
             }
         case .clearAll:
+            overlayController?.finishAllActiveInteractions()
             _ = state.clearAllInk()
         case .deleteSelection:
             if let targetDisplayUUID = displayUUID ?? state.activeDisplayUUID {
                 _ = state.deleteSelection(on: targetDisplayUUID)
             }
+        case .saveCurrentContent:
+            exportController?.saveCurrentContent()
+        case .copyCurrentImage:
+            exportController?.copyCurrentImage()
         case .togglePalette:
             state.togglePaletteVisibility()
         case .stepBack:
@@ -163,6 +172,7 @@ final class AppCommandDispatcher {
             } else if state.currentTool != .pen {
                 state.selectTool(.pen)
             } else {
+                overlayController?.finishAllActiveInteractions()
                 state.setAnnotationModeEnabled(false)
             }
         case .showHelp:

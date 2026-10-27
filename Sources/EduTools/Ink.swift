@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-enum InkTool: String, Hashable {
+enum InkTool: String, Hashable, Codable {
     case pen
     case highlighter
     case laser
@@ -29,7 +29,7 @@ enum InkTool: String, Hashable {
     }
 }
 
-enum InkStrokeTool: Equatable {
+enum InkStrokeTool: String, Equatable, Codable {
     case pen
     case highlighter
     case shape
@@ -136,7 +136,7 @@ struct EraserSettings {
     }
 }
 
-struct InkPoint: Equatable {
+struct InkPoint: Equatable, Codable {
     let location: CGPoint
     let pressure: CGFloat
     let timestamp: TimeInterval
@@ -151,7 +151,7 @@ struct InkPoint: Equatable {
     }
 }
 
-struct InkStroke: Equatable {
+struct InkStroke: Equatable, Codable {
     let identifier: UUID
     let tool: InkStrokeTool
     let color: NSColor
@@ -191,14 +191,74 @@ struct InkStroke: Equatable {
             && lhs.points == rhs.points
             && lhs.content == rhs.content
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case identifier
+        case tool
+        case colorComponents
+        case width
+        case usesPressure
+        case points
+        case content
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        identifier = try container.decode(UUID.self, forKey: .identifier)
+        tool = try container.decode(InkStrokeTool.self, forKey: .tool)
+        let components = try container.decode([CGFloat].self, forKey: .colorComponents)
+        guard components.count == 4 else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .colorComponents,
+                in: container,
+                debugDescription: "Ink color must contain red, green, blue, and alpha components"
+            )
+        }
+        color = NSColor(
+            deviceRed: components[0],
+            green: components[1],
+            blue: components[2],
+            alpha: components[3]
+        )
+        width = try container.decode(CGFloat.self, forKey: .width)
+        usesPressure = try container.decode(Bool.self, forKey: .usesPressure)
+        points = try container.decode([InkPoint].self, forKey: .points)
+        content = try container.decode(InkStrokeContent.self, forKey: .content)
+        pointBounds = points.reduce(CGRect.null) { bounds, point in
+            bounds.union(CGRect(origin: point.location, size: .zero))
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        guard let rgb = color.usingColorSpace(.deviceRGB) else {
+            throw EncodingError.invalidValue(
+                color,
+                EncodingError.Context(
+                    codingPath: encoder.codingPath,
+                    debugDescription: "Ink color could not be converted to device RGB"
+                )
+            )
+        }
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(identifier, forKey: .identifier)
+        try container.encode(tool, forKey: .tool)
+        try container.encode(
+            [rgb.redComponent, rgb.greenComponent, rgb.blueComponent, rgb.alphaComponent],
+            forKey: .colorComponents
+        )
+        try container.encode(width, forKey: .width)
+        try container.encode(usesPressure, forKey: .usesPressure)
+        try container.encode(points, forKey: .points)
+        try container.encode(content, forKey: .content)
+    }
 }
 
-private enum InkLayerKey: Hashable {
+private enum InkLayerKey: Hashable, Codable {
     case legacy
     case display(String)
 }
 
-enum InkCommand {
+enum InkCommand: Codable {
     case addStroke(InkStroke)
     case replaceStrokes(before: [InkStroke], after: [InkStroke])
     case addDisplayStroke(displayUUID: String, stroke: InkStroke)
@@ -266,9 +326,53 @@ enum InkCommand {
             layers[.display(displayUUID)] = strokes
         }
     }
+
+    fileprivate func command(for displayUUID: String) -> InkCommand? {
+        switch self {
+        case .addStroke, .replaceStrokes:
+            return nil
+        case let .addDisplayStroke(commandDisplayUUID, stroke):
+            guard commandDisplayUUID == displayUUID else { return nil }
+            return .addDisplayStroke(displayUUID: displayUUID, stroke: stroke)
+        case let .replaceDisplayStrokes(commandDisplayUUID, before, after):
+            guard commandDisplayUUID == displayUUID else { return nil }
+            return .replaceDisplayStrokes(
+                displayUUID: displayUUID,
+                before: before,
+                after: after
+            )
+        case let .replaceAllDisplayStrokes(before, after):
+            let displayBefore = before[displayUUID] ?? []
+            let displayAfter = after[displayUUID] ?? []
+            guard displayBefore != displayAfter else { return nil }
+            return .replaceDisplayStrokes(
+                displayUUID: displayUUID,
+                before: displayBefore,
+                after: displayAfter
+            )
+        }
+    }
+
+    fileprivate func excluding(displayUUID: String) -> InkCommand? {
+        switch self {
+        case .addStroke, .replaceStrokes:
+            return self
+        case let .addDisplayStroke(commandDisplayUUID, _):
+            return commandDisplayUUID == displayUUID ? nil : self
+        case let .replaceDisplayStrokes(commandDisplayUUID, _, _):
+            return commandDisplayUUID == displayUUID ? nil : self
+        case let .replaceAllDisplayStrokes(before, after):
+            var filteredBefore = before
+            var filteredAfter = after
+            filteredBefore.removeValue(forKey: displayUUID)
+            filteredAfter.removeValue(forKey: displayUUID)
+            guard filteredBefore != filteredAfter else { return nil }
+            return .replaceAllDisplayStrokes(before: filteredBefore, after: filteredAfter)
+        }
+    }
 }
 
-final class InkLayerState {
+final class InkLayerState: Codable {
     private var layers: [InkLayerKey: [InkStroke]] = [:]
     private var undoCommands: [InkCommand] = []
     private var redoCommands: [InkCommand] = []
@@ -290,6 +394,42 @@ final class InkLayerState {
 
     init(undoLimit: Int = InkDefaults.undoLimit) {
         self.undoLimit = undoLimit
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case layers
+        case undoCommands
+        case redoCommands
+        case undoLimit
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        layers = try container.decode([InkLayerKey: [InkStroke]].self, forKey: .layers)
+        undoCommands = try container.decode([InkCommand].self, forKey: .undoCommands)
+        redoCommands = try container.decode([InkCommand].self, forKey: .redoCommands)
+        undoLimit = try container.decode(Int.self, forKey: .undoLimit)
+        guard undoLimit > 0 else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .undoLimit,
+                in: container,
+                debugDescription: "Undo limit must be greater than zero"
+            )
+        }
+        if undoCommands.count > undoLimit {
+            undoCommands.removeFirst(undoCommands.count - undoLimit)
+        }
+        if redoCommands.count > undoLimit {
+            redoCommands.removeFirst(redoCommands.count - undoLimit)
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(layers, forKey: .layers)
+        try container.encode(undoCommands, forKey: .undoCommands)
+        try container.encode(redoCommands, forKey: .redoCommands)
+        try container.encode(undoLimit, forKey: .undoLimit)
     }
 
     func execute(_ command: InkCommand) {
@@ -323,6 +463,46 @@ final class InkLayerState {
 
     func strokes(for displayUUID: String) -> [InkStroke] {
         layers[.display(displayUUID)] ?? []
+    }
+
+    func hasRestorableState(for displayUUID: String) -> Bool {
+        !strokes(for: displayUUID).isEmpty
+            || undoCommands.contains { $0.command(for: displayUUID) != nil }
+            || redoCommands.contains { $0.command(for: displayUUID) != nil }
+    }
+
+    func state(for displayUUID: String) -> InkLayerState {
+        let result = InkLayerState(undoLimit: undoLimit)
+        if let strokes = layers[.display(displayUUID)] {
+            result.layers[.display(displayUUID)] = strokes
+        }
+        result.undoCommands = undoCommands.compactMap { $0.command(for: displayUUID) }
+        result.redoCommands = redoCommands.compactMap { $0.command(for: displayUUID) }
+        return result
+    }
+
+    func mergeDisplayState(_ archivedState: InkLayerState, displayUUID: String) {
+        layers[.display(displayUUID)] = archivedState.strokes(for: displayUUID)
+        undoCommands = undoCommands.compactMap { $0.excluding(displayUUID: displayUUID) }
+        redoCommands = redoCommands.compactMap { $0.excluding(displayUUID: displayUUID) }
+        undoCommands.append(
+            contentsOf: archivedState.undoCommands.compactMap { $0.command(for: displayUUID) }
+        )
+        redoCommands.append(
+            contentsOf: archivedState.redoCommands.compactMap { $0.command(for: displayUUID) }
+        )
+        if undoCommands.count > undoLimit {
+            undoCommands.removeFirst(undoCommands.count - undoLimit)
+        }
+        if redoCommands.count > undoLimit {
+            redoCommands.removeFirst(redoCommands.count - undoLimit)
+        }
+    }
+
+    func removeDisplay(_ displayUUID: String) {
+        layers.removeValue(forKey: .display(displayUUID))
+        undoCommands = undoCommands.compactMap { $0.excluding(displayUUID: displayUUID) }
+        redoCommands = redoCommands.compactMap { $0.excluding(displayUUID: displayUUID) }
     }
 }
 

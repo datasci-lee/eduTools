@@ -1,6 +1,20 @@
 import AppKit
 import Foundation
 
+enum DisplayDisconnectPolicy: String, CaseIterable {
+    case archive
+    case moveToPrimary
+    case delete
+
+    var displayName: String {
+        switch self {
+        case .archive: return "보관"
+        case .moveToPrimary: return "주 화면으로 옮기기"
+        case .delete: return "삭제"
+        }
+    }
+}
+
 final class AppState {
     typealias AnnotationModeObserver = (Bool) -> Void
     typealias ToolObserver = (InkTool) -> Void
@@ -36,20 +50,42 @@ final class AppState {
     private let defaults: UserDefaults
     private var zoomPreviewOrigin: (center: CGPoint, magnification: CGFloat)?
 
+    var archiveBeforeRemoval: ((Set<String>) -> Bool)?
+
     private enum DefaultsKey {
         static let lastZoomMagnification = "EduTools.zoom.lastMagnification"
         static let showsHelpInSharing = "EduTools.sharing.showsHelp"
+        static let autoArchiveEnabled = "EduTools.archive.autoEnabled"
+        static let clearsInkWhenAnnotationModeEnds = "EduTools.annotation.clearsOnExit"
+        static let displayDisconnectPolicy = "EduTools.display.disconnectPolicy"
+        static let automaticallyRestoresDisconnectedDisplays = "EduTools.display.autoRestore"
     }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         showsHelpInSharing = defaults.bool(forKey: DefaultsKey.showsHelpInSharing)
+        autoArchiveEnabled = defaults.object(forKey: DefaultsKey.autoArchiveEnabled) == nil
+            ? true
+            : defaults.bool(forKey: DefaultsKey.autoArchiveEnabled)
+        clearsInkWhenAnnotationModeEnds = defaults.bool(
+            forKey: DefaultsKey.clearsInkWhenAnnotationModeEnds
+        )
+        displayDisconnectPolicy = defaults.string(
+            forKey: DefaultsKey.displayDisconnectPolicy
+        ).flatMap(DisplayDisconnectPolicy.init(rawValue:)) ?? .archive
+        automaticallyRestoresDisconnectedDisplays = defaults.bool(
+            forKey: DefaultsKey.automaticallyRestoresDisconnectedDisplays
+        )
     }
 
     private(set) var activeDisplayUUID: String?
     private(set) var presentedBoard: BoardPresentation?
     private(set) var blackboardBackground = BlackboardBackground.black
     private(set) var boardBackgroundPattern = BoardBackgroundPattern.none
+    private(set) var autoArchiveEnabled: Bool
+    private(set) var clearsInkWhenAnnotationModeEnds: Bool
+    private(set) var displayDisconnectPolicy: DisplayDisconnectPolicy
+    private(set) var automaticallyRestoresDisconnectedDisplays: Bool
     private(set) var zoomSession: ZoomSessionState? {
         didSet {
             guard oldValue != zoomSession else { return }
@@ -194,11 +230,39 @@ final class AppState {
     }
 
     func toggleAnnotationMode() {
-        isAnnotationModeEnabled.toggle()
+        setAnnotationModeEnabled(!isAnnotationModeEnabled)
     }
 
     func setAnnotationModeEnabled(_ isEnabled: Bool) {
+        guard isAnnotationModeEnabled != isEnabled else { return }
+        if !isEnabled, clearsInkWhenAnnotationModeEnds, hasVisibleInk {
+            guard clearAllInk() else { return }
+        }
         isAnnotationModeEnabled = isEnabled
+    }
+
+    func setAutoArchiveEnabled(_ isEnabled: Bool) {
+        guard autoArchiveEnabled != isEnabled else { return }
+        autoArchiveEnabled = isEnabled
+        defaults.set(isEnabled, forKey: DefaultsKey.autoArchiveEnabled)
+    }
+
+    func setClearsInkWhenAnnotationModeEnds(_ isEnabled: Bool) {
+        guard clearsInkWhenAnnotationModeEnds != isEnabled else { return }
+        clearsInkWhenAnnotationModeEnds = isEnabled
+        defaults.set(isEnabled, forKey: DefaultsKey.clearsInkWhenAnnotationModeEnds)
+    }
+
+    func setDisplayDisconnectPolicy(_ policy: DisplayDisconnectPolicy) {
+        guard displayDisconnectPolicy != policy else { return }
+        displayDisconnectPolicy = policy
+        defaults.set(policy.rawValue, forKey: DefaultsKey.displayDisconnectPolicy)
+    }
+
+    func setAutomaticallyRestoresDisconnectedDisplays(_ isEnabled: Bool) {
+        guard automaticallyRestoresDisconnectedDisplays != isEnabled else { return }
+        automaticallyRestoresDisconnectedDisplays = isEnabled
+        defaults.set(isEnabled, forKey: DefaultsKey.automaticallyRestoresDisconnectedDisplays)
     }
 
     func togglePaletteVisibility() {
@@ -353,10 +417,10 @@ final class AppState {
 
     func activateLaserShortcut() {
         if isAnnotationModeEnabled, currentTool == .laser {
-            isAnnotationModeEnabled = false
+            setAnnotationModeEnabled(false)
         } else {
             selectTool(.laser)
-            isAnnotationModeEnabled = true
+            setAnnotationModeEnabled(true)
         }
     }
 
@@ -497,13 +561,19 @@ final class AppState {
         knownDisplayUUIDs.insert(displayUUID)
         let before = strokes(for: displayUUID)
         guard !before.isEmpty else { return false }
+        if autoArchiveEnabled,
+           archiveBeforeRemoval?([displayUUID]) == false
+        {
+            return false
+        }
+        let archivedBefore = strokes(for: displayUUID)
         if let document = presentedBoardDocument(on: displayUUID) {
             _ = document.clear()
         } else {
             inkState.execute(
                 .replaceDisplayStrokes(
                     displayUUID: displayUUID,
-                    before: before,
+                    before: archivedBefore,
                     after: []
                 )
             )
@@ -523,17 +593,104 @@ final class AppState {
     func clearAllInk() -> Bool {
         if let presentedBoard {
             let document = boardDocument(for: presentedBoard.kind)
+            guard !document.strokes.isEmpty else { return false }
+            if autoArchiveEnabled,
+               archiveBeforeRemoval?([presentedBoard.displayUUID]) == false
+            {
+                return false
+            }
             guard document.clear() else { return false }
             selectedStrokeIdentifiersByDisplay[presentedBoard.displayUUID] = []
             notifyInkObservers(displayUUID: presentedBoard.displayUUID, change: .rebuilt)
             return true
         }
         let before = inkState.allDisplayStrokes
-        guard before.values.contains(where: { !$0.isEmpty }) else { return false }
+        let affectedDisplays = Set(before.compactMap { entry in
+            entry.value.isEmpty ? nil : entry.key
+        })
+        guard !affectedDisplays.isEmpty else { return false }
+        if autoArchiveEnabled,
+           archiveBeforeRemoval?(affectedDisplays) == false
+        {
+            return false
+        }
         inkState.execute(.replaceAllDisplayStrokes(before: before, after: [:]))
         selectedStrokeIdentifiersByDisplay.removeAll(keepingCapacity: true)
         notifyAllInkObservers()
         return true
+    }
+
+    var hasVisibleInk: Bool {
+        if let presentedBoard {
+            return !boardDocument(for: presentedBoard.kind).strokes.isEmpty
+        }
+        return inkState.allDisplayStrokes.values.contains { !$0.isEmpty }
+    }
+
+    func screenStrokes(for displayUUID: String) -> [InkStroke] {
+        inkState.strokes(for: displayUUID)
+    }
+
+    func hasRestorableScreenState(for displayUUID: String) -> Bool {
+        inkState.hasRestorableState(for: displayUUID)
+    }
+
+    func encodedScreenInk(for displayUUID: String) throws -> Data {
+        try Self.archiveEncoder.encode(inkState.state(for: displayUUID))
+    }
+
+    func encodedVisibleContent(on displayUUID: String) throws -> Data {
+        if let document = presentedBoardDocument(on: displayUUID) {
+            return try Self.archiveEncoder.encode(document)
+        }
+        return try encodedScreenInk(for: displayUUID)
+    }
+
+    func restoreScreenInk(from data: Data, to displayUUID: String) throws {
+        let archivedState = try JSONDecoder().decode(InkLayerState.self, from: data)
+        guard archivedState.hasRestorableState(for: displayUUID) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        knownDisplayUUIDs.insert(displayUUID)
+        inkState.mergeDisplayState(archivedState, displayUUID: displayUUID)
+        notifyInkObservers(displayUUID: displayUUID, change: .rebuilt)
+    }
+
+    func discardScreenInk(on displayUUID: String) {
+        inkState.removeDisplay(displayUUID)
+        selectedStrokeIdentifiersByDisplay.removeValue(forKey: displayUUID)
+        notifyInkObservers(displayUUID: displayUUID, change: .rebuilt)
+    }
+
+    @discardableResult
+    func moveScreenInk(from sourceDisplayUUID: String, to destinationDisplayUUID: String) -> Bool {
+        guard sourceDisplayUUID != destinationDisplayUUID else { return false }
+        let sourceStrokes = inkState.strokes(for: sourceDisplayUUID)
+        guard !sourceStrokes.isEmpty else {
+            inkState.removeDisplay(sourceDisplayUUID)
+            return false
+        }
+        let before = inkState.allDisplayStrokes
+        var after = before
+        after.removeValue(forKey: sourceDisplayUUID)
+        after[destinationDisplayUUID] = (before[destinationDisplayUUID] ?? []) + sourceStrokes
+        inkState.execute(.replaceAllDisplayStrokes(before: before, after: after))
+        knownDisplayUUIDs.insert(destinationDisplayUUID)
+        selectedStrokeIdentifiersByDisplay.removeValue(forKey: sourceDisplayUUID)
+        selectedStrokeIdentifiersByDisplay[destinationDisplayUUID] = []
+        notifyInkObservers(displayUUID: sourceDisplayUUID, change: .rebuilt)
+        notifyInkObservers(displayUUID: destinationDisplayUUID, change: .rebuilt)
+        return true
+    }
+
+    func boardPages(for kind: BoardKind) -> [[InkStroke]] {
+        boardDocument(for: kind).allPageStrokes
+    }
+
+    private static var archiveEncoder: JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return encoder
     }
 
     func setActiveDisplay(_ displayUUID: String) {

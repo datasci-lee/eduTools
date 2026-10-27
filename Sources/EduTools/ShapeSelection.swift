@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-enum ArrowStyle: String, Equatable {
+enum ArrowStyle: String, Equatable, Codable {
     case single
     case double
 
@@ -17,19 +17,19 @@ enum ArrowStyle: String, Equatable {
     }
 }
 
-enum InkShapeKind: Equatable {
+enum InkShapeKind: Equatable, Codable {
     case line
     case arrow(ArrowStyle)
     case rectangle
     case ellipse
 }
 
-struct InkTextContent: Equatable {
+struct InkTextContent: Equatable, Codable {
     let string: String
     let fontSize: CGFloat
 }
 
-enum InkStrokeContent: Equatable {
+enum InkStrokeContent: Equatable, Codable {
     case freehand
     case shape(InkShapeKind)
     case text(InkTextContent)

@@ -25,6 +25,7 @@ final class OverlayController {
     private var refreshWorkItem: DispatchWorkItem?
     private var callbackRegistered = false
     private var previouslyFrontmostApplication: NSRunningApplication?
+    weak var archiveController: ArchiveController?
 
     init(state: AppState, dispatcher: AppCommandDispatcher) {
         self.state = state
@@ -68,16 +69,21 @@ final class OverlayController {
             currentScreens[identifier] = screen
         }
 
+        let removedIdentifiers = panelsByDisplayUUID.keys.filter { currentScreens[$0] == nil }
+        for identifier in removedIdentifiers {
+            (panelsByDisplayUUID[identifier]?.contentView as? InkView)?.finishActiveInteraction()
+            archiveController?.displayWasRemoved(
+                identifier,
+                primaryDisplayUUID: primaryDisplayUUID(in: currentScreens)
+            )
+            panelsByDisplayUUID.removeValue(forKey: identifier)?.close()
+        }
+
         if let presentedBoard = state.presentedBoard,
            currentScreens[presentedBoard.displayUUID] == nil,
            let fallbackDisplayUUID = preferredDisplayUUID(in: currentScreens)
         {
             state.relocatePresentedBoard(to: fallbackDisplayUUID)
-        }
-
-        let removedIdentifiers = panelsByDisplayUUID.keys.filter { currentScreens[$0] == nil }
-        for identifier in removedIdentifiers {
-            panelsByDisplayUUID.removeValue(forKey: identifier)?.close()
         }
 
         for (identifier, screen) in currentScreens {
@@ -92,6 +98,7 @@ final class OverlayController {
                     displayUUID: identifier
                 )
             }
+            archiveController?.restoreDisconnectedDisplayIfNeeded(identifier)
         }
 
         if state.isAnnotationModeEnabled {
@@ -179,6 +186,52 @@ final class OverlayController {
         return panelsByDisplayUUID.first(where: { $0.value.frame.contains(mouseLocation) })?.key
     }
 
+    var connectedDisplayUUIDs: [String] {
+        Array(panelsByDisplayUUID.keys)
+    }
+
+    func screen(for identifier: String) -> NSScreen? {
+        panelsByDisplayUUID[identifier]?.screen
+            ?? NSScreen.screens.first { displayUUID(for: $0) == identifier }
+    }
+
+    func finishActiveInteraction(on displayUUID: String) {
+        (panelsByDisplayUUID[displayUUID]?.contentView as? InkView)?.finishActiveInteraction()
+    }
+
+    func finishAllActiveInteractions() {
+        for panel in panelsByDisplayUUID.values {
+            (panel.contentView as? InkView)?.finishActiveInteraction()
+        }
+    }
+
+    func renderedInkImage(
+        for displayUUID: String,
+        strokes: [InkStroke]? = nil,
+        boardKind: BoardKind? = nil,
+        pixelSize: CGSize? = nil
+    ) -> CGImage? {
+        guard let panel = panelsByDisplayUUID[displayUUID],
+              let inkView = panel.contentView as? InkView
+        else {
+            return nil
+        }
+        let scale = panel.screen?.backingScaleFactor ?? 1
+        let targetPixelSize = pixelSize ?? CGSize(
+            width: panel.frame.width * scale,
+            height: panel.frame.height * scale
+        )
+        return inkView.renderedImage(
+            strokes: strokes,
+            boardKind: boardKind,
+            pixelSize: targetPixelSize
+        )
+    }
+
+    func refreshAfterWake() {
+        displayConfigurationDidChange()
+    }
+
     func focusPanelForBoard(on displayUUID: String) {
         focusPanel(displayUUID: displayUUID)
     }
@@ -218,6 +271,16 @@ final class OverlayController {
             return displayUnderMouse
         }
         return NSScreen.screens.compactMap(displayUUID(for:)).first
+    }
+
+    private func primaryDisplayUUID(in screens: [String: NSScreen]) -> String? {
+        guard let primaryScreen = NSScreen.screens.first,
+              let identifier = displayUUID(for: primaryScreen),
+              screens[identifier] != nil
+        else {
+            return nil
+        }
+        return identifier
     }
 
     deinit {

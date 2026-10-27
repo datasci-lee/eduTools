@@ -107,6 +107,89 @@ final class StatusMenu: NSObject {
         menu.addItem(clearCurrentDisplayItem)
         menu.addItem(.separator())
 
+        let savePNGItem = NSMenuItem(
+            title: "PNG로 저장",
+            action: #selector(savePNG(_:)),
+            keyEquivalent: ""
+        )
+        savePNGItem.target = self
+        menu.addItem(savePNGItem)
+
+        let saveBoardPDFItem = NSMenuItem(
+            title: "보드를 PDF로 저장",
+            action: #selector(saveBoardPDF(_:)),
+            keyEquivalent: ""
+        )
+        saveBoardPDFItem.target = self
+        menu.addItem(saveBoardPDFItem)
+
+        let copyImageItem = NSMenuItem(
+            title: "클립보드 복사",
+            action: #selector(copyCurrentImage(_:)),
+            keyEquivalent: ""
+        )
+        copyImageItem.target = self
+        applyShortcut(.copyCurrentImage, scope: .annotation, to: copyImageItem)
+        menu.addItem(copyImageItem)
+        menu.addItem(.separator())
+
+        let archiveSettingsItem = NSMenuItem(
+            title: "보관·복원 설정",
+            action: nil,
+            keyEquivalent: ""
+        )
+        let archiveSettingsMenu = NSMenu()
+        let autoArchiveItem = NSMenuItem(
+            title: "지우기 전 자동 보관",
+            action: #selector(toggleAutoArchive(_:)),
+            keyEquivalent: ""
+        )
+        autoArchiveItem.target = self
+        autoArchiveItem.state = state.autoArchiveEnabled ? .on : .off
+        archiveSettingsMenu.addItem(autoArchiveItem)
+
+        let clearOnExitItem = NSMenuItem(
+            title: "판서 모드를 끌 때 내용 삭제",
+            action: #selector(toggleClearOnAnnotationExit(_:)),
+            keyEquivalent: ""
+        )
+        clearOnExitItem.target = self
+        clearOnExitItem.state = state.clearsInkWhenAnnotationModeEnds ? .on : .off
+        archiveSettingsMenu.addItem(clearOnExitItem)
+
+        let autoRestoreItem = NSMenuItem(
+            title: "다시 연결하면 자동 복원",
+            action: #selector(toggleAutomaticRestore(_:)),
+            keyEquivalent: ""
+        )
+        autoRestoreItem.target = self
+        autoRestoreItem.state = state.automaticallyRestoresDisconnectedDisplays ? .on : .off
+        archiveSettingsMenu.addItem(autoRestoreItem)
+        archiveSettingsMenu.addItem(.separator())
+
+        let disconnectPolicyItem = NSMenuItem(
+            title: "화면 연결 해제 시",
+            action: nil,
+            keyEquivalent: ""
+        )
+        let disconnectPolicyMenu = NSMenu()
+        for policy in DisplayDisconnectPolicy.allCases {
+            let item = NSMenuItem(
+                title: policy.displayName,
+                action: #selector(selectDisconnectPolicy(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = policy.rawValue
+            item.state = state.displayDisconnectPolicy == policy ? .on : .off
+            disconnectPolicyMenu.addItem(item)
+        }
+        disconnectPolicyItem.submenu = disconnectPolicyMenu
+        archiveSettingsMenu.addItem(disconnectPolicyItem)
+        archiveSettingsItem.submenu = archiveSettingsMenu
+        menu.addItem(archiveSettingsItem)
+        menu.addItem(.separator())
+
         let helpItem = NSMenuItem(
             title: "도움말",
             action: #selector(showHelp(_:)),
@@ -195,7 +278,7 @@ final class StatusMenu: NSObject {
     }
 
     @objc private func toggleAnnotationMode(_ sender: Any?) {
-        state.toggleAnnotationMode()
+        dispatcher.execute(.toggleAnnotationMode, scope: .global)
     }
 
     @objc private func toggleZoom(_ sender: Any?) {
@@ -223,7 +306,7 @@ final class StatusMenu: NSObject {
     }
 
     @objc private func clearAllInk(_ sender: Any?) {
-        state.clearAllInk()
+        dispatcher.execute(.clearAll, scope: .annotation)
     }
 
     @objc private func toggleLessonTimer(_ sender: Any?) {
@@ -235,7 +318,50 @@ final class StatusMenu: NSObject {
     }
 
     @objc private func clearCurrentDisplayInk(_ sender: Any?) {
+        dispatcher.overlayController?.finishAllActiveInteractions()
         state.clearCurrentDisplayInk()
+    }
+
+    @objc private func savePNG(_ sender: Any?) {
+        dispatcher.exportController?.savePNG()
+    }
+
+    @objc private func saveBoardPDF(_ sender: Any?) {
+        dispatcher.exportController?.saveBoardPDF()
+    }
+
+    @objc private func copyCurrentImage(_ sender: Any?) {
+        dispatcher.execute(.copyCurrentImage, scope: .annotation)
+    }
+
+    @objc private func toggleAutoArchive(_ sender: NSMenuItem) {
+        state.setAutoArchiveEnabled(!state.autoArchiveEnabled)
+        sender.state = state.autoArchiveEnabled ? .on : .off
+    }
+
+    @objc private func toggleClearOnAnnotationExit(_ sender: NSMenuItem) {
+        state.setClearsInkWhenAnnotationModeEnds(!state.clearsInkWhenAnnotationModeEnds)
+        sender.state = state.clearsInkWhenAnnotationModeEnds ? .on : .off
+    }
+
+    @objc private func toggleAutomaticRestore(_ sender: NSMenuItem) {
+        state.setAutomaticallyRestoresDisconnectedDisplays(
+            !state.automaticallyRestoresDisconnectedDisplays
+        )
+        sender.state = state.automaticallyRestoresDisconnectedDisplays ? .on : .off
+    }
+
+    @objc private func selectDisconnectPolicy(_ sender: NSMenuItem) {
+        guard let rawValue = sender.representedObject as? String,
+              let policy = DisplayDisconnectPolicy(rawValue: rawValue)
+        else {
+            NSLog("EduTools: invalid display disconnect policy menu item")
+            return
+        }
+        state.setDisplayDisconnectPolicy(policy)
+        for item in sender.menu?.items ?? [] {
+            item.state = item === sender ? .on : .off
+        }
     }
 
     @objc private func showHelp(_ sender: Any?) {

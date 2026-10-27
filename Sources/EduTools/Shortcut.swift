@@ -102,6 +102,8 @@ enum AppCommand: Hashable {
     case redo
     case clearAll
     case deleteSelection
+    case saveCurrentContent
+    case copyCurrentImage
     case togglePalette
     case stepBack
     case showHelp
@@ -518,6 +520,38 @@ enum ShortcutCatalog {
                         keyCode: kVK_Delete,
                         keyEquivalent: "\u{8}",
                         keyCap: "⌫"
+                    )
+                ]
+            ),
+            ShortcutDefinition(
+                id: "export.save",
+                name: "PNG 저장 / 보드 PDF 저장",
+                iconName: "square.and.arrow.down",
+                group: .editing,
+                modes: [.annotation],
+                command: .saveCurrentContent,
+                bindings: [
+                    .annotation(
+                        keyCode: kVK_ANSI_S,
+                        keyEquivalent: "s",
+                        modifiers: .command,
+                        keyCap: "⌘S"
+                    )
+                ]
+            ),
+            ShortcutDefinition(
+                id: "export.copy",
+                name: "클립보드 복사",
+                iconName: "doc.on.doc",
+                group: .editing,
+                modes: [.annotation],
+                command: .copyCurrentImage,
+                bindings: [
+                    .annotation(
+                        keyCode: kVK_ANSI_C,
+                        keyEquivalent: "c",
+                        modifiers: .command,
+                        keyCap: "⌘C"
                     )
                 ]
             ),
