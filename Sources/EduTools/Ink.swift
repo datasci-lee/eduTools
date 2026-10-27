@@ -5,12 +5,14 @@ enum InkTool: String {
     case pen
     case highlighter
     case laser
+    case eraser
 
     var displayName: String {
         switch self {
         case .pen: return "펜"
         case .highlighter: return "형광펜"
         case .laser: return "레이저"
+        case .eraser: return "지우개"
         }
     }
 }
@@ -39,6 +41,68 @@ enum InkDefaults {
     static let undoLimit = 100
 }
 
+enum EraserMode: CaseIterable {
+    case partial
+    case stroke
+    case area
+
+    var displayName: String {
+        switch self {
+        case .partial: return "부분 지우기"
+        case .stroke: return "획 단위 지우기"
+        case .area: return "영역 지우기"
+        }
+    }
+
+    var next: EraserMode {
+        switch self {
+        case .partial: return .stroke
+        case .stroke: return .area
+        case .area: return .partial
+        }
+    }
+}
+
+enum EraserHitRule {
+    case touching
+    case contained
+}
+
+enum EraserTargetFilter {
+    case all
+    case penOnly
+    case highlighterOnly
+
+    func includes(_ tool: InkStrokeTool) -> Bool {
+        switch self {
+        case .all:
+            return true
+        case .penOnly:
+            return tool == .pen
+        case .highlighterOnly:
+            return tool == .highlighter
+        }
+    }
+}
+
+enum EraserDefaults {
+    static let minimumDiameter: CGFloat = 8
+    static let maximumDiameter: CGFloat = 200
+    static let presetDiameters: [CGFloat] = [12, 24, 60]
+    static let defaultDiameter = presetDiameters[1]
+    static let diameterAdjustmentStep: CGFloat = 2
+    static let defaultMode = EraserMode.partial
+    static let defaultHitRule = EraserHitRule.touching
+    static let defaultTargetFilter = EraserTargetFilter.all
+}
+
+struct EraserSettings {
+    let diameter: CGFloat
+    let mode: EraserMode
+    let hitRule: EraserHitRule
+    let targetFilter: EraserTargetFilter
+}
+
 struct InkPoint: Equatable {
     let location: CGPoint
     let pressure: CGFloat
@@ -61,6 +125,7 @@ struct InkStroke {
     let width: CGFloat
     let usesPressure: Bool
     let points: [InkPoint]
+    let pointBounds: CGRect
 
     init(
         identifier: UUID = UUID(),
@@ -76,42 +141,108 @@ struct InkStroke {
         self.width = width
         self.usesPressure = usesPressure
         self.points = points
+        pointBounds = points.reduce(CGRect.null) { bounds, point in
+            bounds.union(CGRect(origin: point.location, size: .zero))
+        }
     }
+}
+
+private enum InkLayerKey: Hashable {
+    case legacy
+    case display(String)
 }
 
 enum InkCommand {
     case addStroke(InkStroke)
+    case addDisplayStroke(displayUUID: String, stroke: InkStroke)
+    case replaceDisplayStrokes(
+        displayUUID: String,
+        before: [InkStroke],
+        after: [InkStroke]
+    )
+    case replaceAllDisplayStrokes(
+        before: [String: [InkStroke]],
+        after: [String: [InkStroke]]
+    )
 
-    func apply(to strokes: inout [InkStroke]) {
+    fileprivate func apply(to layers: inout [InkLayerKey: [InkStroke]]) {
         switch self {
         case let .addStroke(stroke):
-            strokes.append(stroke)
+            layers[.legacy, default: []].append(stroke)
+        case let .addDisplayStroke(displayUUID, stroke):
+            layers[.display(displayUUID), default: []].append(stroke)
+        case let .replaceDisplayStrokes(displayUUID, _, after):
+            layers[.display(displayUUID)] = after
+        case let .replaceAllDisplayStrokes(_, after):
+            replaceDisplayLayers(in: &layers, with: after)
         }
     }
 
-    func revert(on strokes: inout [InkStroke]) {
+    fileprivate func revert(on layers: inout [InkLayerKey: [InkStroke]]) {
         switch self {
         case let .addStroke(stroke):
-            guard let index = strokes.lastIndex(where: { $0.identifier == stroke.identifier }) else {
+            guard let index = layers[.legacy]?.lastIndex(where: {
+                $0.identifier == stroke.identifier
+            }) else {
                 return
             }
-            strokes.remove(at: index)
+            layers[.legacy]?.remove(at: index)
+        case let .addDisplayStroke(displayUUID, stroke):
+            let key = InkLayerKey.display(displayUUID)
+            guard let index = layers[key]?.lastIndex(where: {
+                $0.identifier == stroke.identifier
+            }) else {
+                return
+            }
+            layers[key]?.remove(at: index)
+        case let .replaceDisplayStrokes(displayUUID, before, _):
+            layers[.display(displayUUID)] = before
+        case let .replaceAllDisplayStrokes(before, _):
+            replaceDisplayLayers(in: &layers, with: before)
+        }
+    }
+
+    private func replaceDisplayLayers(
+        in layers: inout [InkLayerKey: [InkStroke]],
+        with replacements: [String: [InkStroke]]
+    ) {
+        for key in Array(layers.keys) {
+            if case .display = key {
+                layers.removeValue(forKey: key)
+            }
+        }
+        for (displayUUID, strokes) in replacements {
+            layers[.display(displayUUID)] = strokes
         }
     }
 }
 
 final class InkLayerState {
-    private(set) var strokes: [InkStroke] = []
+    private var layers: [InkLayerKey: [InkStroke]] = [:]
     private var undoCommands: [InkCommand] = []
     private var redoCommands: [InkCommand] = []
     private let undoLimit: Int
+
+    var strokes: [InkStroke] {
+        layers[.legacy] ?? []
+    }
+
+    var allDisplayStrokes: [String: [InkStroke]] {
+        var result: [String: [InkStroke]] = [:]
+        for (key, strokes) in layers {
+            if case let .display(displayUUID) = key {
+                result[displayUUID] = strokes
+            }
+        }
+        return result
+    }
 
     init(undoLimit: Int = InkDefaults.undoLimit) {
         self.undoLimit = undoLimit
     }
 
     func execute(_ command: InkCommand) {
-        command.apply(to: &strokes)
+        command.apply(to: &layers)
         undoCommands.append(command)
         if undoCommands.count > undoLimit {
             undoCommands.removeFirst(undoCommands.count - undoLimit)
@@ -122,7 +253,7 @@ final class InkLayerState {
     @discardableResult
     func undo() -> Bool {
         guard let command = undoCommands.popLast() else { return false }
-        command.revert(on: &strokes)
+        command.revert(on: &layers)
         redoCommands.append(command)
         return true
     }
@@ -130,13 +261,17 @@ final class InkLayerState {
     @discardableResult
     func redo() -> Bool {
         guard let command = redoCommands.popLast() else { return false }
-        command.apply(to: &strokes)
+        command.apply(to: &layers)
         undoCommands.append(command)
         return true
     }
 
     var canRedo: Bool {
         !redoCommands.isEmpty
+    }
+
+    func strokes(for displayUUID: String) -> [InkStroke] {
+        layers[.display(displayUUID)] ?? []
     }
 }
 

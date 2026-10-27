@@ -180,6 +180,7 @@ final class OverlayController {
         else {
             return
         }
+        state.setActiveDisplay(displayUUID)
         panel.makeKeyAndOrderFront(nil)
         panel.makeFirstResponder(panel.contentView)
     }

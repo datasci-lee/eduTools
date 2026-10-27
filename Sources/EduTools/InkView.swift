@@ -78,13 +78,23 @@ final class InkView: NSView {
         var points: [InkPoint]
     }
 
+    private struct ActiveEraser {
+        let settings: EraserSettings
+        var points: [CGPoint]
+    }
+
     private let state: AppState
     private let displayUUID: String
     private let requestKeyFocus: () -> Void
     private let completedLayer = CALayer()
     private let activeLayer = CALayer()
     private let laserRenderer = LaserRenderer()
+    private let eraserCursorLayer = CAShapeLayer()
+    private let eraserModeLayer = CATextLayer()
     private var activeStroke: ActiveStroke?
+    private var activeEraser: ActiveEraser?
+    private var lastPointerLocation: CGPoint?
+    private var eraserModePresentation = 0
     private var trackingAreaReference: NSTrackingArea?
     private var inkObserverIdentifier: UUID?
     private var modeObserverIdentifier: UUID?
@@ -108,6 +118,9 @@ final class InkView: NSView {
         layer?.addSublayer(completedLayer)
         layer?.addSublayer(activeLayer)
         layer?.addSublayer(laserRenderer.layer)
+        configureEraserLayers()
+        layer?.addSublayer(eraserCursorLayer)
+        layer?.addSublayer(eraserModeLayer)
 
         inkObserverIdentifier = state.addInkObserver { [weak self] changedDisplayUUID, change in
             guard let self, changedDisplayUUID == self.displayUUID else { return }
@@ -122,11 +135,17 @@ final class InkView: NSView {
             if !isEnabled {
                 self?.cancelActiveStroke()
                 self?.laserRenderer.clear()
+                self?.eraserCursorLayer.isHidden = true
             }
         }
         toolObserverIdentifier = state.addToolObserver { [weak self] tool in
             if tool != .laser {
                 self?.laserRenderer.clear()
+            }
+            if tool == .eraser, let location = self?.lastPointerLocation {
+                self?.showEraserCursor(at: location)
+            } else if tool != .eraser {
+                self?.eraserCursorLayer.isHidden = true
             }
         }
         rebuildCompletedLayers()
@@ -144,6 +163,7 @@ final class InkView: NSView {
         completedLayer.frame = bounds
         activeLayer.frame = bounds
         laserRenderer.layer.frame = bounds
+        layoutEraserModeLayer()
         CATransaction.commit()
     }
 
@@ -176,24 +196,47 @@ final class InkView: NSView {
 
     override func mouseEntered(with event: NSEvent) {
         requestKeyFocus()
-        if state.currentTool == .laser {
-            laserRenderer.move(to: localLocation(for: event))
+        let location = localLocation(for: event)
+        lastPointerLocation = location
+        if usesEraser(for: event) {
+            showEraserCursor(at: location)
+        } else if state.currentTool == .laser {
+            laserRenderer.move(to: location)
         }
     }
 
     override func mouseExited(with event: NSEvent) {
         laserRenderer.hideCurrent()
+        eraserCursorLayer.isHidden = true
     }
 
     override func mouseMoved(with event: NSEvent) {
         requestKeyFocus()
-        guard state.isAnnotationModeEnabled, state.currentTool == .laser else { return }
-        laserRenderer.move(to: localLocation(for: event))
+        let location = localLocation(for: event)
+        lastPointerLocation = location
+        guard state.isAnnotationModeEnabled else { return }
+        if usesEraser(for: event) {
+            laserRenderer.hideCurrent()
+            showEraserCursor(at: location)
+        } else {
+            eraserCursorLayer.isHidden = true
+            if state.currentTool == .laser {
+                laserRenderer.move(to: location)
+            }
+        }
     }
 
     override func mouseDown(with event: NSEvent) {
         requestKeyFocus()
         guard state.isAnnotationModeEnabled else { return }
+
+        let location = localLocation(for: event)
+        lastPointerLocation = location
+        if usesEraser(for: event) {
+            beginEraser(at: location)
+            showEraserCursor(at: location)
+            return
+        }
 
         let strokeTool: InkStrokeTool
         let width: CGFloat
@@ -205,6 +248,8 @@ final class InkView: NSView {
             strokeTool = .highlighter
             width = state.highlighterWidth
         case .laser:
+            return
+        case .eraser:
             return
         }
 
@@ -221,18 +266,49 @@ final class InkView: NSView {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        let location = localLocation(for: event)
+        lastPointerLocation = location
+        if activeEraser != nil {
+            appendActiveEraserPoint(location)
+            showEraserCursor(at: location)
+            return
+        }
         appendActivePoint(from: event)
     }
 
     override func mouseUp(with event: NSEvent) {
+        if activeEraser != nil {
+            let location = localLocation(for: event)
+            lastPointerLocation = location
+            appendActiveEraserPoint(location)
+            finishActiveEraser()
+            showEraserCursor(at: location)
+            return
+        }
         guard activeStroke != nil else { return }
         appendActivePoint(from: event)
         finishActiveStroke()
     }
 
+    override func scrollWheel(with event: NSEvent) {
+        guard state.isAnnotationModeEnabled, state.currentTool == .eraser else {
+            super.scrollWheel(with: event)
+            return
+        }
+        let delta = event.scrollingDeltaY
+        guard delta != 0 else { return }
+        state.adjustCurrentToolWidth(by: delta > 0 ? 1 : -1)
+        showEraserCursor(at: localLocation(for: event))
+    }
+
     override func keyDown(with event: NSEvent) {
         let keyCode = Int(event.keyCode)
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+
+        if keyCode == kVK_Delete, modifiers == .command {
+            _ = state.clearAllInk()
+            return
+        }
 
         if keyCode == kVK_ANSI_Z, modifiers.contains(.command) {
             if modifiers.contains(.shift) {
@@ -256,6 +332,9 @@ final class InkView: NSView {
             state.selectTool(.highlighter)
         case kVK_ANSI_L:
             state.selectTool(.laser)
+        case kVK_ANSI_E:
+            let mode = state.selectOrCycleEraser()
+            showEraserMode(mode)
         case kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3,
              kVK_ANSI_4, kVK_ANSI_5, kVK_ANSI_6:
             let colorKeyCodes = [
@@ -271,8 +350,10 @@ final class InkView: NSView {
             }
         case kVK_ANSI_LeftBracket:
             state.adjustCurrentToolWidth(by: -1)
+            refreshEraserCursorIfNeeded()
         case kVK_ANSI_RightBracket:
             state.adjustCurrentToolWidth(by: 1)
+            refreshEraserCursorIfNeeded()
         default:
             super.keyDown(with: event)
         }
@@ -287,6 +368,49 @@ final class InkView: NSView {
         stroke.usesPressure = stroke.usesPressure || isTabletEvent(event)
         activeStroke = stroke
         renderActiveStroke()
+    }
+
+    private func beginEraser(at point: CGPoint) {
+        activeStroke = nil
+        activeEraser = ActiveEraser(settings: state.eraserSettings, points: [point])
+        renderActiveEraser()
+    }
+
+    private func appendActiveEraserPoint(_ point: CGPoint) {
+        guard var eraser = activeEraser else { return }
+        if eraser.points.last != point {
+            eraser.points.append(point)
+        }
+        activeEraser = eraser
+        renderActiveEraser()
+    }
+
+    private func finishActiveEraser() {
+        guard let activeEraser, let first = activeEraser.points.first else { return }
+        let gesture: EraserGesture
+        switch activeEraser.settings.mode {
+        case .partial, .stroke:
+            gesture = .sweep(points: activeEraser.points)
+        case .area:
+            let last = activeEraser.points.last ?? first
+            gesture = .area(
+                CGRect(
+                    x: first.x,
+                    y: first.y,
+                    width: last.x - first.x,
+                    height: last.y - first.y
+                )
+            )
+        }
+
+        self.activeEraser = nil
+        activeLayer.sublayers?.forEach { $0.removeFromSuperlayer() }
+        _ = state.erase(
+            gesture,
+            settings: activeEraser.settings,
+            on: displayUUID,
+            canvasSize: bounds.size
+        )
     }
 
     private func finishActiveStroke() {
@@ -306,7 +430,111 @@ final class InkView: NSView {
 
     private func cancelActiveStroke() {
         activeStroke = nil
+        activeEraser = nil
         activeLayer.sublayers?.forEach { $0.removeFromSuperlayer() }
+    }
+
+    private func renderActiveEraser() {
+        activeLayer.sublayers?.forEach { $0.removeFromSuperlayer() }
+        guard let activeEraser,
+              activeEraser.settings.mode == .area,
+              let first = activeEraser.points.first,
+              let last = activeEraser.points.last
+        else {
+            return
+        }
+
+        let rect = CGRect(
+            x: first.x,
+            y: first.y,
+            width: last.x - first.x,
+            height: last.y - first.y
+        ).standardized
+        let shape = CAShapeLayer()
+        shape.frame = bounds
+        shape.path = CGPath(rect: rect, transform: nil)
+        shape.fillColor = NSColor.controlAccentColor.withAlphaComponent(0.12).cgColor
+        shape.strokeColor = NSColor.controlAccentColor.cgColor
+        shape.lineWidth = 1.5
+        shape.lineDashPattern = [6, 4]
+        activeLayer.addSublayer(shape)
+    }
+
+    private func configureEraserLayers() {
+        eraserCursorLayer.fillColor = NSColor.clear.cgColor
+        eraserCursorLayer.strokeColor = NSColor.white.cgColor
+        eraserCursorLayer.lineWidth = 1.5
+        eraserCursorLayer.shadowColor = NSColor.black.cgColor
+        eraserCursorLayer.shadowOpacity = 0.8
+        eraserCursorLayer.shadowRadius = 1
+        eraserCursorLayer.shadowOffset = .zero
+        eraserCursorLayer.isHidden = true
+
+        eraserModeLayer.alignmentMode = .center
+        eraserModeLayer.fontSize = 15
+        eraserModeLayer.foregroundColor = NSColor.white.cgColor
+        eraserModeLayer.backgroundColor = NSColor.black.withAlphaComponent(0.72).cgColor
+        eraserModeLayer.cornerRadius = 8
+        eraserModeLayer.isHidden = true
+    }
+
+    private func showEraserCursor(at location: CGPoint) {
+        let diameter = state.eraserDiameter
+        let cursorBounds = CGRect(x: 0, y: 0, width: diameter, height: diameter)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        eraserCursorLayer.bounds = cursorBounds
+        eraserCursorLayer.position = location
+        eraserCursorLayer.path = CGPath(ellipseIn: cursorBounds, transform: nil)
+        eraserCursorLayer.isHidden = false
+        CATransaction.commit()
+    }
+
+    private func refreshEraserCursorIfNeeded() {
+        guard state.currentTool == .eraser, let lastPointerLocation else { return }
+        showEraserCursor(at: lastPointerLocation)
+    }
+
+    private func showEraserMode(_ mode: EraserMode) {
+        eraserModePresentation += 1
+        let presentation = eraserModePresentation
+        eraserModeLayer.string = "지우개: \(mode.displayName)"
+        layoutEraserModeLayer()
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        eraserModeLayer.opacity = 1
+        eraserModeLayer.isHidden = false
+        CATransaction.commit()
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+            guard let self, self.eraserModePresentation == presentation else { return }
+            CATransaction.begin()
+            CATransaction.setAnimationDuration(0.2)
+            CATransaction.setCompletionBlock { [weak self] in
+                guard self?.eraserModePresentation == presentation else { return }
+                self?.eraserModeLayer.isHidden = true
+            }
+            self.eraserModeLayer.opacity = 0
+            CATransaction.commit()
+        }
+    }
+
+    private func layoutEraserModeLayer() {
+        let width = min(max(bounds.width - 32, 0), 220)
+        eraserModeLayer.frame = CGRect(
+            x: (bounds.width - width) / 2,
+            y: 24,
+            width: width,
+            height: 32
+        )
+        eraserModeLayer.contentsScale = window?.backingScaleFactor
+            ?? NSScreen.main?.backingScaleFactor
+            ?? 1
+    }
+
+    private func usesEraser(for event: NSEvent) -> Bool {
+        state.currentTool == .eraser || event.pointingDeviceType == .eraser
     }
 
     private func effectivePoints(for stroke: ActiveStroke) -> [InkPoint] {

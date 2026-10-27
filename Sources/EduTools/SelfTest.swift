@@ -178,6 +178,129 @@ func runSelfTests() -> Int32 {
     )
     runner.expect(!redoLayer.canRedo && !redoLayer.redo(), "a new stroke should clear redo history")
 
+    let eraserCanvas = CGSize(width: 1_000, height: 100)
+    let splitStroke = InkStroke(
+        tool: .pen,
+        color: .systemRed,
+        width: 2,
+        usesPressure: false,
+        points: [
+            InkPoint(location: CGPoint(x: 0.1, y: 0.5), pressure: 1, timestamp: 0),
+            InkPoint(location: CGPoint(x: 0.9, y: 0.5), pressure: 1, timestamp: 1),
+        ]
+    )
+    let splitResult = EraserEngine.erase(
+        strokes: [splitStroke],
+        gesture: .sweep(points: [CGPoint(x: 500, y: 50)]),
+        settings: EraserSettings(
+            diameter: 40,
+            mode: .partial,
+            hitRule: .touching,
+            targetFilter: .all
+        ),
+        canvasSize: eraserCanvas
+    )
+    runner.expect(
+        splitResult.count == 2
+            && splitResult[0].points.allSatisfy { $0.location.x < 0.5 }
+            && splitResult[1].points.allSatisfy { $0.location.x > 0.5 },
+        "partial erasing through a stroke center should leave two end fragments"
+    )
+
+    let filterPen = InkStroke(
+        tool: .pen,
+        color: .systemBlue,
+        width: 3,
+        usesPressure: false,
+        points: [InkPoint(location: CGPoint(x: 0.5, y: 0.5), pressure: 1, timestamp: 0)]
+    )
+    let filterHighlighter = InkStroke(
+        tool: .highlighter,
+        color: .systemYellow,
+        width: 18,
+        usesPressure: false,
+        points: [InkPoint(location: CGPoint(x: 0.5, y: 0.5), pressure: 1, timestamp: 0)]
+    )
+    let filteredResult = EraserEngine.erase(
+        strokes: [filterPen, filterHighlighter],
+        gesture: .sweep(points: [CGPoint(x: 500, y: 50)]),
+        settings: EraserSettings(
+            diameter: 24,
+            mode: .stroke,
+            hitRule: .touching,
+            targetFilter: .highlighterOnly
+        ),
+        canvasSize: eraserCanvas
+    )
+    runner.expect(
+        filteredResult.map(\.identifier) == [filterPen.identifier],
+        "highlighter-only stroke erasing should preserve a touched pen stroke"
+    )
+
+    let areaCanvas = CGSize(width: 100, height: 100)
+    let insideAreaStroke = InkStroke(
+        tool: .pen,
+        color: .systemRed,
+        width: 2,
+        usesPressure: false,
+        points: [
+            InkPoint(location: CGPoint(x: 0.3, y: 0.5), pressure: 1, timestamp: 0),
+            InkPoint(location: CGPoint(x: 0.4, y: 0.5), pressure: 1, timestamp: 1),
+        ]
+    )
+    let crossingAreaStroke = InkStroke(
+        tool: .pen,
+        color: .systemBlue,
+        width: 2,
+        usesPressure: false,
+        points: [
+            InkPoint(location: CGPoint(x: 0.1, y: 0.5), pressure: 1, timestamp: 0),
+            InkPoint(location: CGPoint(x: 0.5, y: 0.5), pressure: 1, timestamp: 1),
+        ]
+    )
+    let areaGesture = EraserGesture.area(CGRect(x: 20, y: 20, width: 30, height: 60))
+    let touchingAreaResult = EraserEngine.erase(
+        strokes: [insideAreaStroke, crossingAreaStroke],
+        gesture: areaGesture,
+        settings: EraserSettings(
+            diameter: 24,
+            mode: .area,
+            hitRule: .touching,
+            targetFilter: .all
+        ),
+        canvasSize: areaCanvas
+    )
+    let containedAreaResult = EraserEngine.erase(
+        strokes: [insideAreaStroke, crossingAreaStroke],
+        gesture: areaGesture,
+        settings: EraserSettings(
+            diameter: 24,
+            mode: .area,
+            hitRule: .contained,
+            targetFilter: .all
+        ),
+        canvasSize: areaCanvas
+    )
+    runner.expect(
+        touchingAreaResult.isEmpty
+            && containedAreaResult.map(\.identifier) == [crossingAreaStroke.identifier],
+        "area erasing should distinguish touching strokes from fully contained strokes"
+    )
+
+    let clearState = AppState()
+    clearState.addStroke(filterPen, to: "display-a")
+    clearState.addStroke(filterHighlighter, to: "display-b")
+    let clearedAll = clearState.clearAllInk()
+    let allDisplaysWereCleared = clearState.strokes(for: "display-a").isEmpty
+        && clearState.strokes(for: "display-b").isEmpty
+    let restoredAll = clearState.undo(on: "display-a")
+        && clearState.strokes(for: "display-a").map(\.identifier) == [filterPen.identifier]
+        && clearState.strokes(for: "display-b").map(\.identifier) == [filterHighlighter.identifier]
+    runner.expect(
+        clearedAll && allDisplaysWereCleared && restoredAll,
+        "clear all should restore every display with one undo"
+    )
+
     if runner.failures.isEmpty {
         print("SelfTest: \(runner.passed) passed, 0 failed")
         return 0
