@@ -87,6 +87,8 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
     <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>현재 화면 배경과 판서를 함께 PNG로 저장하는 데 사용합니다.</string>
     <key>NSAppleEventsUsageDescription</key>
     <string>쉬는 시간이 끝나면 EduTools가 연 Google Chrome 음악 탭만 닫는 데 사용합니다.</string>
 </dict>

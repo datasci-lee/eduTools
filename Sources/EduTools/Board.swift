@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-enum BoardKind: String, CaseIterable, Hashable {
+enum BoardKind: String, CaseIterable, Hashable, Codable {
     case white
     case black
 
@@ -74,7 +74,7 @@ enum BoardAppearance {
     }
 }
 
-final class BoardDocument {
+final class BoardDocument: Codable {
     private var pages: [InkLayerState] = [InkLayerState()]
     private(set) var currentPageIndex = 0
 
@@ -84,6 +84,38 @@ final class BoardDocument {
 
     var strokes: [InkStroke] {
         currentPage.strokes
+    }
+
+    var allPageStrokes: [[InkStroke]] {
+        pages.map(\.strokes)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case pages
+        case currentPageIndex
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let decodedPages = try container.decode([InkLayerState].self, forKey: .pages)
+        let decodedIndex = try container.decode(Int.self, forKey: .currentPageIndex)
+        guard !decodedPages.isEmpty, decodedPages.indices.contains(decodedIndex) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .currentPageIndex,
+                in: container,
+                debugDescription: "Board must contain the selected page"
+            )
+        }
+        pages = decodedPages
+        currentPageIndex = decodedIndex
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(pages, forKey: .pages)
+        try container.encode(currentPageIndex, forKey: .currentPageIndex)
     }
 
     func addStroke(_ stroke: InkStroke) {

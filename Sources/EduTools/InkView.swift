@@ -290,6 +290,83 @@ final class InkView: NSView {
         rebuildCompletedLayers()
     }
 
+    func finishActiveInteraction() {
+        if textEntrySession != nil {
+            commitTextEntry()
+        }
+        if activeEraser != nil {
+            finishActiveEraser()
+        }
+        if activeShape != nil {
+            finishActiveShape()
+        }
+        if activeCover != nil {
+            finishActiveCover()
+        }
+        if selectionInteraction != nil {
+            finishSelectionInteraction()
+        }
+        if activeStroke != nil {
+            finishActiveStroke()
+        }
+        laserRenderer.clear()
+    }
+
+    func renderedImage(
+        strokes: [InkStroke]? = nil,
+        boardKind: BoardKind? = nil,
+        pixelSize: CGSize
+    ) -> CGImage? {
+        let pixelWidth = Int(pixelSize.width.rounded())
+        let pixelHeight = Int(pixelSize.height.rounded())
+        guard bounds.width > 0,
+              bounds.height > 0,
+              pixelWidth > 0,
+              pixelHeight > 0,
+              let context = CGContext(
+                  data: nil,
+                  width: pixelWidth,
+                  height: pixelHeight,
+                  bitsPerComponent: 8,
+                  bytesPerRow: 0,
+                  space: CGColorSpaceCreateDeviceRGB(),
+                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+              )
+        else {
+            return nil
+        }
+
+        context.scaleBy(
+            x: CGFloat(pixelWidth) / bounds.width,
+            y: CGFloat(pixelHeight) / bounds.height
+        )
+        if let boardKind {
+            context.setFillColor(
+                BoardAppearance.backgroundColor(
+                    for: boardKind,
+                    blackboardBackground: state.blackboardBackground
+                ).cgColor
+            )
+            context.fill(bounds)
+            drawBoardPattern(for: boardKind, in: context)
+        }
+
+        let inkLayer = CALayer()
+        inkLayer.frame = bounds
+        for stroke in strokes ?? state.strokes(for: displayUUID) {
+            switch stroke.content {
+            case .freehand:
+                if let layer = makeBitmapLayer(for: stroke) {
+                    inkLayer.addSublayer(layer)
+                }
+            case .shape, .text, .cover:
+                inkLayer.addSublayer(makeVectorLayer(for: stroke))
+            }
+        }
+        inkLayer.render(in: context)
+        return context.makeImage()
+    }
+
     func setPresentationSourceRect(_ sourceRect: CGRect?, animated: Bool) {
         presentationSourceRect = sourceRect
         updatePresentationTransform(animated: animated)
@@ -1150,6 +1227,26 @@ final class InkView: NSView {
             }
         }
         return path
+    }
+
+    private func drawBoardPattern(for kind: BoardKind, in context: CGContext) {
+        guard state.boardBackgroundPattern != .none else { return }
+        let spacing: CGFloat = 40
+        let path = CGMutablePath()
+        if state.boardBackgroundPattern == .grid {
+            for x in stride(from: spacing, through: bounds.width, by: spacing) {
+                path.move(to: CGPoint(x: x, y: 0))
+                path.addLine(to: CGPoint(x: x, y: bounds.height))
+            }
+        }
+        for y in stride(from: spacing, through: bounds.height, by: spacing) {
+            path.move(to: CGPoint(x: 0, y: y))
+            path.addLine(to: CGPoint(x: bounds.width, y: y))
+        }
+        context.addPath(path)
+        context.setStrokeColor(BoardAppearance.patternColor(for: kind).cgColor)
+        context.setLineWidth(1)
+        context.strokePath()
     }
 
     private func showEraserCursor(at location: CGPoint) {

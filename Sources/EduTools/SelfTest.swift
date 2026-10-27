@@ -1,5 +1,6 @@
 import Foundation
 import Carbon
+import AppKit
 
 private struct SelfTestRunner {
     private(set) var passed = 0
@@ -471,6 +472,92 @@ func runSelfTests() -> Int32 {
     runner.expect(
         filteredResult.map(\.identifier) == [filterPen.identifier],
         "highlighter-only stroke erasing should preserve a touched pen stroke"
+    )
+
+    let archiveDisplayUUID = "archive-display"
+    let archiveFirstStroke = InkStroke(
+        tool: .pen,
+        color: NSColor(deviceRed: 0.2, green: 0.4, blue: 0.8, alpha: 1),
+        width: 3,
+        usesPressure: true,
+        points: [
+            InkPoint(location: CGPoint(x: 0.25, y: 0.75), pressure: 0.6, timestamp: 1),
+            InkPoint(location: CGPoint(x: 0.5, y: 0.5), pressure: 0.9, timestamp: 2),
+        ]
+    )
+    let archiveSecondStroke = InkStroke(
+        tool: .highlighter,
+        color: NSColor(deviceRed: 0.9, green: 0.7, blue: 0.1, alpha: 1),
+        width: 18,
+        usesPressure: false,
+        points: [InkPoint(location: CGPoint(x: 0.8, y: 0.2), pressure: 1, timestamp: 3)]
+    )
+    let archiveLayer = InkLayerState()
+    archiveLayer.execute(
+        .addDisplayStroke(displayUUID: archiveDisplayUUID, stroke: archiveFirstStroke)
+    )
+    archiveLayer.execute(
+        .addDisplayStroke(displayUUID: archiveDisplayUUID, stroke: archiveSecondStroke)
+    )
+    _ = archiveLayer.undo()
+    let archiveData = try? JSONEncoder().encode(archiveLayer.state(for: archiveDisplayUUID))
+    let decodedArchiveLayer = archiveData.flatMap {
+        try? JSONDecoder().decode(InkLayerState.self, from: $0)
+    }
+    let archiveRoundTripEquivalent = decodedArchiveLayer.map { decoded in
+        let initialEquivalent = decoded.strokes(for: archiveDisplayUUID) == [archiveFirstStroke]
+        let redoEquivalent = decoded.redo()
+            && decoded.strokes(for: archiveDisplayUUID) == [archiveFirstStroke, archiveSecondStroke]
+        let undoEquivalent = decoded.undo()
+            && decoded.strokes(for: archiveDisplayUUID) == [archiveFirstStroke]
+        return initialEquivalent && redoEquivalent && undoEquivalent
+    } ?? false
+    runner.expect(
+        archiveRoundTripEquivalent,
+        "display ink and its undo history should survive a JSON round-trip"
+    )
+
+    let originalResolution = CGSize(width: 1_000, height: 500)
+    let restoredResolution = CGSize(width: 2_000, height: 1_000)
+    let restoredNormalizedPoint = decodedArchiveLayer?
+        .strokes(for: archiveDisplayUUID)
+        .first?
+        .points
+        .first?
+        .location
+    let resolutionRestorePreservedRatio = restoredNormalizedPoint.map { point in
+        let originalPoint = InkGeometry.screenPoint(from: point, in: originalResolution)
+        let restoredPoint = InkGeometry.screenPoint(from: point, in: restoredResolution)
+        return originalPoint == CGPoint(x: 250, y: 375)
+            && restoredPoint == CGPoint(x: 500, y: 750)
+            && originalPoint.x / originalResolution.width
+                == restoredPoint.x / restoredResolution.width
+            && originalPoint.y / originalResolution.height
+                == restoredPoint.y / restoredResolution.height
+    } ?? false
+    runner.expect(
+        resolutionRestorePreservedRatio,
+        "restoring on a different resolution should preserve normalized stroke coordinates"
+    )
+
+    let movePolicyState = AppState()
+    movePolicyState.addStroke(filterPen, to: "primary-display")
+    movePolicyState.addStroke(archiveFirstStroke, to: "removed-display")
+    movePolicyState.addStroke(archiveSecondStroke, to: "removed-display")
+    let movePolicyMerged = movePolicyState.moveScreenInk(
+        from: "removed-display",
+        to: "primary-display"
+    )
+    runner.expect(
+        movePolicyMerged
+            && movePolicyState.screenStrokes(for: "removed-display").isEmpty
+            && movePolicyState.screenStrokes(for: "primary-display").map(\.identifier)
+                == [
+                    filterPen.identifier,
+                    archiveFirstStroke.identifier,
+                    archiveSecondStroke.identifier,
+                ],
+        "move-to-primary disconnect policy should merge source ink after destination ink"
     )
 
     let areaCanvas = CGSize(width: 100, height: 100)
