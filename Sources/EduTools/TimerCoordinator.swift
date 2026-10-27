@@ -4,9 +4,16 @@ final class TimerCoordinator {
     private let lessonTimerController: LessonTimerController
     private let breakTimerController: BreakTimerController
 
-    init(defaults: UserDefaults = .standard) {
-        lessonTimerController = LessonTimerController(defaults: defaults)
-        breakTimerController = BreakTimerController(defaults: defaults)
+    init(defaults: UserDefaults = .standard, settingsStore: SettingsStore? = nil) {
+        let resolvedSettingsStore = settingsStore ?? SettingsStore(defaults: defaults)
+        lessonTimerController = LessonTimerController(
+            defaults: defaults,
+            settingsStore: resolvedSettingsStore
+        )
+        breakTimerController = BreakTimerController(
+            defaults: defaults,
+            settingsStore: resolvedSettingsStore
+        )
         lessonTimerController.onAutoBreakRequested = { [weak breakTimerController] minutes in
             breakTimerController?.startQuick(minutes: minutes)
         }

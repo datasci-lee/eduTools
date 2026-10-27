@@ -1,40 +1,165 @@
 import AppKit
 import Carbon
 
+struct PortableShortcut: Equatable {
+    struct KeyDescriptor: Equatable, Hashable {
+        let token: String
+        let keyCode: UInt16
+        let keyEquivalent: String
+        let keyCap: String
+    }
+
+    private static let keys: [KeyDescriptor] = {
+        let letters: [(String, Int)] = [
+            ("A", kVK_ANSI_A), ("B", kVK_ANSI_B), ("C", kVK_ANSI_C),
+            ("D", kVK_ANSI_D), ("E", kVK_ANSI_E), ("F", kVK_ANSI_F),
+            ("G", kVK_ANSI_G), ("H", kVK_ANSI_H), ("I", kVK_ANSI_I),
+            ("J", kVK_ANSI_J), ("K", kVK_ANSI_K), ("L", kVK_ANSI_L),
+            ("M", kVK_ANSI_M), ("N", kVK_ANSI_N), ("O", kVK_ANSI_O),
+            ("P", kVK_ANSI_P), ("Q", kVK_ANSI_Q), ("R", kVK_ANSI_R),
+            ("S", kVK_ANSI_S), ("T", kVK_ANSI_T), ("U", kVK_ANSI_U),
+            ("V", kVK_ANSI_V), ("W", kVK_ANSI_W), ("X", kVK_ANSI_X),
+            ("Y", kVK_ANSI_Y), ("Z", kVK_ANSI_Z),
+        ]
+        let digits: [(String, Int)] = [
+            ("0", kVK_ANSI_0), ("1", kVK_ANSI_1), ("2", kVK_ANSI_2),
+            ("3", kVK_ANSI_3), ("4", kVK_ANSI_4), ("5", kVK_ANSI_5),
+            ("6", kVK_ANSI_6), ("7", kVK_ANSI_7), ("8", kVK_ANSI_8),
+            ("9", kVK_ANSI_9),
+        ]
+        var result = letters.map {
+            KeyDescriptor(token: $0.0, keyCode: UInt16($0.1), keyEquivalent: $0.0.lowercased(), keyCap: $0.0)
+        }
+        result += digits.map {
+            KeyDescriptor(token: $0.0, keyCode: UInt16($0.1), keyEquivalent: $0.0, keyCap: $0.0)
+        }
+        result += [
+            KeyDescriptor(token: "/", keyCode: UInt16(kVK_ANSI_Slash), keyEquivalent: "/", keyCap: "/"),
+            KeyDescriptor(token: "[", keyCode: UInt16(kVK_ANSI_LeftBracket), keyEquivalent: "[", keyCap: "["),
+            KeyDescriptor(token: "]", keyCode: UInt16(kVK_ANSI_RightBracket), keyEquivalent: "]", keyCap: "]"),
+            KeyDescriptor(token: "=", keyCode: UInt16(kVK_ANSI_Equal), keyEquivalent: "=", keyCap: "="),
+            KeyDescriptor(token: "-", keyCode: UInt16(kVK_ANSI_Minus), keyEquivalent: "-", keyCap: "-"),
+            KeyDescriptor(token: "Left", keyCode: UInt16(kVK_LeftArrow), keyEquivalent: "←", keyCap: "←"),
+            KeyDescriptor(token: "Right", keyCode: UInt16(kVK_RightArrow), keyEquivalent: "→", keyCap: "→"),
+            KeyDescriptor(token: "Up", keyCode: UInt16(kVK_UpArrow), keyEquivalent: "↑", keyCap: "↑"),
+            KeyDescriptor(token: "Down", keyCode: UInt16(kVK_DownArrow), keyEquivalent: "↓", keyCap: "↓"),
+            KeyDescriptor(token: "Delete", keyCode: UInt16(kVK_Delete), keyEquivalent: "\u{8}", keyCap: "⌫"),
+            KeyDescriptor(token: "Tab", keyCode: UInt16(kVK_Tab), keyEquivalent: "\t", keyCap: "Tab"),
+            KeyDescriptor(token: "Escape", keyCode: UInt16(kVK_Escape), keyEquivalent: "\u{1b}", keyCap: "Esc"),
+            KeyDescriptor(token: "Space", keyCode: UInt16(kVK_Space), keyEquivalent: " ", keyCap: "Space"),
+            KeyDescriptor(token: "Return", keyCode: UInt16(kVK_Return), keyEquivalent: "\r", keyCap: "Return"),
+        ]
+        return result
+    }()
+
+    let key: KeyDescriptor
+    let usesAppModifier: Bool
+    let modifiers: NSEvent.ModifierFlags
+
+    init?(serialized: String) {
+        let components = serialized.split(separator: "+", omittingEmptySubsequences: false).map(String.init)
+        guard let token = components.last,
+              let key = Self.keys.first(where: { $0.token == token })
+        else {
+            return nil
+        }
+        let modifierTokens = Array(components.dropLast())
+        guard Set(modifierTokens).count == modifierTokens.count else { return nil }
+        let allowed = Set(["AppMod", "Primary", "Shift", "Control", "Option"])
+        guard modifierTokens.allSatisfy(allowed.contains),
+              !(modifierTokens.contains("AppMod") && modifierTokens.count > 1)
+        else {
+            return nil
+        }
+        var modifiers: NSEvent.ModifierFlags = []
+        if modifierTokens.contains("Primary") { modifiers.insert(.command) }
+        if modifierTokens.contains("Shift") { modifiers.insert(.shift) }
+        if modifierTokens.contains("Control") { modifiers.insert(.control) }
+        if modifierTokens.contains("Option") { modifiers.insert(.option) }
+        self.key = key
+        usesAppModifier = modifierTokens.contains("AppMod")
+        self.modifiers = modifiers
+    }
+
+    var serialized: String {
+        var tokens: [String] = []
+        if usesAppModifier {
+            tokens.append("AppMod")
+        } else {
+            if modifiers.contains(.control) { tokens.append("Control") }
+            if modifiers.contains(.option) { tokens.append("Option") }
+            if modifiers.contains(.shift) { tokens.append("Shift") }
+            if modifiers.contains(.command) { tokens.append("Primary") }
+        }
+        tokens.append(key.token)
+        return tokens.joined(separator: "+")
+    }
+
+    func eventModifiers(appModifier: AppModifierSetting) -> NSEvent.ModifierFlags {
+        guard usesAppModifier else { return modifiers }
+        switch appModifier {
+        case .controlOption: return [.control, .option]
+        case .controlOptionShift: return [.control, .option, .shift]
+        }
+    }
+
+    func displayString(appModifier: AppModifierSetting) -> String {
+        let flags = eventModifiers(appModifier: appModifier)
+        var prefix = ""
+        if flags.contains(.control) { prefix += "⌃" }
+        if flags.contains(.option) { prefix += "⌥" }
+        if flags.contains(.shift) { prefix += "⇧" }
+        if flags.contains(.command) { prefix += "⌘" }
+        return prefix + key.keyCap
+    }
+
+    static func keyToken(for keyCode: UInt16) -> String? {
+        keys.first(where: { $0.keyCode == keyCode })?.token
+    }
+
+    static func serialized(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> String? {
+        guard let token = keyToken(for: keyCode) else { return nil }
+        let relevant: NSEvent.ModifierFlags = [.command, .shift, .control, .option]
+        let flags = modifiers.intersection(relevant)
+        var tokens: [String] = []
+        if flags.contains(.control) { tokens.append("Control") }
+        if flags.contains(.option) { tokens.append("Option") }
+        if flags.contains(.shift) { tokens.append("Shift") }
+        if flags.contains(.command) { tokens.append("Primary") }
+        tokens.append(token)
+        return tokens.joined(separator: "+")
+    }
+}
+
 struct Shortcut: Equatable, Hashable {
     static let appModifierCarbonFlags = UInt32(controlKey) | UInt32(optionKey)
-
-    private static let keyCodes: [String: UInt32] = [
-        "B": UInt32(kVK_ANSI_B),
-        "L": UInt32(kVK_ANSI_L),
-        "M": UInt32(kVK_ANSI_M),
-        "P": UInt32(kVK_ANSI_P),
-        "S": UInt32(kVK_ANSI_S),
-        "Z": UInt32(kVK_ANSI_Z),
-        "/": UInt32(kVK_ANSI_Slash),
-    ]
 
     let keyCode: UInt32
     let carbonModifiers: UInt32
     private let keyToken: String
+    private let appModifier: AppModifierSetting
 
-    init?(serialized: String) {
-        let components = serialized.split(separator: "+", omittingEmptySubsequences: false)
-        guard components.count == 2,
-              components[0] == "AppMod",
-              let keyCode = Self.keyCodes[String(components[1])]
+    init?(serialized: String, appModifier: AppModifierSetting = .controlOption) {
+        guard let portable = PortableShortcut(serialized: serialized),
+              portable.usesAppModifier
         else {
             return nil
         }
 
-        self.keyCode = keyCode
-        carbonModifiers = Self.appModifierCarbonFlags
-        keyToken = String(components[1])
+        keyCode = UInt32(portable.key.keyCode)
+        switch appModifier {
+        case .controlOption:
+            carbonModifiers = Self.appModifierCarbonFlags
+        case .controlOptionShift:
+            carbonModifiers = Self.appModifierCarbonFlags | UInt32(shiftKey)
+        }
+        keyToken = portable.key.token
+        self.appModifier = appModifier
     }
 
     init?(keyCode: UInt32, carbonModifiers: UInt32) {
         guard carbonModifiers == Self.appModifierCarbonFlags,
-              let keyToken = Self.keyCodes.first(where: { $0.value == keyCode })?.key
+              let keyToken = PortableShortcut.keyToken(for: UInt16(keyCode))
         else {
             return nil
         }
@@ -42,6 +167,7 @@ struct Shortcut: Equatable, Hashable {
         self.keyCode = keyCode
         self.carbonModifiers = carbonModifiers
         self.keyToken = keyToken
+        appModifier = .controlOption
     }
 
     var serialized: String {
@@ -49,7 +175,7 @@ struct Shortcut: Equatable, Hashable {
     }
 
     var displayString: String {
-        "⌃⌥\(keyToken)"
+        "\(appModifier.displayName)\(keyToken)"
     }
 
     var keyEquivalent: String {
@@ -137,16 +263,25 @@ struct ShortcutBinding {
     let keyEquivalent: String
     let keyCap: String
     let serializedGlobalShortcut: String?
+    let portableString: String
 
-    static func global(_ serialized: String) -> ShortcutBinding? {
-        guard let shortcut = Shortcut(serialized: serialized) else { return nil }
+    static func global(
+        _ serialized: String,
+        appModifier: AppModifierSetting = .controlOption
+    ) -> ShortcutBinding? {
+        guard let shortcut = Shortcut(serialized: serialized, appModifier: appModifier) else {
+            return nil
+        }
         return ShortcutBinding(
             scope: .global,
             keyCode: UInt16(shortcut.keyCode),
-            modifiers: [.control, .option],
+            modifiers: PortableShortcut(serialized: serialized)?.eventModifiers(
+                appModifier: appModifier
+            ) ?? [],
             keyEquivalent: shortcut.keyEquivalent,
             keyCap: shortcut.displayString,
-            serializedGlobalShortcut: serialized
+            serializedGlobalShortcut: serialized,
+            portableString: serialized
         )
     }
 
@@ -162,7 +297,11 @@ struct ShortcutBinding {
             modifiers: modifiers,
             keyEquivalent: keyEquivalent,
             keyCap: keyCap,
-            serializedGlobalShortcut: nil
+            serializedGlobalShortcut: nil,
+            portableString: PortableShortcut.serialized(
+                keyCode: UInt16(keyCode),
+                modifiers: modifiers
+            ) ?? keyCap
         )
     }
 
@@ -178,7 +317,30 @@ struct ShortcutBinding {
             modifiers: modifiers,
             keyEquivalent: keyEquivalent,
             keyCap: keyCap,
-            serializedGlobalShortcut: nil
+            serializedGlobalShortcut: nil,
+            portableString: PortableShortcut.serialized(
+                keyCode: UInt16(keyCode),
+                modifiers: modifiers
+            ) ?? keyCap
+        )
+    }
+
+    func replacing(
+        portableString: String,
+        appModifier: AppModifierSetting
+    ) -> ShortcutBinding? {
+        guard let portable = PortableShortcut(serialized: portableString) else { return nil }
+        if scope == .global, !portable.usesAppModifier { return nil }
+        if scope != .global, portable.usesAppModifier { return nil }
+        let modifiers = portable.eventModifiers(appModifier: appModifier)
+        return ShortcutBinding(
+            scope: scope,
+            keyCode: portable.key.keyCode,
+            modifiers: modifiers,
+            keyEquivalent: portable.key.keyEquivalent,
+            keyCap: portable.displayString(appModifier: appModifier),
+            serializedGlobalShortcut: scope == .global ? portable.serialized : nil,
+            portableString: portable.serialized
         )
     }
 
@@ -215,6 +377,20 @@ struct ShortcutDefinition {
 }
 
 enum ShortcutCatalog {
+    private static var settingsProvider: () -> ShortcutGroupSettings = {
+        AppSettings.default.shortcuts
+    }
+
+    static func configure(settingsStore: SettingsStore) {
+        settingsProvider = { [weak settingsStore] in
+            settingsStore?.settings.shortcuts ?? AppSettings.default.shortcuts
+        }
+    }
+
+    static func overrideKey(definitionID: String, scope: ShortcutScope) -> String {
+        "\(definitionID)|\(scope.rawValue)"
+    }
+
     static let definitions: [ShortcutDefinition] = {
         func global(_ serialized: String) -> ShortcutBinding {
             guard let binding = ShortcutBinding.global(serialized) else {
@@ -697,8 +873,41 @@ enum ShortcutCatalog {
         return result
     }()
 
+    static var activeDefinitions: [ShortcutDefinition] {
+        resolvedDefinitions(for: settingsProvider())
+    }
+
+    static func resolvedDefinitions(for settings: ShortcutGroupSettings) -> [ShortcutDefinition] {
+        definitions.map { definition in
+            let bindings = definition.bindings.compactMap { binding -> ShortcutBinding? in
+                let key = overrideKey(definitionID: definition.id, scope: binding.scope)
+                let portable = settings.overrides[key] ?? binding.portableString
+                guard let resolved = binding.replacing(
+                    portableString: portable,
+                    appModifier: settings.appModifier
+                ) else {
+                    NSLog("EduTools: ignored invalid shortcut override for %@", key)
+                    return binding.replacing(
+                        portableString: binding.portableString,
+                        appModifier: settings.appModifier
+                    )
+                }
+                return resolved
+            }
+            return ShortcutDefinition(
+                id: definition.id,
+                name: definition.name,
+                iconName: definition.iconName,
+                group: definition.group,
+                modes: definition.modes,
+                command: definition.command,
+                bindings: bindings
+            )
+        }
+    }
+
     static var globalDefinitions: [(ShortcutDefinition, ShortcutBinding)] {
-        definitions.flatMap { definition in
+        activeDefinitions.flatMap { definition in
             definition.bindings.compactMap { binding in
                 binding.scope == .global ? (definition, binding) : nil
             }
@@ -706,7 +915,7 @@ enum ShortcutCatalog {
     }
 
     static func matching(_ event: NSEvent, scope: ShortcutScope) -> ShortcutDefinition? {
-        definitions.first { definition in
+        activeDefinitions.first { definition in
             definition.bindings.contains { binding in
                 binding.scope == scope && binding.matches(event)
             }
@@ -714,7 +923,7 @@ enum ShortcutCatalog {
     }
 
     static func matchingKeyUp(_ event: NSEvent, scope: ShortcutScope) -> ShortcutDefinition? {
-        definitions.first { definition in
+        activeDefinitions.first { definition in
             definition.bindings.contains { binding in
                 binding.scope == scope && binding.keyCode == event.keyCode
             }
@@ -722,7 +931,7 @@ enum ShortcutCatalog {
     }
 
     static func definition(for command: AppCommand) -> ShortcutDefinition? {
-        definitions.first { $0.command == command }
+        activeDefinitions.first { $0.command == command }
     }
 
     static func filtered(_ definitions: [ShortcutDefinition], query: String) -> [ShortcutDefinition] {
@@ -734,6 +943,83 @@ enum ShortcutCatalog {
                     $0.keyCap.localizedCaseInsensitiveContains(trimmedQuery)
                 }
         }
+    }
+}
+
+enum ShortcutConflictDetector {
+    private static let avoidedAppModifierKeys: Set<String> = [
+        "D", "F", "G", "E", "T", "U", "I", "J", "K", "C",
+        "Left", "Right", "Up", "Down", "Return", "Delete",
+    ]
+    private static let avoidedPortableShortcuts: Set<String> = [
+        "Option+Primary+8", "Option+Primary+=", "Option+Primary+-",
+        "Control+Space", "Control+Primary+Space",
+        "Shift+Primary+3", "Shift+Primary+4", "Shift+Primary+5",
+        "Control+Left", "Control+Right", "Control+Up", "Control+Down",
+        "Control+Option+Delete", "Control+Option+Tab",
+        "Control+Option+Left", "Control+Option+Right",
+        "Control+Option+Up", "Control+Option+Down",
+    ]
+
+    static func warnings(for settings: ShortcutGroupSettings) -> [String: String] {
+        let definitions = ShortcutCatalog.resolvedDefinitions(for: settings)
+        var warnings: [String: String] = [:]
+        var bindingsByUniquenessKey: [String: [(definitionID: String, scope: ShortcutScope)]] = [:]
+
+        for definition in definitions {
+            for binding in definition.bindings {
+                let key = ShortcutCatalog.overrideKey(
+                    definitionID: definition.id,
+                    scope: binding.scope
+                )
+                bindingsByUniquenessKey[binding.uniquenessKey, default: []].append(
+                    (definition.id, binding.scope)
+                )
+                if isAvoided(binding.portableString) {
+                    warnings[key] = "알려진 시스템·앱 단축키와 겹칠 수 있습니다. 대안: \(suggestion(for: definitions))"
+                }
+            }
+        }
+
+        for duplicates in bindingsByUniquenessKey.values where duplicates.count > 1 {
+            for duplicate in duplicates {
+                let key = ShortcutCatalog.overrideKey(
+                    definitionID: duplicate.definitionID,
+                    scope: duplicate.scope
+                )
+                warnings[key] = "같은 범위의 다른 기능과 중복됩니다. 대안: \(suggestion(for: definitions))"
+            }
+        }
+        return warnings
+    }
+
+    static func hasAvoidedConflict(_ serialized: String) -> Bool {
+        isAvoided(serialized)
+    }
+
+    private static func isAvoided(_ serialized: String) -> Bool {
+        guard let portable = PortableShortcut(serialized: serialized) else { return false }
+        if portable.usesAppModifier {
+            return avoidedAppModifierKeys.contains(portable.key.token)
+        }
+        if avoidedPortableShortcuts.contains(portable.serialized) {
+            return true
+        }
+        let flags = portable.modifiers
+        if flags == .control, portable.key.token.first?.isNumber == true {
+            return true
+        }
+        return flags == [.control, .shift]
+            && portable.key.token.count == 1
+            && portable.key.token.first?.isLetter == true
+    }
+
+    private static func suggestion(for definitions: [ShortcutDefinition]) -> String {
+        let occupied = Set(definitions.flatMap(\.bindings).filter {
+            $0.scope == .global
+        }.map(\.portableString))
+        let candidates = ["AppMod+P", "AppMod+Z", "AppMod+L", "AppMod+S", "AppMod+M", "AppMod+B", "AppMod+/"]
+        return candidates.first(where: { !occupied.contains($0) }) ?? "사용하지 않는 AppMod+문자"
     }
 }
 

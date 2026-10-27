@@ -780,6 +780,72 @@ func runSelfTests() -> Int32 {
         "break music should escape URL text before inserting it into AppleScript"
     )
 
+    let settingsJSON = try? JSONEncoder().encode(AppSettings.default)
+    let settingsRoundTrip = settingsJSON.flatMap {
+        try? JSONDecoder().decode(AppSettings.self, from: $0)
+    }
+    runner.expect(
+        settingsRoundTrip == AppSettings.default,
+        "settings JSON should round-trip without changing values"
+    )
+
+    var outOfRangeSettings = AppSettings.default
+    outOfRangeSettings.zoom.maximumMagnification = 9
+    let rejectedOutOfRange: Bool
+    do {
+        try SettingsValidator.validate(outOfRangeSettings)
+        rejectedOutOfRange = false
+    } catch {
+        rejectedOutOfRange = true
+    }
+    runner.expect(
+        rejectedOutOfRange,
+        "settings validation should reject a zoom value outside 1.25 through 8"
+    )
+
+    var unknownKeyWasIgnored = false
+    if let settingsJSON,
+       var object = try? JSONSerialization.jsonObject(with: settingsJSON) as? [String: Any]
+    {
+        object["futureSetting"] = ["enabled": true]
+        if let data = try? JSONSerialization.data(withJSONObject: object),
+           let decoded = try? JSONDecoder().decode(AppSettings.self, from: data)
+        {
+            unknownKeyWasIgnored = decoded == AppSettings.default
+        }
+    }
+    runner.expect(
+        unknownKeyWasIgnored,
+        "settings decoding should ignore unknown keys"
+    )
+
+    var computerSpecificSettings = AppSettings.default
+    computerSpecificSettings.general.archiveFolderPath = "/Volumes/Classroom/Archive"
+    let defaultExport = try? SettingsTransfer.exportDocument(settings: computerSpecificSettings)
+    runner.expect(
+        defaultExport?.includesComputerSpecific == false
+            && defaultExport?.payload.general?.archiveFolderPath == nil,
+        "settings export should exclude computer-specific values by default"
+    )
+
+    runner.expect(
+        ShortcutConflictDetector.hasAvoidedConflict("AppMod+D"),
+        "known avoided global shortcuts should be reported as conflicts"
+    )
+
+    let backupDefaults = UserDefaults(suiteName: "EduTools.SelfTest.\(UUID().uuidString)")!
+    let backupStore = SettingsBackupStore(defaults: backupDefaults)
+    for value in 1...6 {
+        var settings = AppSettings.default
+        settings.timer.lessonDefaultMinutes = value
+        try? backupStore.append(settings)
+    }
+    let latestBackup = try? backupStore.popLatest()
+    runner.expect(
+        backupStore.count == 4 && latestBackup?.timer.lessonDefaultMinutes == 6,
+        "settings backups should rotate to the most recent five entries"
+    )
+
     if runner.failures.isEmpty {
         print("SelfTest: \(runner.passed) passed, 0 failed")
         return 0

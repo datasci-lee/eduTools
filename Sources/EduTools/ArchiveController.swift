@@ -3,6 +3,7 @@ import Foundation
 
 final class ArchiveController {
     private let state: AppState
+    private let settingsStore: SettingsStore
     private weak var overlayController: OverlayController?
     private let fileManager: FileManager
     private var workspaceObservers: [NSObjectProtocol] = []
@@ -12,9 +13,11 @@ final class ArchiveController {
     init(
         state: AppState,
         overlayController: OverlayController,
+        settingsStore: SettingsStore,
         fileManager: FileManager = .default
     ) {
         self.state = state
+        self.settingsStore = settingsStore
         self.overlayController = overlayController
         self.fileManager = fileManager
         state.archiveBeforeRemoval = { [weak self] displayUUIDs in
@@ -207,9 +210,14 @@ final class ArchiveController {
     }
 
     private func automaticArchiveDirectory(for date: Date) -> URL? {
-        guard let root = applicationSupportRoot() else { return nil }
+        let root: URL
+        if let path = settingsStore.settings.general.archiveFolderPath {
+            root = URL(fileURLWithPath: path, isDirectory: true)
+        } else {
+            guard let applicationSupportRoot = applicationSupportRoot() else { return nil }
+            root = applicationSupportRoot.appendingPathComponent("Archive", isDirectory: true)
+        }
         return root
-            .appendingPathComponent("Archive", isDirectory: true)
             .appendingPathComponent(Self.dayFormatter.string(from: date), isDirectory: true)
     }
 

@@ -4,6 +4,9 @@ import QuartzCore
 
 private final class LaserRenderer {
     let layer = CALayer()
+    var color = NSColor.systemRed
+    var radius: CGFloat = 8
+    var trailDuration: TimeInterval = 1
 
     private var currentDot: CAShapeLayer?
     private var previousLocation: CGPoint?
@@ -13,7 +16,7 @@ private final class LaserRenderer {
             addFadingDot(at: previousLocation)
         }
 
-        let dot = currentDot ?? makeDot(radius: 8, opacity: 1)
+        let dot = currentDot ?? makeDot(radius: radius, opacity: 1)
         if currentDot == nil {
             currentDot = dot
             layer.addSublayer(dot)
@@ -39,12 +42,12 @@ private final class LaserRenderer {
     }
 
     private func addFadingDot(at location: CGPoint) {
-        let dot = makeDot(radius: 5, opacity: 0.7)
+        let dot = makeDot(radius: max(2, radius * 0.625), opacity: 0.7)
         dot.position = location
         layer.addSublayer(dot)
 
         CATransaction.begin()
-        CATransaction.setAnimationDuration(InkDefaults.laserTrailDuration)
+        CATransaction.setAnimationDuration(trailDuration)
         CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
         CATransaction.setCompletionBlock { [weak dot] in
             dot?.removeFromSuperlayer()
@@ -58,8 +61,8 @@ private final class LaserRenderer {
         let diameter = radius * 2
         dot.bounds = CGRect(x: 0, y: 0, width: diameter, height: diameter)
         dot.path = CGPath(ellipseIn: dot.bounds, transform: nil)
-        dot.fillColor = NSColor.systemRed.cgColor
-        dot.shadowColor = NSColor.systemRed.cgColor
+        dot.fillColor = color.cgColor
+        dot.shadowColor = color.cgColor
         dot.shadowOpacity = 0.9
         dot.shadowRadius = radius
         dot.shadowOffset = .zero
@@ -167,6 +170,7 @@ final class InkView: NSView {
     private var inkObserverIdentifier: UUID?
     private var modeObserverIdentifier: UUID?
     private var toolObserverIdentifier: UUID?
+    private var toolSettingsObserverIdentifier: UUID?
     private var boardObserverIdentifier: UUID?
     private var presentationSourceRect: CGRect?
 
@@ -229,6 +233,13 @@ final class InkView: NSView {
             } else if tool != .eraser {
                 self?.eraserCursorLayer.isHidden = true
             }
+        }
+        toolSettingsObserverIdentifier = state.addToolSettingsObserver { [weak self] in
+            guard let self else { return }
+            self.laserRenderer.color = self.state.laserColor
+            self.laserRenderer.radius = self.state.laserSize
+            self.laserRenderer.trailDuration = self.state.laserTrailDuration
+            self.rebuildCompletedLayers()
         }
         boardObserverIdentifier = state.addBoardObserver { [weak self] in
             guard let self else { return }
@@ -341,12 +352,7 @@ final class InkView: NSView {
             y: CGFloat(pixelHeight) / bounds.height
         )
         if let boardKind {
-            context.setFillColor(
-                BoardAppearance.backgroundColor(
-                    for: boardKind,
-                    blackboardBackground: state.blackboardBackground
-                ).cgColor
-            )
+            context.setFillColor(state.boardBackgroundColor(for: boardKind).cgColor)
             context.fill(bounds)
             drawBoardPattern(for: boardKind, in: context)
         }
@@ -1176,10 +1182,7 @@ final class InkView: NSView {
             return
         }
 
-        boardBackgroundLayer.backgroundColor = BoardAppearance.backgroundColor(
-            for: kind,
-            blackboardBackground: state.blackboardBackground
-        ).cgColor
+        boardBackgroundLayer.backgroundColor = state.boardBackgroundColor(for: kind).cgColor
         boardBackgroundLayer.isHidden = false
         boardPatternLayer.strokeColor = BoardAppearance.patternColor(for: kind).cgColor
         boardPatternLayer.isHidden = state.boardBackgroundPattern == .none
@@ -1413,7 +1416,7 @@ final class InkView: NSView {
         cachedLayer.contentsScale = scale
         cachedLayer.contentsGravity = .resize
         if stroke.tool == .highlighter {
-            cachedLayer.opacity = Float(InkDefaults.highlighterOpacity)
+            cachedLayer.opacity = Float(state.highlighterOpacity)
             cachedLayer.compositingFilter = "multiplyBlendMode"
         }
         return cachedLayer
@@ -1427,7 +1430,7 @@ final class InkView: NSView {
             let samples = renderedSamples(for: stroke)
             addShapeLayers(for: stroke, samples: samples, to: container)
             if stroke.tool == .highlighter {
-                container.opacity = Float(InkDefaults.highlighterOpacity)
+                container.opacity = Float(state.highlighterOpacity)
                 container.compositingFilter = "multiplyBlendMode"
             }
         case let .shape(kind):
@@ -1801,6 +1804,9 @@ final class InkView: NSView {
         }
         if let toolObserverIdentifier {
             state.removeToolObserver(toolObserverIdentifier)
+        }
+        if let toolSettingsObserverIdentifier {
+            state.removeToolSettingsObserver(toolSettingsObserverIdentifier)
         }
         if let boardObserverIdentifier {
             state.removeBoardObserver(boardObserverIdentifier)

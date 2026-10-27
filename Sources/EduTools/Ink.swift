@@ -38,24 +38,17 @@ enum InkStrokeTool: String, Equatable, Codable {
 }
 
 enum InkDefaults {
-    static let colors: [NSColor] = [
-        .systemRed,
-        .systemOrange,
-        .systemYellow,
-        .systemGreen,
-        .systemBlue,
-        .white,
-    ]
+    static var colors: [NSColor] { AppSettings.default.tools.colors.map(\.nsColor) }
     static let initialColorIndex = 0
-    static let penWidth: CGFloat = 3
-    static let highlighterWidth: CGFloat = 18
-    static let highlighterOpacity: CGFloat = 0.4
+    static var penWidth: CGFloat { CGFloat(AppSettings.default.tools.penWidth) }
+    static var highlighterWidth: CGFloat { CGFloat(AppSettings.default.tools.highlighterWidth) }
+    static var highlighterOpacity: CGFloat { CGFloat(AppSettings.default.tools.highlighterOpacity) }
     static let minimumWidth: CGFloat = 1
     static let maximumWidth: CGFloat = 30
-    static let textFontSize: CGFloat = 24
+    static var textFontSize: CGFloat { CGFloat(AppSettings.default.tools.textFontSize) }
     static let minimumTextFontSize: CGFloat = 8
     static let maximumTextFontSize: CGFloat = 96
-    static let laserTrailDuration: TimeInterval = 1
+    static var laserTrailDuration: TimeInterval { AppSettings.default.tools.laserTrailDuration }
     static let undoLimit = 100
 }
 
@@ -106,8 +99,10 @@ enum EraserTargetFilter {
 enum EraserDefaults {
     static let minimumDiameter: CGFloat = 8
     static let maximumDiameter: CGFloat = 200
-    static let presetDiameters: [CGFloat] = [12, 24, 60]
-    static let defaultDiameter = presetDiameters[1]
+    static var presetDiameters: [CGFloat] {
+        AppSettings.default.eraser.presetDiameters.map { CGFloat($0) }
+    }
+    static var defaultDiameter: CGFloat { CGFloat(AppSettings.default.eraser.diameter) }
     static let diameterAdjustmentStep: CGFloat = 2
     static let defaultMode = EraserMode.partial
     static let defaultHitRule = EraserHitRule.touching
