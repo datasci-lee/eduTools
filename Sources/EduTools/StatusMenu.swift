@@ -7,6 +7,7 @@ final class StatusMenu: NSObject {
     private let statusItem: NSStatusItem
     private let modeItem: NSMenuItem
     private let toolItem: NSMenuItem
+    private let lessonTimerItem: NSMenuItem
     private var observerIdentifier: UUID?
     private var toolObserverIdentifier: UUID?
     private var hotkeyRegistrationFailed = false
@@ -17,6 +18,7 @@ final class StatusMenu: NSObject {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         modeItem = NSMenuItem(title: "판서 모드", action: nil, keyEquivalent: "")
         toolItem = NSMenuItem(title: "도구: 펜", action: nil, keyEquivalent: "")
+        lessonTimerItem = NSMenuItem(title: "수업 타이머 시작", action: nil, keyEquivalent: "")
         super.init()
 
         modeItem.target = self
@@ -26,6 +28,21 @@ final class StatusMenu: NSObject {
         let menu = NSMenu()
         menu.addItem(modeItem)
         menu.addItem(toolItem)
+        menu.addItem(.separator())
+
+        lessonTimerItem.target = self
+        lessonTimerItem.action = #selector(toggleLessonTimer(_:))
+        applyShortcut(.toggleLessonTimer, scope: .global, to: lessonTimerItem)
+        menu.addItem(lessonTimerItem)
+
+        let breakTimerItem = NSMenuItem(
+            title: "쉬는 시간 타이머…",
+            action: #selector(openBreakTimer(_:)),
+            keyEquivalent: ""
+        )
+        breakTimerItem.target = self
+        applyShortcut(.showBreakTimerSetup, scope: .global, to: breakTimerItem)
+        menu.addItem(breakTimerItem)
         menu.addItem(.separator())
 
         let clearAllItem = NSMenuItem(
@@ -78,6 +95,10 @@ final class StatusMenu: NSObject {
         updateAnnotationMode(state.isAnnotationModeEnabled)
     }
 
+    func setLessonTimerDisplay(_ title: String) {
+        lessonTimerItem.title = title
+    }
+
     private func applyShortcut(
         _ command: AppCommand,
         scope: ShortcutScope,
@@ -109,6 +130,14 @@ final class StatusMenu: NSObject {
 
     @objc private func clearAllInk(_ sender: Any?) {
         state.clearAllInk()
+    }
+
+    @objc private func toggleLessonTimer(_ sender: Any?) {
+        dispatcher.execute(.toggleLessonTimer, scope: .global)
+    }
+
+    @objc private func openBreakTimer(_ sender: Any?) {
+        dispatcher.execute(.showBreakTimerSetup, scope: .global)
     }
 
     @objc private func clearCurrentDisplayInk(_ sender: Any?) {

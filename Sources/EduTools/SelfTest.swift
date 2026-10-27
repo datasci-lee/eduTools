@@ -395,6 +395,65 @@ func runSelfTests() -> Int32 {
         "a stored black stroke should display as white on the blackboard"
     )
 
+    let timerNow = Date(timeIntervalSinceReferenceDate: 1_000_000)
+    let remainingEngine = LessonTimerEngine()
+    remainingEngine.startCountdown(duration: 600, now: timerNow)
+    runner.expect(
+        remainingEngine.remaining(at: timerNow.addingTimeInterval(125)) == 475,
+        "lesson remaining time should equal end date minus the injected current time"
+    )
+
+    let pausedEngine = LessonTimerEngine()
+    pausedEngine.startCountdown(duration: 600, now: timerNow)
+    pausedEngine.pause(now: timerNow.addingTimeInterval(100))
+    let remainedFixed = pausedEngine.remaining(at: timerNow.addingTimeInterval(400)) == 500
+    pausedEngine.resume(now: timerNow.addingTimeInterval(400))
+    let continuedAfterResume = pausedEngine.remaining(at: timerNow.addingTimeInterval(450)) == 450
+    runner.expect(
+        remainedFixed && continuedAfterResume,
+        "a paused lesson timer should stay fixed and continue from that value after resume"
+    )
+
+    runner.expect(
+        BreakTimerEngine.endDate(addingMinutes: 10, to: timerNow)
+            == timerNow.addingTimeInterval(600),
+        "the +10 minute break button should calculate its end date from the current clock"
+    )
+
+    var timerCalendar = Calendar(identifier: .gregorian)
+    timerCalendar.timeZone = TimeZone(secondsFromGMT: 0)!
+    let afterDirectTime = timerCalendar.date(
+        from: DateComponents(year: 2026, month: 10, day: 28, hour: 10, minute: 51)
+    )!
+    runner.expect(
+        BreakTimerEngine.endDate(
+            hour: 10,
+            minute: 50,
+            now: afterDirectTime,
+            calendar: timerCalendar
+        ) == nil,
+        "a direct break time earlier than now should be rejected as already passed today"
+    )
+
+    let snapFrame = CGRect(x: 0, y: 0, width: 100, height: 100)
+    let snapSize = CGSize(width: 10, height: 10)
+    let insideSnap = TimerGeometry.snappedOrigin(
+        proposed: CGPoint(x: 16, y: 40),
+        windowSize: snapSize,
+        visibleFrame: snapFrame,
+        snappingDisabled: false
+    )
+    let outsideSnap = TimerGeometry.snappedOrigin(
+        proposed: CGPoint(x: 17, y: 40),
+        windowSize: snapSize,
+        visibleFrame: snapFrame,
+        snappingDisabled: false
+    )
+    runner.expect(
+        insideSnap.x == 0 && outsideSnap.x == 17,
+        "lesson badge snapping should distinguish positions inside and outside 16 pixels"
+    )
+
     if runner.failures.isEmpty {
         print("SelfTest: \(runner.passed) passed, 0 failed")
         return 0

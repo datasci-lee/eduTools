@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var overlayController: OverlayController?
     private var paletteController: PaletteController?
     private var helpController: HelpController?
+    private var timerCoordinator: TimerCoordinator?
     private var dispatcher: AppCommandDispatcher?
     private var hotkeyCenter: HotkeyCenter?
 
@@ -25,8 +26,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.paletteController = paletteController
         dispatcher.paletteController = paletteController
 
+        let timerCoordinator = TimerCoordinator()
+        self.timerCoordinator = timerCoordinator
+        dispatcher.timerCoordinator = timerCoordinator
+
         let statusMenu = StatusMenu(state: appState, dispatcher: dispatcher)
         self.statusMenu = statusMenu
+        timerCoordinator.setLessonDisplayHandler { [weak statusMenu] title in
+            statusMenu?.setLessonTimerDisplay(title)
+        }
         let overlayController = OverlayController(state: appState, dispatcher: dispatcher)
         self.overlayController = overlayController
         dispatcher.overlayController = overlayController
