@@ -50,6 +50,8 @@ final class PaletteController: NSObject {
     private let controlsStack = NSStackView()
     private let eraserModeLabel = NSTextField(labelWithString: "")
     private let widthLabel = NSTextField(labelWithString: "")
+    private var recognitionButton: NSButton?
+    private var eraserAreaShapeButton: NSButton?
     private var toolButtons: [InkTool: NSButton] = [:]
     private var boardButtons: [BoardKind: NSButton] = [:]
     private var colorButtons: [NSButton] = []
@@ -136,12 +138,25 @@ final class PaletteController: NSObject {
         addToolButton(command: .selectTool(.highlighter), tool: .highlighter)
         addToolButton(command: .useLaser, tool: .laser)
         addToolButton(command: .selectOrCycleEraser, tool: .eraser)
+        addToolButton(command: .selectTool(.arrow), tool: .arrow)
+        addToolButton(command: .selectTool(.rectangle), tool: .rectangle)
+        addToolButton(command: .selectTool(.ellipse), tool: .ellipse)
+        addToolButton(command: .selectTool(.text), tool: .text)
+        addToolButton(command: .selectTool(.select), tool: .select)
+
+        let recognitionButton = makeDefinitionButton(command: .toggleShapeRecognition)
+        self.recognitionButton = recognitionButton
+        controlsStack.addArrangedSubview(recognitionButton)
 
         eraserModeLabel.font = .systemFont(ofSize: 10, weight: .medium)
         eraserModeLabel.textColor = .secondaryLabelColor
         eraserModeLabel.alignment = .center
         eraserModeLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
         controlsStack.addArrangedSubview(eraserModeLabel)
+
+        let eraserAreaShapeButton = makeDefinitionButton(command: .toggleEraserAreaShape)
+        self.eraserAreaShapeButton = eraserAreaShapeButton
+        controlsStack.addArrangedSubview(eraserAreaShapeButton)
 
         addBoardButton(command: .toggleBoard(.white), kind: .white)
         addBoardButton(command: .toggleBoard(.black), kind: .black)
@@ -190,7 +205,9 @@ final class PaletteController: NSObject {
         button.imagePosition = .imageOnly
         button.imageScaling = .scaleProportionallyDown
         button.bezelStyle = .texturedRounded
-        button.toolTip = "\(definition.name) (\(definition.displayKeys))"
+        button.toolTip = definition.displayKeys.isEmpty
+            ? definition.name
+            : "\(definition.name) (\(definition.displayKeys))"
         button.setAccessibilityLabel(definition.name)
         NSLayoutConstraint.activate([
             button.widthAnchor.constraint(equalToConstant: 32),
@@ -278,6 +295,15 @@ final class PaletteController: NSObject {
                 : NSColor.separatorColor.cgColor
         }
         eraserModeLabel.stringValue = state.eraserMode.displayName
+        recognitionButton?.state = state.isShapeRecognitionEnabled ? .on : .off
+        recognitionButton?.contentTintColor = state.isShapeRecognitionEnabled
+            ? .controlAccentColor
+            : .labelColor
+        recognitionButton?.toolTip = "손그림 도형 자동 보정: \(state.isShapeRecognitionEnabled ? "켬" : "끔")"
+        eraserAreaShapeButton?.title = state.eraserAreaShape == .rectangle ? "□" : "⌁"
+        eraserAreaShapeButton?.image = nil
+        eraserAreaShapeButton?.imagePosition = .noImage
+        eraserAreaShapeButton?.toolTip = "영역 지우개: \(state.eraserAreaShape.displayName)"
         switch state.currentTool {
         case .pen:
             widthLabel.stringValue = formattedSize(state.penWidth)
@@ -287,6 +313,12 @@ final class PaletteController: NSObject {
             widthLabel.stringValue = "—"
         case .eraser:
             widthLabel.stringValue = formattedSize(state.eraserDiameter)
+        case .arrow, .rectangle, .ellipse:
+            widthLabel.stringValue = formattedSize(state.penWidth)
+        case .text:
+            widthLabel.stringValue = formattedSize(state.textFontSize)
+        case .select:
+            widthLabel.stringValue = "—"
         }
     }
 

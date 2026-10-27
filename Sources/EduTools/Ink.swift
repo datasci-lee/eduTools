@@ -6,6 +6,11 @@ enum InkTool: String, Hashable {
     case highlighter
     case laser
     case eraser
+    case arrow
+    case rectangle
+    case ellipse
+    case text
+    case select
 
     var displayName: String {
         switch self {
@@ -13,6 +18,11 @@ enum InkTool: String, Hashable {
         case .highlighter: return "형광펜"
         case .laser: return "레이저"
         case .eraser: return "지우개"
+        case .arrow: return "화살표"
+        case .rectangle: return "사각형"
+        case .ellipse: return "원"
+        case .text: return "텍스트"
+        case .select: return "선택"
         }
     }
 }
@@ -20,6 +30,8 @@ enum InkTool: String, Hashable {
 enum InkStrokeTool: Equatable {
     case pen
     case highlighter
+    case shape
+    case text
 }
 
 enum InkDefaults {
@@ -37,6 +49,9 @@ enum InkDefaults {
     static let highlighterOpacity: CGFloat = 0.4
     static let minimumWidth: CGFloat = 1
     static let maximumWidth: CGFloat = 30
+    static let textFontSize: CGFloat = 24
+    static let minimumTextFontSize: CGFloat = 8
+    static let maximumTextFontSize: CGFloat = 96
     static let laserTrailDuration: TimeInterval = 1
     static let undoLimit = 100
 }
@@ -101,6 +116,21 @@ struct EraserSettings {
     let mode: EraserMode
     let hitRule: EraserHitRule
     let targetFilter: EraserTargetFilter
+    let areaShape: EraserAreaShape
+
+    init(
+        diameter: CGFloat,
+        mode: EraserMode,
+        hitRule: EraserHitRule,
+        targetFilter: EraserTargetFilter,
+        areaShape: EraserAreaShape = .rectangle
+    ) {
+        self.diameter = diameter
+        self.mode = mode
+        self.hitRule = hitRule
+        self.targetFilter = targetFilter
+        self.areaShape = areaShape
+    }
 }
 
 struct InkPoint: Equatable {
@@ -118,7 +148,7 @@ struct InkPoint: Equatable {
     }
 }
 
-struct InkStroke {
+struct InkStroke: Equatable {
     let identifier: UUID
     let tool: InkStrokeTool
     let color: NSColor
@@ -126,6 +156,7 @@ struct InkStroke {
     let usesPressure: Bool
     let points: [InkPoint]
     let pointBounds: CGRect
+    let content: InkStrokeContent
 
     init(
         identifier: UUID = UUID(),
@@ -133,7 +164,8 @@ struct InkStroke {
         color: NSColor,
         width: CGFloat,
         usesPressure: Bool,
-        points: [InkPoint]
+        points: [InkPoint],
+        content: InkStrokeContent = .freehand
     ) {
         self.identifier = identifier
         self.tool = tool
@@ -141,9 +173,20 @@ struct InkStroke {
         self.width = width
         self.usesPressure = usesPressure
         self.points = points
+        self.content = content
         pointBounds = points.reduce(CGRect.null) { bounds, point in
             bounds.union(CGRect(origin: point.location, size: .zero))
         }
+    }
+
+    static func == (lhs: InkStroke, rhs: InkStroke) -> Bool {
+        lhs.identifier == rhs.identifier
+            && lhs.tool == rhs.tool
+            && lhs.color == rhs.color
+            && lhs.width == rhs.width
+            && lhs.usesPressure == rhs.usesPressure
+            && lhs.points == rhs.points
+            && lhs.content == rhs.content
     }
 }
 
@@ -346,5 +389,15 @@ enum InkGeometry {
 
     static func snappedHighlighterEndpoint(from start: CGPoint, to proposed: CGPoint) -> CGPoint {
         CGPoint(x: proposed.x, y: start.y)
+    }
+
+    static func snappedSquareEndpoint(from start: CGPoint, to proposed: CGPoint) -> CGPoint {
+        let deltaX = proposed.x - start.x
+        let deltaY = proposed.y - start.y
+        let side = max(abs(deltaX), abs(deltaY))
+        return CGPoint(
+            x: start.x + (deltaX < 0 ? -side : side),
+            y: start.y + (deltaY < 0 ? -side : side)
+        )
     }
 }

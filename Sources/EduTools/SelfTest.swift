@@ -216,6 +216,104 @@ func runSelfTests() -> Int32 {
         "highlighter Shift snapping should stay horizontal"
     )
 
+    let recognizedLine = ShapeRecognizer.recognize(
+        points: [
+            CGPoint(x: 0, y: 0),
+            CGPoint(x: 25, y: 1),
+            CGPoint(x: 50, y: -1),
+            CGPoint(x: 75, y: 1),
+            CGPoint(x: 100, y: 0),
+        ]
+    )
+    runner.expect(recognizedLine == .line, "a nearly straight hand stroke should be recognized")
+
+    let recognizedRectangle = ShapeRecognizer.recognize(
+        points: [
+            CGPoint(x: 0, y: 0),
+            CGPoint(x: 50, y: 1),
+            CGPoint(x: 100, y: 0),
+            CGPoint(x: 99, y: 40),
+            CGPoint(x: 100, y: 80),
+            CGPoint(x: 50, y: 79),
+            CGPoint(x: 0, y: 80),
+            CGPoint(x: 1, y: 40),
+            CGPoint(x: 0, y: 0),
+        ]
+    )
+    runner.expect(
+        recognizedRectangle == .rectangle,
+        "a closed four-sided hand stroke should be recognized as a rectangle"
+    )
+
+    let circlePoints = (0...24).map { index -> CGPoint in
+        let angle = CGFloat(index) / 24 * 2 * .pi
+        return CGPoint(x: 50 + cos(angle) * 40, y: 50 + sin(angle) * 40)
+    }
+    runner.expect(
+        ShapeRecognizer.recognize(points: circlePoints) == .ellipse,
+        "a closed round hand stroke should be recognized as an ellipse"
+    )
+
+    let rejectedScribble = ShapeRecognizer.recognize(
+        points: [
+            CGPoint(x: 0, y: 0),
+            CGPoint(x: 80, y: 80),
+            CGPoint(x: 10, y: 70),
+            CGPoint(x: 90, y: 10),
+            CGPoint(x: 40, y: 60),
+        ]
+    )
+    runner.expect(rejectedScribble == nil, "an open zigzag should not be recognized as a shape")
+
+    let concaveLasso = [
+        CGPoint(x: 0, y: 0),
+        CGPoint(x: 100, y: 0),
+        CGPoint(x: 100, y: 100),
+        CGPoint(x: 50, y: 45),
+        CGPoint(x: 0, y: 100),
+    ]
+    runner.expect(
+        LassoGeometry.contains(CGPoint(x: 20, y: 30), polygon: concaveLasso)
+            && !LassoGeometry.contains(CGPoint(x: 50, y: 70), polygon: concaveLasso),
+        "lasso containment should respect a concave polygon boundary"
+    )
+
+    let selectionStroke = InkStroke(
+        tool: .shape,
+        color: .systemBlue,
+        width: 3,
+        usesPressure: false,
+        points: [
+            InkPoint(location: CGPoint(x: 0.2, y: 0.2), pressure: 1, timestamp: 0),
+            InkPoint(location: CGPoint(x: 0.4, y: 0.4), pressure: 1, timestamp: 1),
+        ],
+        content: .shape(.rectangle)
+    )
+    let movedSelection = SelectionTransform.moved(
+        [selectionStroke],
+        by: CGPoint(x: 0.1, y: -0.05)
+    )
+    let movedCoordinates = movedSelection.first?.points.map(\.location) ?? []
+    runner.expect(
+        movedCoordinates.count == 2
+            && hypot(movedCoordinates[0].x - 0.3, movedCoordinates[0].y - 0.15) < 0.000_001
+            && hypot(movedCoordinates[1].x - 0.5, movedCoordinates[1].y - 0.35) < 0.000_001,
+        "selection movement should offset every normalized coordinate"
+    )
+
+    let resizedSelection = SelectionTransform.resized(
+        [selectionStroke],
+        from: CGRect(x: 0.2, y: 0.2, width: 0.2, height: 0.2),
+        to: CGRect(x: 0.1, y: 0.1, width: 0.6, height: 0.4)
+    )
+    let resizedCoordinates = resizedSelection.first?.points.map(\.location) ?? []
+    runner.expect(
+        resizedCoordinates.count == 2
+            && hypot(resizedCoordinates[0].x - 0.1, resizedCoordinates[0].y - 0.1) < 0.000_001
+            && hypot(resizedCoordinates[1].x - 0.7, resizedCoordinates[1].y - 0.5) < 0.000_001,
+        "selection resizing should map normalized coordinates into the new bounds"
+    )
+
     let undoLayer = InkLayerState()
     for index in 0..<101 {
         undoLayer.execute(

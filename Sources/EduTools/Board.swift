@@ -93,7 +93,7 @@ final class BoardDocument {
     @discardableResult
     func replaceStrokes(with strokes: [InkStroke]) -> Bool {
         let before = currentPage.strokes
-        guard before.map(\.identifier) != strokes.map(\.identifier) else { return false }
+        guard before != strokes else { return false }
         currentPage.execute(.replaceStrokes(before: before, after: strokes))
         return true
     }

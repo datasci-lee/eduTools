@@ -90,11 +90,14 @@ enum AppCommand: Hashable {
     case selectTool(InkTool)
     case useLaser
     case selectOrCycleEraser
+    case toggleEraserAreaShape
+    case toggleShapeRecognition
     case selectColor(Int)
     case adjustWidth(Int)
     case undo
     case redo
     case clearAll
+    case deleteSelection
     case togglePalette
     case stepBack
     case showHelp
@@ -291,6 +294,69 @@ enum ShortcutCatalog {
                 bindings: [.annotation(keyCode: kVK_ANSI_E, keyEquivalent: "e", keyCap: "E")]
             ),
             ShortcutDefinition(
+                id: "tool.arrow",
+                name: "화살표 (재입력: 한쪽/양쪽)",
+                iconName: "arrow.right",
+                group: .tools,
+                modes: [.annotation],
+                command: .selectTool(.arrow),
+                bindings: [.annotation(keyCode: kVK_ANSI_A, keyEquivalent: "a", keyCap: "A")]
+            ),
+            ShortcutDefinition(
+                id: "tool.rectangle",
+                name: "사각형",
+                iconName: "rectangle",
+                group: .tools,
+                modes: [.annotation],
+                command: .selectTool(.rectangle),
+                bindings: [.annotation(keyCode: kVK_ANSI_R, keyEquivalent: "r", keyCap: "R")]
+            ),
+            ShortcutDefinition(
+                id: "tool.ellipse",
+                name: "원",
+                iconName: "circle",
+                group: .tools,
+                modes: [.annotation],
+                command: .selectTool(.ellipse),
+                bindings: [.annotation(keyCode: kVK_ANSI_O, keyEquivalent: "o", keyCap: "O")]
+            ),
+            ShortcutDefinition(
+                id: "tool.text",
+                name: "텍스트",
+                iconName: "textformat",
+                group: .tools,
+                modes: [.annotation],
+                command: .selectTool(.text),
+                bindings: [.annotation(keyCode: kVK_ANSI_T, keyEquivalent: "t", keyCap: "T")]
+            ),
+            ShortcutDefinition(
+                id: "tool.select",
+                name: "올가미 선택·이동",
+                iconName: "lasso",
+                group: .tools,
+                modes: [.annotation],
+                command: .selectTool(.select),
+                bindings: [.annotation(keyCode: kVK_ANSI_V, keyEquivalent: "v", keyCap: "V")]
+            ),
+            ShortcutDefinition(
+                id: "tool.shape-recognition",
+                name: "손그림 도형 자동 보정",
+                iconName: "wand.and.stars",
+                group: .tools,
+                modes: [.annotation],
+                command: .toggleShapeRecognition,
+                bindings: []
+            ),
+            ShortcutDefinition(
+                id: "eraser.area-shape",
+                name: "영역 지우개 사각형/올가미",
+                iconName: "rectangle.dashed",
+                group: .tools,
+                modes: [.annotation],
+                command: .toggleEraserAreaShape,
+                bindings: []
+            ),
+            ShortcutDefinition(
                 id: "board.white",
                 name: "화이트보드",
                 iconName: "rectangle.fill",
@@ -397,6 +463,21 @@ enum ShortcutCatalog {
                         keyEquivalent: "\u{8}",
                         modifiers: .command,
                         keyCap: "⌘⌫"
+                    )
+                ]
+            ),
+            ShortcutDefinition(
+                id: "edit.delete-selection",
+                name: "선택한 항목 삭제",
+                iconName: "delete.left",
+                group: .editing,
+                modes: [.annotation],
+                command: .deleteSelection,
+                bindings: [
+                    .annotation(
+                        keyCode: kVK_Delete,
+                        keyEquivalent: "\u{8}",
+                        keyCap: "⌫"
                     )
                 ]
             ),
