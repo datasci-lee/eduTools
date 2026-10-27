@@ -11,6 +11,7 @@ enum InkTool: String, Hashable {
     case ellipse
     case text
     case select
+    case cover
 
     var displayName: String {
         switch self {
@@ -23,6 +24,7 @@ enum InkTool: String, Hashable {
         case .ellipse: return "원"
         case .text: return "텍스트"
         case .select: return "선택"
+        case .cover: return "화면 가리개"
         }
     }
 }
@@ -32,6 +34,7 @@ enum InkStrokeTool: Equatable {
     case highlighter
     case shape
     case text
+    case cover
 }
 
 enum InkDefaults {

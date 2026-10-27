@@ -42,6 +42,7 @@ for arch in "${ARCHITECTURES[@]}"; do
         -module-cache-path "$arch_module_cache" \
         "$ROOT_DIR"/Sources/EduTools/*.swift \
         -framework AppKit \
+        -framework ApplicationServices \
         -framework Carbon \
         -framework ColorSync \
         -framework CoreAudio \

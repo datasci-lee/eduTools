@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var helpController: HelpController?
     private var timerCoordinator: TimerCoordinator?
     private var zoomController: ZoomController?
+    private var presenterEffectsController: PresenterEffectsController?
     private var dispatcher: AppCommandDispatcher?
     private var hotkeyCenter: HotkeyCenter?
 
@@ -18,6 +19,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let dispatcher = AppCommandDispatcher(state: appState)
         self.dispatcher = dispatcher
+
+        let presenterEffectsController = PresenterEffectsController(state: appState)
+        self.presenterEffectsController = presenterEffectsController
+        dispatcher.presenterEffectsController = presenterEffectsController
 
         let helpController = HelpController(state: appState, dispatcher: dispatcher)
         self.helpController = helpController
@@ -33,6 +38,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let statusMenu = StatusMenu(state: appState, dispatcher: dispatcher)
         self.statusMenu = statusMenu
+        presenterEffectsController.setAccessibilityStatusHandler { [weak statusMenu] trusted in
+            statusMenu?.setAccessibilityTrusted(trusted)
+        }
         timerCoordinator.setLessonDisplayHandler { [weak statusMenu] title in
             statusMenu?.setLessonTimerDisplay(title)
         }

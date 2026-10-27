@@ -125,6 +125,7 @@ final class HelpController: NSObject {
     private var toolSettingsObserverIdentifier: UUID?
     private var annotationObserverIdentifier: UUID?
     private var zoomObserverIdentifier: UUID?
+    private var sharingSettingsObserverIdentifier: UUID?
     private var screenObserver: NSObjectProtocol?
     private var pressedAt: TimeInterval?
     private var ignoresNextRelease = false
@@ -229,9 +230,9 @@ final class HelpController: NSObject {
         panel.isMovable = false
         panel.isReleasedWhenClosed = false
         panel.animationBehavior = .none
-        panel.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 2)
+        panel.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 3)
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        panel.sharingType = .none
+        panel.sharingType = state.showsHelpInSharing ? .readOnly : .none
 
         rootView.material = .hudWindow
         rootView.blendingMode = .behindWindow
@@ -311,6 +312,9 @@ final class HelpController: NSObject {
     }
 
     private func observeStateAndScreens() {
+        sharingSettingsObserverIdentifier = state.addSharingSettingsObserver { [weak self] isVisible in
+            self?.panel.sharingType = isVisible ? .readOnly : .none
+        }
         toolSettingsObserverIdentifier = state.addToolSettingsObserver { [weak self] in
             guard self?.isVisible == true else { return }
             self?.updateContent()
@@ -548,6 +552,9 @@ final class HelpController: NSObject {
     }
 
     deinit {
+        if let sharingSettingsObserverIdentifier {
+            state.removeSharingSettingsObserver(sharingSettingsObserverIdentifier)
+        }
         if let toolSettingsObserverIdentifier {
             state.removeToolSettingsObserver(toolSettingsObserverIdentifier)
         }

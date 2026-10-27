@@ -9,6 +9,8 @@ final class AppState {
     typealias InkObserver = (_ displayUUID: String, _ change: InkLayerChange) -> Void
     typealias BoardObserver = () -> Void
     typealias ZoomObserver = (ZoomSessionState?) -> Void
+    typealias PresenterEffectsObserver = () -> Void
+    typealias SharingSettingsObserver = (Bool) -> Void
 
     enum InkLayerChange {
         case added(InkStroke)
@@ -22,6 +24,8 @@ final class AppState {
     private var inkObservers: [UUID: InkObserver] = [:]
     private var boardObservers: [UUID: BoardObserver] = [:]
     private var zoomObservers: [UUID: ZoomObserver] = [:]
+    private var presenterEffectsObservers: [UUID: PresenterEffectsObserver] = [:]
+    private var sharingSettingsObservers: [UUID: SharingSettingsObserver] = [:]
     private var selectedStrokeIdentifiersByDisplay: [String: Set<UUID>] = [:]
     private let inkState = InkLayerState()
     private let boardDocuments: [BoardKind: BoardDocument] = [
@@ -34,10 +38,12 @@ final class AppState {
 
     private enum DefaultsKey {
         static let lastZoomMagnification = "EduTools.zoom.lastMagnification"
+        static let showsHelpInSharing = "EduTools.sharing.showsHelp"
     }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        showsHelpInSharing = defaults.bool(forKey: DefaultsKey.showsHelpInSharing)
     }
 
     private(set) var activeDisplayUUID: String?
@@ -136,6 +142,33 @@ final class AppState {
     }
     private(set) var eraserHitRule = EraserDefaults.defaultHitRule
     private(set) var eraserTargetFilter = EraserDefaults.defaultTargetFilter
+    private(set) var isSpotlightEnabled = false {
+        didSet {
+            guard oldValue != isSpotlightEnabled else { return }
+            notifyPresenterEffectsObservers()
+        }
+    }
+    private(set) var isCursorHighlightEnabled = false {
+        didSet {
+            guard oldValue != isCursorHighlightEnabled else { return }
+            notifyPresenterEffectsObservers()
+        }
+    }
+    private(set) var isKeystrokeDisplayEnabled = false {
+        didSet {
+            guard oldValue != isKeystrokeDisplayEnabled else { return }
+            notifyPresenterEffectsObservers()
+        }
+    }
+    private(set) var showsHelpInSharing: Bool {
+        didSet {
+            guard oldValue != showsHelpInSharing else { return }
+            defaults.set(showsHelpInSharing, forKey: DefaultsKey.showsHelpInSharing)
+            for observer in sharingSettingsObservers.values {
+                observer(showsHelpInSharing)
+            }
+        }
+    }
 
     private(set) var isPaletteVisible = true {
         didSet {
@@ -170,6 +203,22 @@ final class AppState {
 
     func togglePaletteVisibility() {
         isPaletteVisible.toggle()
+    }
+
+    func toggleSpotlight() {
+        isSpotlightEnabled.toggle()
+    }
+
+    func toggleCursorHighlight() {
+        isCursorHighlightEnabled.toggle()
+    }
+
+    func setKeystrokeDisplayEnabled(_ isEnabled: Bool) {
+        isKeystrokeDisplayEnabled = isEnabled
+    }
+
+    func toggleHelpSharing() {
+        showsHelpInSharing.toggle()
     }
 
     func toggleBoard(_ kind: BoardKind, on displayUUID: String) {
@@ -336,7 +385,7 @@ final class AppState {
                 max(textFontSize + delta, InkDefaults.minimumTextFontSize),
                 InkDefaults.maximumTextFontSize
             )
-        case .select:
+        case .select, .cover:
             break
         }
     }
@@ -381,6 +430,16 @@ final class AppState {
         ).intersection(availableIdentifiers)
         notifyInkObservers(displayUUID: displayUUID, change: .rebuilt)
         return true
+    }
+
+    @discardableResult
+    func removeTopmostCover(at normalizedPoint: CGPoint, on displayUUID: String) -> Bool {
+        let before = strokes(for: displayUUID)
+        let after = ScreenCoverEngine.removingTopmostCover(
+            at: normalizedPoint,
+            from: before
+        )
+        return replaceStrokes(after, on: displayUUID)
     }
 
     func selectedStrokeIdentifiers(on displayUUID: String) -> Set<UUID> {
@@ -735,6 +794,30 @@ final class AppState {
         zoomObservers.removeValue(forKey: identifier)
     }
 
+    @discardableResult
+    func addPresenterEffectsObserver(_ observer: @escaping PresenterEffectsObserver) -> UUID {
+        let identifier = UUID()
+        presenterEffectsObservers[identifier] = observer
+        observer()
+        return identifier
+    }
+
+    func removePresenterEffectsObserver(_ identifier: UUID) {
+        presenterEffectsObservers.removeValue(forKey: identifier)
+    }
+
+    @discardableResult
+    func addSharingSettingsObserver(_ observer: @escaping SharingSettingsObserver) -> UUID {
+        let identifier = UUID()
+        sharingSettingsObservers[identifier] = observer
+        observer(showsHelpInSharing)
+        return identifier
+    }
+
+    func removeSharingSettingsObserver(_ identifier: UUID) {
+        sharingSettingsObservers.removeValue(forKey: identifier)
+    }
+
     private func notifyInkObservers(displayUUID: String, change: InkLayerChange) {
         for observer in inkObservers.values {
             observer(displayUUID, change)
@@ -743,6 +826,12 @@ final class AppState {
 
     private func notifyToolSettingsObservers() {
         for observer in toolSettingsObservers.values {
+            observer()
+        }
+    }
+
+    private func notifyPresenterEffectsObservers() {
+        for observer in presenterEffectsObservers.values {
             observer()
         }
     }
