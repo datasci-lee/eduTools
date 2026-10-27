@@ -47,6 +47,7 @@ private final class BreakProgressView: NSView {
 
 final class BreakTimerController: NSObject {
     private let engine = BreakTimerEngine()
+    private let musicController: BreakMusicController
     private let panel: BreakTimerPanel
     private let setupPanel: NSPanel
     private let rootView = BreakTimerRootView()
@@ -57,13 +58,18 @@ final class BreakTimerController: NSObject {
     private let timePicker = NSDatePicker()
     private let warningLabel = NSTextField(labelWithString: "오늘 시각이 지났습니다")
     private let collapseButton = NSButton()
+    private let musicToggleButton = NSButton()
+    private let playlistButton = NSPopUpButton()
     private var refreshTimer: Timer?
     private var notificationObservers: [NSObjectProtocol] = []
     private var quickEndDate: Date?
     private var targetDisplayUUID: String?
     private var isCollapsed = false
 
-    override init() {
+    init(defaults: UserDefaults = .standard) {
+        musicController = BreakMusicController(
+            settings: BreakMusicSettings(defaults: defaults)
+        )
         panel = BreakTimerPanel(
             contentRect: .zero,
             styleMask: [.borderless, .nonactivatingPanel],
@@ -78,6 +84,9 @@ final class BreakTimerController: NSObject {
         )
         super.init()
 
+        musicController.bringBreakScreenToFront = { [weak self] in
+            self?.bringTimerToFront()
+        }
         configureTimerPanel()
         configureSetupPanel()
         observeSystemEvents()
@@ -112,8 +121,13 @@ final class BreakTimerController: NSObject {
         let now = Date()
         let endDate = BreakTimerEngine.endDate(addingMinutes: minutes, to: now)
         do {
+            if engine.phase == .running {
+                musicController.breakDidEnd()
+            }
             try engine.start(until: endDate, now: now)
-            showTimer(on: screenUnderMouse() ?? NSScreen.screens.first)
+            if showTimer(on: screenUnderMouse() ?? NSScreen.screens.first) {
+                musicController.breakDidStart()
+            }
             refresh(now: now)
         } catch {
             NSLog("EduTools: automatic break timer rejected its future end date: %@", String(describing: error))
@@ -178,8 +192,27 @@ final class BreakTimerController: NSObject {
         buttonStack.alignment = .centerY
         buttonStack.spacing = 12
 
+        musicToggleButton.target = self
+        musicToggleButton.action = #selector(toggleMusic(_:))
+        musicToggleButton.bezelStyle = .rounded
+        playlistButton.target = self
+        playlistButton.action = #selector(selectPlaylist(_:))
+        playlistButton.bezelStyle = .rounded
+        reloadMusicControls()
+        let musicStack = NSStackView(views: [musicToggleButton, playlistButton])
+        musicStack.orientation = .horizontal
+        musicStack.alignment = .centerY
+        musicStack.spacing = 12
+
         let stack = NSStackView(
-            views: [remainingLabel, resumeLabel, progressView, currentTimeLabel, buttonStack]
+            views: [
+                remainingLabel,
+                resumeLabel,
+                progressView,
+                currentTimeLabel,
+                musicStack,
+                buttonStack,
+            ]
         )
         stack.orientation = .vertical
         stack.alignment = .centerX
@@ -277,6 +310,7 @@ final class BreakTimerController: NSObject {
 
     @objc private func startFromSetup(_ sender: Any?) {
         let now = Date()
+        let wasRunning = engine.phase == .running
         let candidate: Date?
         if let quickEndDate {
             candidate = quickEndDate
@@ -304,7 +338,12 @@ final class BreakTimerController: NSObject {
             try engine.start(until: candidate, now: now)
             setupPanel.orderOut(nil)
             let targetScreen = screen(for: targetDisplayUUID) ?? screenUnderMouse() ?? NSScreen.screens.first
-            showTimer(on: targetScreen)
+            let didShowTimer = showTimer(on: targetScreen)
+            if wasRunning {
+                musicController.breakDidUpdate(now: now, endDate: candidate)
+            } else if didShowTimer {
+                musicController.breakDidStart()
+            }
             refresh(now: now)
         } catch {
             warningLabel.stringValue = "오늘 시각이 지났습니다"
@@ -327,20 +366,60 @@ final class BreakTimerController: NSObject {
     }
 
     @objc private func endEarly(_ sender: Any?) {
+        musicController.breakDidEnd()
         engine.endEarly()
         panel.orderOut(nil)
         setupPanel.orderOut(nil)
     }
 
-    private func showTimer(on screen: NSScreen?) {
+    @objc private func toggleMusic(_ sender: Any?) {
+        musicController.toggleMusic()
+        reloadMusicControls()
+    }
+
+    @objc private func selectPlaylist(_ sender: NSPopUpButton) {
+        musicController.selectPlaylist(at: sender.indexOfSelectedItem)
+        reloadMusicControls()
+    }
+
+    @discardableResult
+    private func showTimer(on screen: NSScreen?) -> Bool {
         guard let screen else {
             NSLog("EduTools: break timer could not start because no screen is available")
-            return
+            return false
         }
         targetDisplayUUID = displayUUID(for: screen)
         isCollapsed = false
         applyPresentationFrame()
+        NSApp.activate()
         panel.makeKeyAndOrderFront(nil)
+        return true
+    }
+
+    private func bringTimerToFront() {
+        guard engine.phase == .running else { return }
+        NSApp.activate()
+        panel.orderFrontRegardless()
+        panel.makeKey()
+    }
+
+    private func reloadMusicControls() {
+        let settings = musicController.settings
+        musicToggleButton.title = settings.isMusicEnabled ? "음악 끄기" : "음악 켜기"
+        playlistButton.removeAllItems()
+        if settings.playlistURLs.isEmpty {
+            playlistButton.addItem(withTitle: "등록된 재생목록 없음")
+            playlistButton.isEnabled = false
+            musicToggleButton.toolTip = "설정에서 YouTube Music 재생목록을 먼저 등록하세요."
+        } else {
+            for (index, url) in settings.playlistURLs.enumerated() {
+                playlistButton.addItem(withTitle: "재생목록 \(index + 1)")
+                playlistButton.lastItem?.toolTip = url.absoluteString
+            }
+            playlistButton.selectItem(at: settings.defaultPlaylistIndex)
+            playlistButton.isEnabled = true
+            musicToggleButton.toolTip = nil
+        }
     }
 
     private func applyPresentationFrame() {
@@ -414,7 +493,10 @@ final class BreakTimerController: NSObject {
             ? CGFloat(remaining / engine.initialDuration)
             : 0
         if didFinish {
+            musicController.breakDidEnd()
             TimerSound.playCompletion()
+        } else if engine.phase == .running, let endDate = engine.endDate {
+            musicController.breakDidUpdate(now: now, endDate: endDate)
         }
     }
 
@@ -480,7 +562,12 @@ final class BreakTimerController: NSObject {
         return formatter.string(from: date)
     }
 
+    func stopMusicForTermination() {
+        musicController.breakDidEnd()
+    }
+
     deinit {
+        musicController.breakDidEnd()
         refreshTimer?.invalidate()
         for observer in notificationObservers {
             NotificationCenter.default.removeObserver(observer)

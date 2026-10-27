@@ -6,7 +6,7 @@ final class TimerCoordinator {
 
     init(defaults: UserDefaults = .standard) {
         lessonTimerController = LessonTimerController(defaults: defaults)
-        breakTimerController = BreakTimerController()
+        breakTimerController = BreakTimerController(defaults: defaults)
         lessonTimerController.onAutoBreakRequested = { [weak breakTimerController] minutes in
             breakTimerController?.startQuick(minutes: minutes)
         }
@@ -22,5 +22,9 @@ final class TimerCoordinator {
 
     func setLessonDisplayHandler(_ handler: @escaping (String) -> Void) {
         lessonTimerController.setDisplayTextHandler(handler)
+    }
+
+    func stopBreakMusicForTermination() {
+        breakTimerController.stopMusicForTermination()
     }
 }
