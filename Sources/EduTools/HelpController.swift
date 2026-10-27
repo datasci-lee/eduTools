@@ -124,6 +124,7 @@ final class HelpController: NSObject {
     private var definitionByIdentifier: [String: ShortcutDefinition] = [:]
     private var toolSettingsObserverIdentifier: UUID?
     private var annotationObserverIdentifier: UUID?
+    private var zoomObserverIdentifier: UUID?
     private var screenObserver: NSObjectProtocol?
     private var pressedAt: TimeInterval?
     private var ignoresNextRelease = false
@@ -208,7 +209,7 @@ final class HelpController: NSObject {
         panel.orderOut(nil)
         definitionByIdentifier.removeAll()
 
-        if let previousApplication, !state.isAnnotationModeEnabled {
+        if let previousApplication, !state.isAnnotationModeEnabled, !state.isZoomEnabled {
             let activated = previousApplication.activate(from: .current, options: [])
             if !activated {
                 NSLog(
@@ -318,6 +319,10 @@ final class HelpController: NSObject {
             guard self?.isVisible == true else { return }
             self?.updateContent()
         }
+        zoomObserverIdentifier = state.addZoomObserver { [weak self] _ in
+            guard self?.isVisible == true else { return }
+            self?.updateContent()
+        }
         screenObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
@@ -330,7 +335,7 @@ final class HelpController: NSObject {
 
     private func show() {
         moveToMouseScreen()
-        if !state.isAnnotationModeEnabled {
+        if !state.isAnnotationModeEnabled, !state.isZoomEnabled {
             let frontmostApplication = NSWorkspace.shared.frontmostApplication
             if frontmostApplication?.processIdentifier != ProcessInfo.processInfo.processIdentifier {
                 previousApplication = frontmostApplication
@@ -352,9 +357,13 @@ final class HelpController: NSObject {
     }
 
     private func updateContent() {
-        titleLabel.stringValue = state.isAnnotationModeEnabled
-            ? "판서 모드 단축키"
-            : "전역 단축키"
+        if state.isZoomEnabled {
+            titleLabel.stringValue = "줌 모드 단축키"
+        } else if state.isAnnotationModeEnabled {
+            titleLabel.stringValue = "판서 모드 단축키"
+        } else {
+            titleLabel.stringValue = "전역 단축키"
+        }
         searchField.isHidden = !isPinned
         definitionByIdentifier.removeAll()
         for view in cardsStack.arrangedSubviews {
@@ -362,10 +371,20 @@ final class HelpController: NSObject {
             view.removeFromSuperview()
         }
 
+        let activeMode: AppMode = state.isZoomEnabled
+            ? .zoom
+            : (state.isAnnotationModeEnabled ? .annotation : .global)
         let filteredDefinitions = ShortcutCatalog.filtered(
             ShortcutCatalog.definitions,
             query: isPinned ? searchField.stringValue : ""
-        )
+        ).enumerated().sorted { lhs, rhs in
+            let lhsIsCurrent = lhs.element.modes.contains(activeMode)
+            let rhsIsCurrent = rhs.element.modes.contains(activeMode)
+            if lhsIsCurrent != rhsIsCurrent {
+                return lhsIsCurrent && !rhsIsCurrent
+            }
+            return lhs.offset < rhs.offset
+        }.map(\.element)
         let groups = orderedGroups()
         for pairStart in stride(from: 0, to: groups.count, by: 2) {
             let row = NSStackView()
@@ -383,6 +402,9 @@ final class HelpController: NSObject {
     }
 
     private func orderedGroups() -> [ShortcutGroup] {
+        if state.isZoomEnabled {
+            return [.screenBoardZoom, .tools, .editing, .timerAndOther]
+        }
         if state.isAnnotationModeEnabled {
             return [.tools, .editing, .screenBoardZoom, .timerAndOther]
         }
@@ -472,10 +494,18 @@ final class HelpController: NSObject {
             NSLog("EduTools: help ignored an item without a shortcut definition")
             return
         }
-        let scope: ShortcutScope = state.isAnnotationModeEnabled
-            && definition.binding(in: .annotation) != nil
-            ? .annotation
-            : (definition.binding(in: .global) != nil ? .global : .annotation)
+        let scope: ShortcutScope
+        if state.isZoomEnabled, definition.binding(in: .zoom) != nil {
+            scope = .zoom
+        } else if state.isAnnotationModeEnabled, definition.binding(in: .annotation) != nil {
+            scope = .annotation
+        } else if definition.binding(in: .global) != nil {
+            scope = .global
+        } else if definition.binding(in: .annotation) != nil {
+            scope = .annotation
+        } else {
+            scope = .zoom
+        }
         dispatcher.execute(definition.command, scope: scope)
         close()
     }
@@ -510,6 +540,9 @@ final class HelpController: NSObject {
         }
         if let annotationObserverIdentifier {
             state.removeAnnotationModeObserver(annotationObserverIdentifier)
+        }
+        if let zoomObserverIdentifier {
+            state.removeZoomObserver(zoomObserverIdentifier)
         }
         if let screenObserver {
             NotificationCenter.default.removeObserver(screenObserver)

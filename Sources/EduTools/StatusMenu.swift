@@ -7,9 +7,11 @@ final class StatusMenu: NSObject {
     private let statusItem: NSStatusItem
     private let modeItem: NSMenuItem
     private let toolItem: NSMenuItem
+    private let zoomItem: NSMenuItem
     private let lessonTimerItem: NSMenuItem
     private var observerIdentifier: UUID?
     private var toolObserverIdentifier: UUID?
+    private var zoomObserverIdentifier: UUID?
     private var hotkeyRegistrationFailed = false
 
     init(state: AppState, dispatcher: AppCommandDispatcher) {
@@ -18,6 +20,7 @@ final class StatusMenu: NSObject {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         modeItem = NSMenuItem(title: "판서 모드", action: nil, keyEquivalent: "")
         toolItem = NSMenuItem(title: "도구: 펜", action: nil, keyEquivalent: "")
+        zoomItem = NSMenuItem(title: "화면 줌", action: nil, keyEquivalent: "")
         lessonTimerItem = NSMenuItem(title: "수업 타이머 시작", action: nil, keyEquivalent: "")
         super.init()
 
@@ -28,6 +31,10 @@ final class StatusMenu: NSObject {
         let menu = NSMenu()
         menu.addItem(modeItem)
         menu.addItem(toolItem)
+        zoomItem.target = self
+        zoomItem.action = #selector(toggleZoom(_:))
+        applyShortcut(.toggleZoom, scope: .global, to: zoomItem)
+        menu.addItem(zoomItem)
         menu.addItem(.separator())
 
         lessonTimerItem.target = self
@@ -88,6 +95,10 @@ final class StatusMenu: NSObject {
         toolObserverIdentifier = state.addToolObserver { [weak self] tool in
             self?.toolItem.title = "도구: \(tool.displayName)"
         }
+        zoomObserverIdentifier = state.addZoomObserver { [weak self] session in
+            self?.zoomItem.state = session == nil ? .off : .on
+            self?.zoomItem.title = session == nil ? "화면 줌" : "화면 줌 종료"
+        }
     }
 
     func setHotkeyRegistrationStatus(_ status: OSStatus) {
@@ -128,6 +139,10 @@ final class StatusMenu: NSObject {
         state.toggleAnnotationMode()
     }
 
+    @objc private func toggleZoom(_ sender: Any?) {
+        dispatcher.execute(.toggleZoom, scope: .global)
+    }
+
     @objc private func clearAllInk(_ sender: Any?) {
         state.clearAllInk()
     }
@@ -158,6 +173,9 @@ final class StatusMenu: NSObject {
         }
         if let toolObserverIdentifier {
             state.removeToolObserver(toolObserverIdentifier)
+        }
+        if let zoomObserverIdentifier {
+            state.removeZoomObserver(zoomObserverIdentifier)
         }
         NSStatusBar.system.removeStatusItem(statusItem)
     }

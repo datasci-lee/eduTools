@@ -8,6 +8,7 @@ final class AppState {
     typealias PaletteVisibilityObserver = (Bool) -> Void
     typealias InkObserver = (_ displayUUID: String, _ change: InkLayerChange) -> Void
     typealias BoardObserver = () -> Void
+    typealias ZoomObserver = (ZoomSessionState?) -> Void
 
     enum InkLayerChange {
         case added(InkStroke)
@@ -20,17 +21,40 @@ final class AppState {
     private var paletteVisibilityObservers: [UUID: PaletteVisibilityObserver] = [:]
     private var inkObservers: [UUID: InkObserver] = [:]
     private var boardObservers: [UUID: BoardObserver] = [:]
+    private var zoomObservers: [UUID: ZoomObserver] = [:]
     private let inkState = InkLayerState()
     private let boardDocuments: [BoardKind: BoardDocument] = [
         .white: BoardDocument(),
         .black: BoardDocument(),
     ]
     private var knownDisplayUUIDs: Set<String> = []
+    private let defaults: UserDefaults
+    private var zoomPreviewOrigin: (center: CGPoint, magnification: CGFloat)?
+
+    private enum DefaultsKey {
+        static let lastZoomMagnification = "EduTools.zoom.lastMagnification"
+    }
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
 
     private(set) var activeDisplayUUID: String?
     private(set) var presentedBoard: BoardPresentation?
     private(set) var blackboardBackground = BlackboardBackground.black
     private(set) var boardBackgroundPattern = BoardBackgroundPattern.none
+    private(set) var zoomSession: ZoomSessionState? {
+        didSet {
+            guard oldValue != zoomSession else { return }
+            for observer in zoomObservers.values {
+                observer(zoomSession)
+            }
+        }
+    }
+
+    var isZoomEnabled: Bool {
+        zoomSession != nil
+    }
 
     private(set) var isAnnotationModeEnabled = false {
         didSet {
@@ -359,6 +383,148 @@ final class AppState {
         activeDisplayUUID = displayUUID
     }
 
+    func beginZoom(
+        on displayUUID: String,
+        screenSize: CGSize,
+        center: CGPoint
+    ) {
+        knownDisplayUUIDs.insert(displayUUID)
+        activeDisplayUUID = displayUUID
+        let savedMagnification = (defaults.object(
+            forKey: DefaultsKey.lastZoomMagnification
+        ) as? NSNumber).map { CGFloat($0.doubleValue) }
+        let magnification = ZoomGeometry.steppedMagnification(
+            savedMagnification ?? ZoomDefaults.startingMagnification
+        )
+        zoomPreviewOrigin = nil
+        zoomSession = ZoomSessionState(
+            displayUUID: displayUUID,
+            screenSize: screenSize,
+            magnification: magnification,
+            startingMagnification: ZoomDefaults.startingMagnification,
+            center: ZoomGeometry.clampedCenter(
+                center,
+                screenSize: screenSize,
+                magnification: magnification
+            ),
+            followMode: ZoomDefaults.defaultFollowMode,
+            followSmoothness: ZoomDefaults.followSmoothness,
+            previewDimming: ZoomDefaults.previewDimming,
+            isFrozen: false,
+            isPreviewing: false
+        )
+    }
+
+    func endZoom() {
+        zoomPreviewOrigin = nil
+        zoomSession = nil
+    }
+
+    @discardableResult
+    func adjustZoomMagnification(by steps: Int) -> CGFloat? {
+        guard var session = zoomSession else { return nil }
+        session.magnification = ZoomGeometry.adjustedMagnification(
+            session.magnification,
+            by: steps
+        )
+        session.center = ZoomGeometry.clampedCenter(
+            session.center,
+            screenSize: session.screenSize,
+            magnification: session.magnification
+        )
+        defaults.set(
+            Double(session.magnification),
+            forKey: DefaultsKey.lastZoomMagnification
+        )
+        zoomSession = session
+        return session.magnification
+    }
+
+    @discardableResult
+    func resetZoomMagnification() -> CGFloat? {
+        guard var session = zoomSession else { return nil }
+        session.magnification = ZoomGeometry.steppedMagnification(
+            session.startingMagnification
+        )
+        session.center = ZoomGeometry.clampedCenter(
+            session.center,
+            screenSize: session.screenSize,
+            magnification: session.magnification
+        )
+        defaults.set(
+            Double(session.magnification),
+            forKey: DefaultsKey.lastZoomMagnification
+        )
+        zoomSession = session
+        return session.magnification
+    }
+
+    @discardableResult
+    func cycleZoomFollowMode() -> ZoomFollowMode? {
+        guard var session = zoomSession else { return nil }
+        session.followMode = session.followMode.next
+        zoomSession = session
+        return session.followMode
+    }
+
+    @discardableResult
+    func toggleZoomFrozen() -> Bool? {
+        guard var session = zoomSession, !session.isPreviewing else { return nil }
+        session.isFrozen.toggle()
+        zoomSession = session
+        return session.isFrozen
+    }
+
+    func beginZoomPreview() {
+        guard var session = zoomSession, !session.isPreviewing else { return }
+        zoomPreviewOrigin = (session.center, session.magnification)
+        session.isPreviewing = true
+        zoomSession = session
+    }
+
+    func finishZoomPreview(cancelled: Bool) {
+        guard var session = zoomSession, session.isPreviewing else { return }
+        if cancelled, let zoomPreviewOrigin {
+            session.center = zoomPreviewOrigin.center
+            session.magnification = zoomPreviewOrigin.magnification
+        }
+        session.isPreviewing = false
+        zoomPreviewOrigin = nil
+        defaults.set(
+            Double(session.magnification),
+            forKey: DefaultsKey.lastZoomMagnification
+        )
+        zoomSession = session
+    }
+
+    func setZoomCenter(_ center: CGPoint) {
+        guard var session = zoomSession else { return }
+        session.center = ZoomGeometry.clampedCenter(
+            center,
+            screenSize: session.screenSize,
+            magnification: session.magnification
+        )
+        zoomSession = session
+    }
+
+    func advanceZoomFollow(toward pointer: CGPoint) {
+        guard var session = zoomSession,
+              !session.isFrozen,
+              !session.isPreviewing
+        else {
+            return
+        }
+        session.center = ZoomGeometry.followedCenter(
+            current: session.center,
+            pointer: pointer,
+            screenSize: session.screenSize,
+            magnification: session.magnification,
+            mode: session.followMode,
+            smoothness: session.followSmoothness
+        )
+        zoomSession = session
+    }
+
     @discardableResult
     func undo(on displayUUID: String) -> Bool {
         knownDisplayUUIDs.insert(displayUUID)
@@ -454,6 +620,18 @@ final class AppState {
 
     func removeBoardObserver(_ identifier: UUID) {
         boardObservers.removeValue(forKey: identifier)
+    }
+
+    @discardableResult
+    func addZoomObserver(_ observer: @escaping ZoomObserver) -> UUID {
+        let identifier = UUID()
+        zoomObservers[identifier] = observer
+        observer(zoomSession)
+        return identifier
+    }
+
+    func removeZoomObserver(_ identifier: UUID) {
+        zoomObservers.removeValue(forKey: identifier)
     }
 
     private func notifyInkObservers(displayUUID: String, change: InkLayerChange) {

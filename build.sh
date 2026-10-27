@@ -46,6 +46,11 @@ for arch in "${ARCHITECTURES[@]}"; do
         -framework ColorSync \
         -framework CoreAudio \
         -framework CoreGraphics \
+        -framework CoreImage \
+        -framework CoreMedia \
+        -framework CoreVideo \
+        -framework QuartzCore \
+        -framework ScreenCaptureKit \
         -o "$arch_executable"
 done
 

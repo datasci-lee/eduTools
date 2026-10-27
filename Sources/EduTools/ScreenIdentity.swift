@@ -1,13 +1,14 @@
 import AppKit
 import CoreGraphics
 
-func displayUUID(for screen: NSScreen) -> String? {
+func displayID(for screen: NSScreen) -> CGDirectDisplayID? {
     let screenNumberKey = NSDeviceDescriptionKey("NSScreenNumber")
-    guard let number = screen.deviceDescription[screenNumberKey] as? NSNumber else {
-        return nil
-    }
+    return (screen.deviceDescription[screenNumberKey] as? NSNumber)?.uint32Value
+}
 
-    let uuid = CGDisplayCreateUUIDFromDisplayID(number.uint32Value).takeRetainedValue()
+func displayUUID(for screen: NSScreen) -> String? {
+    guard let displayID = displayID(for: screen) else { return nil }
+    let uuid = CGDisplayCreateUUIDFromDisplayID(displayID).takeRetainedValue()
     return CFUUIDCreateString(nil, uuid) as String
 }
 

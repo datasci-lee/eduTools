@@ -69,6 +69,11 @@ private final class LaserRenderer {
 }
 
 final class InkView: NSView {
+    var keyDownInterceptor: ((NSEvent) -> Bool)?
+    var keyUpInterceptor: ((NSEvent) -> Bool)?
+    var scrollWheelInterceptor: ((NSEvent) -> Bool)?
+    var magnifyInterceptor: ((NSEvent) -> Bool)?
+
     private struct ActiveStroke {
         let tool: InkStrokeTool
         let color: NSColor
@@ -89,6 +94,7 @@ final class InkView: NSView {
     private let requestKeyFocus: () -> Void
     private let boardBackgroundLayer = CALayer()
     private let boardPatternLayer = CAShapeLayer()
+    private let transformedInkLayer = CALayer()
     private let completedLayer = CALayer()
     private let activeLayer = CALayer()
     private let laserRenderer = LaserRenderer()
@@ -104,6 +110,7 @@ final class InkView: NSView {
     private var modeObserverIdentifier: UUID?
     private var toolObserverIdentifier: UUID?
     private var boardObserverIdentifier: UUID?
+    private var presentationSourceRect: CGRect?
 
     override var acceptsFirstResponder: Bool { true }
 
@@ -125,12 +132,13 @@ final class InkView: NSView {
         configureBoardLayers()
         layer?.addSublayer(boardBackgroundLayer)
         layer?.addSublayer(boardPatternLayer)
-        layer?.addSublayer(completedLayer)
-        layer?.addSublayer(activeLayer)
-        layer?.addSublayer(laserRenderer.layer)
-        layer?.addSublayer(boardPageIndicatorLayer)
+        layer?.addSublayer(transformedInkLayer)
+        transformedInkLayer.addSublayer(completedLayer)
+        transformedInkLayer.addSublayer(activeLayer)
+        transformedInkLayer.addSublayer(laserRenderer.layer)
         configureEraserLayers()
-        layer?.addSublayer(eraserCursorLayer)
+        transformedInkLayer.addSublayer(eraserCursorLayer)
+        layer?.addSublayer(boardPageIndicatorLayer)
         layer?.addSublayer(eraserModeLayer)
 
         inkObserverIdentifier = state.addInkObserver { [weak self] changedDisplayUUID, change in
@@ -179,11 +187,15 @@ final class InkView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         layoutBoardLayers()
+        transformedInkLayer.anchorPoint = .zero
+        transformedInkLayer.position = .zero
+        transformedInkLayer.bounds = bounds
         completedLayer.frame = bounds
         activeLayer.frame = bounds
         laserRenderer.layer.frame = bounds
         layoutEraserModeLayer()
         CATransaction.commit()
+        updatePresentationTransform(animated: false)
     }
 
     override func updateTrackingAreas() {
@@ -212,6 +224,11 @@ final class InkView: NSView {
 
     func refreshForDisplayChange() {
         rebuildCompletedLayers()
+    }
+
+    func setPresentationSourceRect(_ sourceRect: CGRect?, animated: Bool) {
+        presentationSourceRect = sourceRect
+        updatePresentationTransform(animated: animated)
     }
 
     override func mouseEntered(with event: NSEvent) {
@@ -311,6 +328,7 @@ final class InkView: NSView {
     }
 
     override func scrollWheel(with event: NSEvent) {
+        if scrollWheelInterceptor?(event) == true { return }
         guard state.isAnnotationModeEnabled, state.currentTool == .eraser else {
             super.scrollWheel(with: event)
             return
@@ -322,6 +340,7 @@ final class InkView: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
+        if keyDownInterceptor?(event) == true { return }
         guard let definition = ShortcutCatalog.matching(event, scope: .annotation) else {
             super.keyDown(with: event)
             return
@@ -353,6 +372,7 @@ final class InkView: NSView {
     }
 
     override func keyUp(with event: NSEvent) {
+        if keyUpInterceptor?(event) == true { return }
         guard let definition = ShortcutCatalog.matchingKeyUp(event, scope: .annotation) else {
             super.keyUp(with: event)
             return
@@ -370,6 +390,11 @@ final class InkView: NSView {
             return
         }
         dispatcher.keyUp(definition: definition)
+    }
+
+    override func magnify(with event: NSEvent) {
+        if magnifyInterceptor?(event) == true { return }
+        super.magnify(with: event)
     }
 
     private func appendActivePoint(from event: NSEvent) {
@@ -929,7 +954,32 @@ final class InkView: NSView {
     }
 
     private func localLocation(for event: NSEvent) -> CGPoint {
-        convert(event.locationInWindow, from: nil)
+        let presentedPoint = convert(event.locationInWindow, from: nil)
+        guard let sourceRect else { return presentedPoint }
+        return ZoomGeometry.originalPoint(
+            fromZoomed: presentedPoint,
+            in: bounds.size,
+            sourceRect: sourceRect
+        )
+    }
+
+    private var sourceRect: CGRect? {
+        presentationSourceRect
+    }
+
+    private func updatePresentationTransform(animated: Bool) {
+        let transform = presentationSourceRect.map {
+            ZoomGeometry.presentationTransform(sourceRect: $0, destinationSize: bounds.size)
+        } ?? .identity
+        CATransaction.begin()
+        if animated {
+            CATransaction.setAnimationDuration(ZoomDefaults.previewAnimationDuration)
+            CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeInEaseOut))
+        } else {
+            CATransaction.setDisableActions(true)
+        }
+        transformedInkLayer.setAffineTransform(transform)
+        CATransaction.commit()
     }
 
     private func isTabletEvent(_ event: NSEvent) -> Bool {

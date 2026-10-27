@@ -60,6 +60,7 @@ struct Shortcut: Equatable, Hashable {
 enum AppMode: String, Hashable {
     case global
     case annotation
+    case zoom
 }
 
 enum ShortcutGroup: Int, CaseIterable {
@@ -80,6 +81,7 @@ enum ShortcutGroup: Int, CaseIterable {
 
 enum AppCommand: Hashable {
     case toggleAnnotationMode
+    case toggleZoom
     case toggleLessonTimer
     case showBreakTimerSetup
     case toggleBoard(BoardKind)
@@ -96,6 +98,12 @@ enum AppCommand: Hashable {
     case togglePalette
     case stepBack
     case showHelp
+    case adjustZoom(Int)
+    case resetZoom
+    case toggleZoomFreeze
+    case stopZoom
+    case beginZoomPreview
+    case cycleZoomFollowMode
 
     var isBoardPageNavigation: Bool {
         switch self {
@@ -110,6 +118,7 @@ enum AppCommand: Hashable {
 enum ShortcutScope: String, Hashable {
     case global
     case annotation
+    case zoom
 }
 
 struct ShortcutBinding {
@@ -148,6 +157,22 @@ struct ShortcutBinding {
         )
     }
 
+    static func zoom(
+        keyCode: Int,
+        keyEquivalent: String,
+        modifiers: NSEvent.ModifierFlags = [],
+        keyCap: String
+    ) -> ShortcutBinding {
+        ShortcutBinding(
+            scope: .zoom,
+            keyCode: UInt16(keyCode),
+            modifiers: modifiers,
+            keyEquivalent: keyEquivalent,
+            keyCap: keyCap,
+            serializedGlobalShortcut: nil
+        )
+    }
+
     var uniquenessKey: String {
         "\(scope.rawValue):\(keyCode):\(modifiers.rawValue)"
     }
@@ -169,7 +194,10 @@ struct ShortcutDefinition {
     let bindings: [ShortcutBinding]
 
     var displayKeys: String {
-        bindings.map(\.keyCap).joined(separator: " / ")
+        var seen: Set<String> = []
+        return bindings.compactMap { binding in
+            seen.insert(binding.keyCap).inserted ? binding.keyCap : nil
+        }.joined(separator: " / ")
     }
 
     func binding(in scope: ShortcutScope) -> ShortcutBinding? {
@@ -195,6 +223,15 @@ enum ShortcutCatalog {
                 modes: [.global],
                 command: .toggleAnnotationMode,
                 bindings: [global("AppMod+P")]
+            ),
+            ShortcutDefinition(
+                id: "zoom.toggle",
+                name: "화면 줌 켜기/끄기",
+                iconName: "plus.magnifyingglass",
+                group: .screenBoardZoom,
+                modes: [.global],
+                command: .toggleZoom,
+                bindings: [global("AppMod+Z")]
             ),
             ShortcutDefinition(
                 id: "timer.lesson.toggle",
@@ -382,15 +419,93 @@ enum ShortcutCatalog {
                 bindings: [.annotation(keyCode: kVK_Escape, keyEquivalent: "\u{1b}", keyCap: "Esc")]
             ),
             ShortcutDefinition(
+                id: "zoom.increase",
+                name: "줌 배율 올리기",
+                iconName: "plus.magnifyingglass",
+                group: .screenBoardZoom,
+                modes: [.zoom],
+                command: .adjustZoom(1),
+                bindings: [
+                    .zoom(
+                        keyCode: kVK_ANSI_Equal,
+                        keyEquivalent: "+",
+                        modifiers: .shift,
+                        keyCap: "+"
+                    ),
+                ]
+            ),
+            ShortcutDefinition(
+                id: "zoom.decrease",
+                name: "줌 배율 내리기",
+                iconName: "minus.magnifyingglass",
+                group: .screenBoardZoom,
+                modes: [.zoom],
+                command: .adjustZoom(-1),
+                bindings: [
+                    .zoom(keyCode: kVK_ANSI_Minus, keyEquivalent: "-", keyCap: "-")
+                ]
+            ),
+            ShortcutDefinition(
+                id: "zoom.reset",
+                name: "시작 배율로 되돌리기",
+                iconName: "1.magnifyingglass",
+                group: .screenBoardZoom,
+                modes: [.zoom],
+                command: .resetZoom,
+                bindings: [.zoom(keyCode: kVK_ANSI_0, keyEquivalent: "0", keyCap: "0")]
+            ),
+            ShortcutDefinition(
+                id: "zoom.freeze",
+                name: "화면 멈추고 판서",
+                iconName: "pause.circle",
+                group: .screenBoardZoom,
+                modes: [.zoom],
+                command: .toggleZoomFreeze,
+                bindings: [.zoom(keyCode: kVK_ANSI_P, keyEquivalent: "p", keyCap: "P")]
+            ),
+            ShortcutDefinition(
+                id: "zoom.preview",
+                name: "확대 위치 미리보기",
+                iconName: "rectangle.dashed",
+                group: .screenBoardZoom,
+                modes: [.zoom],
+                command: .beginZoomPreview,
+                bindings: [.zoom(keyCode: kVK_Space, keyEquivalent: " ", keyCap: "Space")]
+            ),
+            ShortcutDefinition(
+                id: "zoom.follow",
+                name: "따라가기 방식 바꾸기",
+                iconName: "cursorarrow.motionlines",
+                group: .screenBoardZoom,
+                modes: [.zoom],
+                command: .cycleZoomFollowMode,
+                bindings: [.zoom(keyCode: kVK_ANSI_F, keyEquivalent: "f", keyCap: "F")]
+            ),
+            ShortcutDefinition(
+                id: "zoom.stop",
+                name: "줌 종료",
+                iconName: "escape",
+                group: .screenBoardZoom,
+                modes: [.zoom],
+                command: .stopZoom,
+                bindings: [.zoom(keyCode: kVK_Escape, keyEquivalent: "\u{1b}", keyCap: "Esc")]
+            ),
+            ShortcutDefinition(
                 id: "help.show",
                 name: "도움말",
                 iconName: "questionmark.circle",
                 group: .timerAndOther,
-                modes: [.global, .annotation],
+                modes: [.global, .annotation, .zoom],
                 command: .showHelp,
                 bindings: [
                     global("AppMod+/"),
                     .annotation(
+                        keyCode: kVK_ANSI_Slash,
+                        keyEquivalent: "/",
+                        modifiers: .shift,
+                        keyCap: "?"
+                    ),
+                    .zoom(
                         keyCode: kVK_ANSI_Slash,
                         keyEquivalent: "/",
                         modifiers: .shift,
