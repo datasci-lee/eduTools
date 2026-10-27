@@ -99,7 +99,7 @@ final class PaletteController: NSObject {
         panel.isMovableByWindowBackground = false
         panel.isReleasedWhenClosed = false
         panel.animationBehavior = .none
-        panel.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
+        panel.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 2)
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.sharingType = .none
 
@@ -143,6 +143,7 @@ final class PaletteController: NSObject {
         addToolButton(command: .selectTool(.ellipse), tool: .ellipse)
         addToolButton(command: .selectTool(.text), tool: .text)
         addToolButton(command: .selectTool(.select), tool: .select)
+        addToolButton(command: .selectTool(.cover), tool: .cover)
 
         let recognitionButton = makeDefinitionButton(command: .toggleShapeRecognition)
         self.recognitionButton = recognitionButton
@@ -317,7 +318,7 @@ final class PaletteController: NSObject {
             widthLabel.stringValue = formattedSize(state.penWidth)
         case .text:
             widthLabel.stringValue = formattedSize(state.textFontSize)
-        case .select:
+        case .select, .cover:
             widthLabel.stringValue = "—"
         }
     }

@@ -8,6 +8,7 @@ final class AppCommandDispatcher {
     weak var overlayController: OverlayController?
     weak var timerCoordinator: TimerCoordinator?
     weak var zoomController: ZoomController?
+    weak var presenterEffectsController: PresenterEffectsController?
 
     init(state: AppState) {
         self.state = state
@@ -17,6 +18,10 @@ final class AppCommandDispatcher {
         switch command {
         case .toggleAnnotationMode,
              .toggleZoom,
+             .toggleSpotlight,
+             .toggleCursorHighlight,
+             .toggleKeystrokeDisplay,
+             .toggleHelpSharing,
              .toggleLessonTimer,
              .showBreakTimerSetup,
              .toggleBoard,
@@ -82,6 +87,14 @@ final class AppCommandDispatcher {
             state.toggleAnnotationMode()
         case .toggleZoom:
             zoomController?.toggleZoom()
+        case .toggleSpotlight:
+            state.toggleSpotlight()
+        case .toggleCursorHighlight:
+            state.toggleCursorHighlight()
+        case .toggleKeystrokeDisplay:
+            presenterEffectsController?.toggleKeystrokeDisplay()
+        case .toggleHelpSharing:
+            state.toggleHelpSharing()
         case .toggleLessonTimer:
             timerCoordinator?.toggleLessonTimer()
         case .showBreakTimerSetup:
@@ -121,7 +134,9 @@ final class AppCommandDispatcher {
         case let .selectColor(index):
             state.selectColor(at: index)
         case let .adjustWidth(delta):
-            state.adjustCurrentToolWidth(by: CGFloat(delta))
+            if presenterEffectsController?.adjustSpotlightRadius(by: delta) != true {
+                state.adjustCurrentToolWidth(by: CGFloat(delta))
+            }
         case .undo:
             if let targetDisplayUUID = displayUUID ?? state.activeDisplayUUID {
                 _ = state.undo(on: targetDisplayUUID)

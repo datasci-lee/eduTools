@@ -122,6 +122,11 @@ final class InkView: NSView {
         var end: InkPoint
     }
 
+    private struct ActiveCover {
+        let start: InkPoint
+        var end: InkPoint
+    }
+
     private enum SelectionInteraction {
         case lasso(points: [CGPoint])
         case move(start: CGPoint, originals: [InkStroke])
@@ -150,6 +155,7 @@ final class InkView: NSView {
     private var activeStroke: ActiveStroke?
     private var activeEraser: ActiveEraser?
     private var activeShape: ActiveShape?
+    private var activeCover: ActiveCover?
     private var selectionInteraction: SelectionInteraction?
     private var selectionPreview: [InkStroke]?
     private var textEntrySession: TextEntrySession?
@@ -346,6 +352,13 @@ final class InkView: NSView {
         case .arrow, .rectangle, .ellipse:
             beginShape(from: event)
             return
+        case .cover:
+            let normalizedPoint = InkGeometry.normalizedPoint(from: location, in: bounds.size)
+            if state.removeTopmostCover(at: normalizedPoint, on: displayUUID) {
+                return
+            }
+            beginCover(from: event)
+            return
         case .pen, .highlighter, .laser, .eraser:
             break
         }
@@ -363,7 +376,7 @@ final class InkView: NSView {
             return
         case .eraser:
             return
-        case .arrow, .rectangle, .ellipse, .text, .select:
+        case .arrow, .rectangle, .ellipse, .text, .select, .cover:
             return
         }
 
@@ -393,6 +406,10 @@ final class InkView: NSView {
             updateActiveShape(from: event)
             return
         }
+        if activeCover != nil {
+            updateActiveCover(from: event)
+            return
+        }
         if selectionInteraction != nil {
             updateSelectionInteraction(at: location)
             return
@@ -414,6 +431,11 @@ final class InkView: NSView {
             finishActiveShape()
             return
         }
+        if activeCover != nil {
+            updateActiveCover(from: event)
+            finishActiveCover()
+            return
+        }
         if selectionInteraction != nil {
             updateSelectionInteraction(at: localLocation(for: event))
             finishSelectionInteraction()
@@ -425,6 +447,7 @@ final class InkView: NSView {
     }
 
     override func scrollWheel(with event: NSEvent) {
+        if state.isSpotlightEnabled { return }
         if scrollWheelInterceptor?(event) == true { return }
         guard state.isAnnotationModeEnabled, state.currentTool == .eraser else {
             super.scrollWheel(with: event)
@@ -550,11 +573,53 @@ final class InkView: NSView {
         state.addStroke(stroke, to: displayUUID)
     }
 
+    private func beginCover(from event: NSEvent) {
+        let point = inkPoint(for: event)
+        activeCover = ActiveCover(start: point, end: point)
+        renderActiveCover()
+    }
+
+    private func updateActiveCover(from event: NSEvent) {
+        guard var cover = activeCover else { return }
+        cover.end = inkPoint(for: event)
+        activeCover = cover
+        renderActiveCover()
+    }
+
+    private func finishActiveCover() {
+        guard let activeCover else { return }
+        let stroke = coverStroke(for: activeCover)
+        self.activeCover = nil
+        activeLayer.sublayers?.forEach { $0.removeFromSuperlayer() }
+
+        let coverBounds = InkItemGeometry.bounds(for: stroke, canvasSize: bounds.size)
+        guard coverBounds.width >= 4, coverBounds.height >= 4 else { return }
+        state.addStroke(stroke, to: displayUUID)
+    }
+
+    private func coverStroke(for activeCover: ActiveCover) -> InkStroke {
+        InkStroke(
+            tool: .cover,
+            color: .systemGray,
+            width: 1,
+            usesPressure: false,
+            points: [activeCover.start, activeCover.end],
+            content: .cover
+        )
+    }
+
+    private func renderActiveCover() {
+        activeLayer.sublayers?.forEach { $0.removeFromSuperlayer() }
+        guard let activeCover else { return }
+        activeLayer.addSublayer(makeVectorLayer(for: coverStroke(for: activeCover)))
+    }
+
     private func beginEraser(at point: CGPoint) {
         recognitionWorkItem?.cancel()
         recognizedStroke = nil
         activeStroke = nil
         activeShape = nil
+        activeCover = nil
         selectionInteraction = nil
         activeEraser = ActiveEraser(settings: state.eraserSettings, points: [point])
         renderActiveEraser()
@@ -626,6 +691,7 @@ final class InkView: NSView {
         activeStroke = nil
         activeEraser = nil
         activeShape = nil
+        activeCover = nil
         selectionInteraction = nil
         selectionPreview = nil
         activeLayer.sublayers?.forEach { $0.removeFromSuperlayer() }
@@ -1161,7 +1227,7 @@ final class InkView: NSView {
             endpoint = InkGeometry.snappedPenEndpoint(from: start, to: proposed)
         case .highlighter:
             endpoint = InkGeometry.snappedHighlighterEndpoint(from: start, to: proposed)
-        case .shape, .text:
+        case .shape, .text, .cover:
             endpoint = proposed
         }
         let normalizedEndpoint = InkGeometry.normalizedPoint(from: endpoint, in: bounds.size)
@@ -1201,7 +1267,7 @@ final class InkView: NSView {
         case .freehand:
             guard let layer = makeBitmapLayer(for: stroke) else { return }
             completedLayer.addSublayer(layer)
-        case .shape, .text:
+        case .shape, .text, .cover:
             completedLayer.addSublayer(makeVectorLayer(for: stroke))
         }
     }
@@ -1271,8 +1337,30 @@ final class InkView: NSView {
             addShapeLayer(for: stroke, kind: kind, to: container)
         case let .text(content):
             addTextLayer(for: stroke, content: content, to: container)
+        case .cover:
+            addCoverLayer(for: stroke, to: container)
         }
         return container
+    }
+
+    private func addCoverLayer(for stroke: InkStroke, to container: CALayer) {
+        guard let first = stroke.points.first, let last = stroke.points.last else { return }
+        let start = InkGeometry.screenPoint(from: first.location, in: bounds.size)
+        let end = InkGeometry.screenPoint(from: last.location, in: bounds.size)
+        let cover = CAShapeLayer()
+        cover.path = CGPath(
+            rect: CGRect(
+                x: min(start.x, end.x),
+                y: min(start.y, end.y),
+                width: abs(end.x - start.x),
+                height: abs(end.y - start.y)
+            ),
+            transform: nil
+        )
+        cover.fillColor = NSColor.systemGray.withAlphaComponent(0.96).cgColor
+        cover.strokeColor = NSColor.separatorColor.cgColor
+        cover.lineWidth = 1
+        container.addSublayer(cover)
     }
 
     private func addShapeLayer(

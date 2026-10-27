@@ -94,6 +94,26 @@ func runSelfTests() -> Int32 {
         "every annotation shortcut should be connected to the command dispatcher"
     )
 
+    let displayedCommandC = KeystrokeDisplayFilter.displayString(
+        keyCode: UInt16(kVK_ANSI_C),
+        charactersIgnoringModifiers: "c",
+        modifierFlags: .command
+    )
+    let rejectedPlainC = KeystrokeDisplayFilter.displayString(
+        keyCode: UInt16(kVK_ANSI_C),
+        charactersIgnoringModifiers: "c",
+        modifierFlags: []
+    )
+    let rejectedShiftC = KeystrokeDisplayFilter.displayString(
+        keyCode: UInt16(kVK_ANSI_C),
+        charactersIgnoringModifiers: "c",
+        modifierFlags: .shift
+    )
+    runner.expect(
+        displayedCommandC == "⌘C" && rejectedPlainC == nil && rejectedShiftC == nil,
+        "keystroke display should accept modified shortcuts but reject plain and Shift-only typing"
+    )
+
     let koreanFilterResults = ShortcutCatalog.filtered(
         ShortcutCatalog.definitions,
         query: "형광펜"
@@ -299,6 +319,37 @@ func runSelfTests() -> Int32 {
             && hypot(movedCoordinates[0].x - 0.3, movedCoordinates[0].y - 0.15) < 0.000_001
             && hypot(movedCoordinates[1].x - 0.5, movedCoordinates[1].y - 0.35) < 0.000_001,
         "selection movement should offset every normalized coordinate"
+    )
+
+    let lowerCover = InkStroke(
+        tool: .cover,
+        color: .systemGray,
+        width: 1,
+        usesPressure: false,
+        points: [
+            InkPoint(location: CGPoint(x: 0.1, y: 0.1), pressure: 1, timestamp: 0),
+            InkPoint(location: CGPoint(x: 0.6, y: 0.6), pressure: 1, timestamp: 1),
+        ],
+        content: .cover
+    )
+    let upperCover = InkStroke(
+        tool: .cover,
+        color: .systemGray,
+        width: 1,
+        usesPressure: false,
+        points: [
+            InkPoint(location: CGPoint(x: 0.3, y: 0.3), pressure: 1, timestamp: 0),
+            InkPoint(location: CGPoint(x: 0.8, y: 0.8), pressure: 1, timestamp: 1),
+        ],
+        content: .cover
+    )
+    let coverClickResult = ScreenCoverEngine.removingTopmostCover(
+        at: CGPoint(x: 0.4, y: 0.4),
+        from: [selectionStroke, lowerCover, upperCover]
+    )
+    runner.expect(
+        coverClickResult.map(\.identifier) == [selectionStroke.identifier, lowerCover.identifier],
+        "clicking overlapping covers should remove only the topmost matching cover"
     )
 
     let resizedSelection = SelectionTransform.resized(

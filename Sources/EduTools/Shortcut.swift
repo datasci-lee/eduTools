@@ -82,6 +82,10 @@ enum ShortcutGroup: Int, CaseIterable {
 enum AppCommand: Hashable {
     case toggleAnnotationMode
     case toggleZoom
+    case toggleSpotlight
+    case toggleCursorHighlight
+    case toggleKeystrokeDisplay
+    case toggleHelpSharing
     case toggleLessonTimer
     case showBreakTimerSetup
     case toggleBoard(BoardKind)
@@ -237,6 +241,33 @@ enum ShortcutCatalog {
                 bindings: [global("AppMod+Z")]
             ),
             ShortcutDefinition(
+                id: "spotlight.toggle",
+                name: "스포트라이트 켜기/끄기",
+                iconName: "light.beacon.max",
+                group: .screenBoardZoom,
+                modes: [.global, .annotation],
+                command: .toggleSpotlight,
+                bindings: [global("AppMod+S")]
+            ),
+            ShortcutDefinition(
+                id: "cursor-highlight.toggle",
+                name: "커서 강조 켜기/끄기",
+                iconName: "cursorarrow.rays",
+                group: .screenBoardZoom,
+                modes: [.global],
+                command: .toggleCursorHighlight,
+                bindings: []
+            ),
+            ShortcutDefinition(
+                id: "keystroke-display.toggle",
+                name: "키 입력 표시 켜기/끄기",
+                iconName: "command",
+                group: .screenBoardZoom,
+                modes: [.global],
+                command: .toggleKeystrokeDisplay,
+                bindings: []
+            ),
+            ShortcutDefinition(
                 id: "timer.lesson.toggle",
                 name: "수업 타이머 시작/일시정지",
                 iconName: "timer",
@@ -337,6 +368,15 @@ enum ShortcutCatalog {
                 modes: [.annotation],
                 command: .selectTool(.select),
                 bindings: [.annotation(keyCode: kVK_ANSI_V, keyEquivalent: "v", keyCap: "V")]
+            ),
+            ShortcutDefinition(
+                id: "tool.cover",
+                name: "화면 가리개",
+                iconName: "rectangle.fill",
+                group: .tools,
+                modes: [.annotation],
+                command: .selectTool(.cover),
+                bindings: []
             ),
             ShortcutDefinition(
                 id: "tool.shape-recognition",

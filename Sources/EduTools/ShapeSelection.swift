@@ -33,6 +33,7 @@ enum InkStrokeContent: Equatable {
     case freehand
     case shape(InkShapeKind)
     case text(InkTextContent)
+    case cover
 }
 
 enum EraserAreaShape: CaseIterable {
@@ -274,7 +275,7 @@ enum InkItemGeometry {
                     )
                 }
             }
-        case .text:
+        case .text, .cover:
             let bounds = CGRect(
                 x: min(first.x, last.x),
                 y: min(first.y, last.y),
@@ -397,6 +398,30 @@ enum LassoGeometry {
             && point.x <= max(start.x, end.x) + 0.000_001
             && point.y >= min(start.y, end.y) - 0.000_001
             && point.y <= max(start.y, end.y) + 0.000_001
+    }
+}
+
+enum ScreenCoverEngine {
+    static func removingTopmostCover(
+        at normalizedPoint: CGPoint,
+        from strokes: [InkStroke]
+    ) -> [InkStroke] {
+        guard let index = strokes.lastIndex(where: { stroke in
+            guard stroke.content == .cover, stroke.points.count >= 2 else { return false }
+            return normalizedBounds(for: stroke).contains(normalizedPoint)
+        }) else {
+            return strokes
+        }
+
+        var result = strokes
+        result.remove(at: index)
+        return result
+    }
+
+    private static func normalizedBounds(for stroke: InkStroke) -> CGRect {
+        stroke.points.reduce(CGRect.null) { bounds, point in
+            bounds.union(CGRect(origin: point.location, size: .zero))
+        }.standardized
     }
 }
 

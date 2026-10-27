@@ -117,6 +117,7 @@ final class OverlayController {
         panel.animationBehavior = .none
         panel.level = .screenSaver
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        panel.sharingType = .readOnly
         panel.ignoresMouseEvents = !state.isAnnotationModeEnabled
         panel.acceptsMouseMovedEvents = true
 
