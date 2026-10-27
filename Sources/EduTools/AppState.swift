@@ -14,7 +14,10 @@ final class AppState {
     private var annotationModeObservers: [UUID: AnnotationModeObserver] = [:]
     private var toolObservers: [UUID: ToolObserver] = [:]
     private var inkObservers: [UUID: InkObserver] = [:]
-    private var inkLayers: [String: InkLayerState] = [:]
+    private let inkState = InkLayerState()
+    private var knownDisplayUUIDs: Set<String> = []
+
+    private(set) var activeDisplayUUID: String?
 
     private(set) var isAnnotationModeEnabled = false {
         didSet {
@@ -37,9 +40,22 @@ final class AppState {
     private(set) var selectedColorIndex = InkDefaults.initialColorIndex
     private(set) var penWidth = InkDefaults.penWidth
     private(set) var highlighterWidth = InkDefaults.highlighterWidth
+    private(set) var eraserDiameter = EraserDefaults.defaultDiameter
+    private(set) var eraserMode = EraserDefaults.defaultMode
+    private(set) var eraserHitRule = EraserDefaults.defaultHitRule
+    private(set) var eraserTargetFilter = EraserDefaults.defaultTargetFilter
 
     var selectedColor: NSColor {
         InkDefaults.colors[selectedColorIndex]
+    }
+
+    var eraserSettings: EraserSettings {
+        EraserSettings(
+            diameter: eraserDiameter,
+            mode: eraserMode,
+            hitRule: eraserHitRule,
+            targetFilter: eraserTargetFilter
+        )
     }
 
     func toggleAnnotationMode() {
@@ -52,6 +68,42 @@ final class AppState {
 
     func selectTool(_ tool: InkTool) {
         currentTool = tool
+    }
+
+    @discardableResult
+    func selectOrCycleEraser() -> EraserMode {
+        if currentTool == .eraser {
+            eraserMode = eraserMode.next
+        } else {
+            currentTool = .eraser
+        }
+        return eraserMode
+    }
+
+    func setEraserMode(_ mode: EraserMode) {
+        eraserMode = mode
+    }
+
+    func setEraserHitRule(_ hitRule: EraserHitRule) {
+        eraserHitRule = hitRule
+    }
+
+    func setEraserTargetFilter(_ targetFilter: EraserTargetFilter) {
+        eraserTargetFilter = targetFilter
+    }
+
+    func setEraserDiameter(_ diameter: CGFloat) {
+        eraserDiameter = min(
+            max(diameter, EraserDefaults.minimumDiameter),
+            EraserDefaults.maximumDiameter
+        )
+    }
+
+    @discardableResult
+    func selectEraserDiameterPreset(at index: Int) -> Bool {
+        guard EraserDefaults.presetDiameters.indices.contains(index) else { return false }
+        setEraserDiameter(EraserDefaults.presetDiameters[index])
+        return true
     }
 
     func activateLaserShortcut() {
@@ -79,30 +131,99 @@ final class AppState {
             )
         case .laser:
             break
+        case .eraser:
+            setEraserDiameter(eraserDiameter + delta * EraserDefaults.diameterAdjustmentStep)
         }
     }
 
     func strokes(for displayUUID: String) -> [InkStroke] {
-        inkLayers[displayUUID]?.strokes ?? []
+        knownDisplayUUIDs.insert(displayUUID)
+        return inkState.strokes(for: displayUUID)
     }
 
     func addStroke(_ stroke: InkStroke, to displayUUID: String) {
-        let layer = inkLayer(for: displayUUID)
-        layer.execute(.addStroke(stroke))
+        knownDisplayUUIDs.insert(displayUUID)
+        inkState.execute(.addDisplayStroke(displayUUID: displayUUID, stroke: stroke))
         notifyInkObservers(displayUUID: displayUUID, change: .added(stroke))
     }
 
     @discardableResult
-    func undo(on displayUUID: String) -> Bool {
-        guard let layer = inkLayers[displayUUID], layer.undo() else { return false }
+    func erase(
+        _ gesture: EraserGesture,
+        settings: EraserSettings,
+        on displayUUID: String,
+        canvasSize: CGSize
+    ) -> Bool {
+        knownDisplayUUIDs.insert(displayUUID)
+        let before = inkState.strokes(for: displayUUID)
+        let after = EraserEngine.erase(
+            strokes: before,
+            gesture: gesture,
+            settings: settings,
+            canvasSize: canvasSize
+        )
+        guard before.map(\.identifier) != after.map(\.identifier) else { return false }
+
+        inkState.execute(
+            .replaceDisplayStrokes(
+                displayUUID: displayUUID,
+                before: before,
+                after: after
+            )
+        )
         notifyInkObservers(displayUUID: displayUUID, change: .rebuilt)
         return true
     }
 
     @discardableResult
-    func redo(on displayUUID: String) -> Bool {
-        guard let layer = inkLayers[displayUUID], layer.redo() else { return false }
+    func clearInk(on displayUUID: String) -> Bool {
+        knownDisplayUUIDs.insert(displayUUID)
+        let before = inkState.strokes(for: displayUUID)
+        guard !before.isEmpty else { return false }
+        inkState.execute(
+            .replaceDisplayStrokes(
+                displayUUID: displayUUID,
+                before: before,
+                after: []
+            )
+        )
         notifyInkObservers(displayUUID: displayUUID, change: .rebuilt)
+        return true
+    }
+
+    @discardableResult
+    func clearCurrentDisplayInk() -> Bool {
+        guard let activeDisplayUUID else { return false }
+        return clearInk(on: activeDisplayUUID)
+    }
+
+    @discardableResult
+    func clearAllInk() -> Bool {
+        let before = inkState.allDisplayStrokes
+        guard before.values.contains(where: { !$0.isEmpty }) else { return false }
+        inkState.execute(.replaceAllDisplayStrokes(before: before, after: [:]))
+        notifyAllInkObservers()
+        return true
+    }
+
+    func setActiveDisplay(_ displayUUID: String) {
+        knownDisplayUUIDs.insert(displayUUID)
+        activeDisplayUUID = displayUUID
+    }
+
+    @discardableResult
+    func undo(on displayUUID: String) -> Bool {
+        knownDisplayUUIDs.insert(displayUUID)
+        guard inkState.undo() else { return false }
+        notifyAllInkObservers()
+        return true
+    }
+
+    @discardableResult
+    func redo(on displayUUID: String) -> Bool {
+        knownDisplayUUIDs.insert(displayUUID)
+        guard inkState.redo() else { return false }
+        notifyAllInkObservers()
         return true
     }
 
@@ -141,18 +262,15 @@ final class AppState {
         inkObservers.removeValue(forKey: identifier)
     }
 
-    private func inkLayer(for displayUUID: String) -> InkLayerState {
-        if let layer = inkLayers[displayUUID] {
-            return layer
-        }
-        let layer = InkLayerState()
-        inkLayers[displayUUID] = layer
-        return layer
-    }
-
     private func notifyInkObservers(displayUUID: String, change: InkLayerChange) {
         for observer in inkObservers.values {
             observer(displayUUID, change)
+        }
+    }
+
+    private func notifyAllInkObservers() {
+        for displayUUID in knownDisplayUUIDs {
+            notifyInkObservers(displayUUID: displayUUID, change: .rebuilt)
         }
     }
 }

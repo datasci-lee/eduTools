@@ -26,6 +26,24 @@ final class StatusMenu: NSObject {
         menu.addItem(toolItem)
         menu.addItem(.separator())
 
+        let clearAllItem = NSMenuItem(
+            title: "전체 지우기",
+            action: #selector(clearAllInk(_:)),
+            keyEquivalent: "\u{8}"
+        )
+        clearAllItem.keyEquivalentModifierMask = .command
+        clearAllItem.target = self
+        menu.addItem(clearAllItem)
+
+        let clearCurrentDisplayItem = NSMenuItem(
+            title: "현재 모니터만 지우기",
+            action: #selector(clearCurrentDisplayInk(_:)),
+            keyEquivalent: ""
+        )
+        clearCurrentDisplayItem.target = self
+        menu.addItem(clearCurrentDisplayItem)
+        menu.addItem(.separator())
+
         let quitItem = NSMenuItem(
             title: "EduTools 종료",
             action: #selector(terminateApplication(_:)),
@@ -62,6 +80,14 @@ final class StatusMenu: NSObject {
 
     @objc private func toggleAnnotationMode(_ sender: Any?) {
         state.toggleAnnotationMode()
+    }
+
+    @objc private func clearAllInk(_ sender: Any?) {
+        state.clearAllInk()
+    }
+
+    @objc private func clearCurrentDisplayInk(_ sender: Any?) {
+        state.clearCurrentDisplayInk()
     }
 
     @objc private func terminateApplication(_ sender: Any?) {
