@@ -10,4 +10,4 @@
 open dist/EduTools.app
 ```
 
-macOS 26 이상.
+두 아키텍처(arm64·x86_64)를 합친 ad-hoc 서명 앱을 만들며, 외부 의존성과 Xcode는 사용하지 않습니다. macOS 26 이상에서 실행됩니다.
