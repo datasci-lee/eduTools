@@ -12,17 +12,6 @@ private func displayReconfigurationCallback(
     controller.displayConfigurationDidChange()
 }
 
-private final class OverlayInputView: NSView {
-    override var acceptsFirstResponder: Bool { true }
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        bounds.contains(point) ? self : nil
-    }
-
-    override func mouseDown(with event: NSEvent) {
-    }
-}
-
 private final class OverlayPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
@@ -30,10 +19,11 @@ private final class OverlayPanel: NSPanel {
 
 final class OverlayController {
     private let state: AppState
-    private var panelsByDisplayUUID: [String: NSPanel] = [:]
+    private var panelsByDisplayUUID: [String: OverlayPanel] = [:]
     private var observerIdentifier: UUID?
     private var refreshWorkItem: DispatchWorkItem?
     private var callbackRegistered = false
+    private var previouslyFrontmostApplication: NSRunningApplication?
 
     init(state: AppState) {
         self.state = state
@@ -86,9 +76,17 @@ final class OverlayController {
                 if panel.frame != screen.frame {
                     panel.setFrame(screen.frame, display: true)
                 }
+                (panel.contentView as? InkView)?.refreshForDisplayChange()
             } else {
-                panelsByDisplayUUID[identifier] = makePanel(for: screen)
+                panelsByDisplayUUID[identifier] = makePanel(
+                    for: screen,
+                    displayUUID: identifier
+                )
             }
+        }
+
+        if state.isAnnotationModeEnabled {
+            focusPanelUnderMouse()
         }
     }
 
@@ -102,10 +100,10 @@ final class OverlayController {
         return CFUUIDCreateString(nil, uuid) as String
     }
 
-    private func makePanel(for screen: NSScreen) -> NSPanel {
+    private func makePanel(for screen: NSScreen, displayUUID: String) -> OverlayPanel {
         let panel = OverlayPanel(
             contentRect: screen.frame,
-            styleMask: [.borderless, .nonactivatingPanel],
+            styleMask: [.borderless],
             backing: .buffered,
             defer: false,
             screen: screen
@@ -121,21 +119,69 @@ final class OverlayController {
         panel.level = .screenSaver
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.ignoresMouseEvents = !state.isAnnotationModeEnabled
+        panel.acceptsMouseMovedEvents = true
 
-        let inputView = OverlayInputView(
-            frame: NSRect(origin: .zero, size: screen.frame.size)
+        let inkView = InkView(
+            frame: NSRect(origin: .zero, size: screen.frame.size),
+            state: state,
+            displayUUID: displayUUID,
+            requestKeyFocus: { [weak self] in
+                self?.focusPanel(displayUUID: displayUUID)
+            }
         )
-        inputView.autoresizingMask = [.width, .height]
-        panel.contentView = inputView
+        inkView.autoresizingMask = [.width, .height]
+        panel.contentView = inkView
         panel.orderFrontRegardless()
         return panel
     }
 
     private func setAnnotationModeEnabled(_ isEnabled: Bool) {
+        if isEnabled {
+            let frontmostApplication = NSWorkspace.shared.frontmostApplication
+            if frontmostApplication?.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+                previouslyFrontmostApplication = frontmostApplication
+            }
+            NSApp.activate()
+        }
+
         for panel in panelsByDisplayUUID.values {
             panel.ignoresMouseEvents = !isEnabled
             panel.orderFrontRegardless()
         }
+
+        if isEnabled {
+            focusPanelUnderMouse()
+        } else if let previouslyFrontmostApplication {
+            let activated = previouslyFrontmostApplication.activate(
+                from: .current,
+                options: []
+            )
+            if !activated {
+                NSLog(
+                    "EduTools: failed to return focus to process %d",
+                    previouslyFrontmostApplication.processIdentifier
+                )
+            }
+            self.previouslyFrontmostApplication = nil
+        }
+    }
+
+    private func focusPanelUnderMouse() {
+        let mouseLocation = NSEvent.mouseLocation
+        guard let entry = panelsByDisplayUUID.first(where: { $0.value.frame.contains(mouseLocation) }) else {
+            return
+        }
+        focusPanel(displayUUID: entry.key)
+    }
+
+    private func focusPanel(displayUUID: String) {
+        guard state.isAnnotationModeEnabled,
+              let panel = panelsByDisplayUUID[displayUUID]
+        else {
+            return
+        }
+        panel.makeKeyAndOrderFront(nil)
+        panel.makeFirstResponder(panel.contentView)
     }
 
     deinit {

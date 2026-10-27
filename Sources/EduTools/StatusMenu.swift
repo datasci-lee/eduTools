@@ -5,13 +5,16 @@ final class StatusMenu: NSObject {
     private let state: AppState
     private let statusItem: NSStatusItem
     private let modeItem: NSMenuItem
+    private let toolItem: NSMenuItem
     private var observerIdentifier: UUID?
+    private var toolObserverIdentifier: UUID?
     private var hotkeyRegistrationFailed = false
 
     init(state: AppState) {
         self.state = state
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         modeItem = NSMenuItem(title: "판서 모드", action: nil, keyEquivalent: "p")
+        toolItem = NSMenuItem(title: "도구: 펜", action: nil, keyEquivalent: "")
         super.init()
 
         modeItem.target = self
@@ -20,6 +23,7 @@ final class StatusMenu: NSObject {
 
         let menu = NSMenu()
         menu.addItem(modeItem)
+        menu.addItem(toolItem)
         menu.addItem(.separator())
 
         let quitItem = NSMenuItem(
@@ -34,10 +38,13 @@ final class StatusMenu: NSObject {
         observerIdentifier = state.addAnnotationModeObserver { [weak self] isEnabled in
             self?.updateAnnotationMode(isEnabled)
         }
+        toolObserverIdentifier = state.addToolObserver { [weak self] tool in
+            self?.toolItem.title = "도구: \(tool.displayName)"
+        }
     }
 
     func setHotkeyRegistrationStatus(_ status: OSStatus) {
-        hotkeyRegistrationFailed = status != noErr
+        hotkeyRegistrationFailed = hotkeyRegistrationFailed || status != noErr
         updateAnnotationMode(state.isAnnotationModeEnabled)
     }
 
@@ -64,6 +71,9 @@ final class StatusMenu: NSObject {
     deinit {
         if let observerIdentifier {
             state.removeAnnotationModeObserver(observerIdentifier)
+        }
+        if let toolObserverIdentifier {
+            state.removeToolObserver(toolObserverIdentifier)
         }
         NSStatusBar.system.removeStatusItem(statusItem)
     }
