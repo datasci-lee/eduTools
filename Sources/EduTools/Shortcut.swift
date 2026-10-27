@@ -80,6 +80,9 @@ enum ShortcutGroup: Int, CaseIterable {
 
 enum AppCommand: Hashable {
     case toggleAnnotationMode
+    case toggleBoard(BoardKind)
+    case previousBoardPage
+    case nextBoardPage
     case selectTool(InkTool)
     case useLaser
     case selectOrCycleEraser
@@ -91,6 +94,15 @@ enum AppCommand: Hashable {
     case togglePalette
     case stepBack
     case showHelp
+
+    var isBoardPageNavigation: Bool {
+        switch self {
+        case .previousBoardPage, .nextBoardPage:
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 enum ShortcutScope: String, Hashable {
@@ -220,6 +232,46 @@ enum ShortcutCatalog {
                 modes: [.annotation],
                 command: .selectOrCycleEraser,
                 bindings: [.annotation(keyCode: kVK_ANSI_E, keyEquivalent: "e", keyCap: "E")]
+            ),
+            ShortcutDefinition(
+                id: "board.white",
+                name: "화이트보드",
+                iconName: "rectangle.fill",
+                group: .screenBoardZoom,
+                modes: [.annotation],
+                command: .toggleBoard(.white),
+                bindings: [.annotation(keyCode: kVK_ANSI_W, keyEquivalent: "w", keyCap: "W")]
+            ),
+            ShortcutDefinition(
+                id: "board.black",
+                name: "블랙보드",
+                iconName: "rectangle.inset.filled",
+                group: .screenBoardZoom,
+                modes: [.annotation],
+                command: .toggleBoard(.black),
+                bindings: [.annotation(keyCode: kVK_ANSI_B, keyEquivalent: "b", keyCap: "B")]
+            ),
+            ShortcutDefinition(
+                id: "board.page.previous",
+                name: "이전 보드 페이지",
+                iconName: "chevron.left",
+                group: .screenBoardZoom,
+                modes: [.annotation],
+                command: .previousBoardPage,
+                bindings: [
+                    .annotation(keyCode: kVK_LeftArrow, keyEquivalent: "←", keyCap: "←")
+                ]
+            ),
+            ShortcutDefinition(
+                id: "board.page.next",
+                name: "다음 보드 페이지",
+                iconName: "chevron.right",
+                group: .screenBoardZoom,
+                modes: [.annotation],
+                command: .nextBoardPage,
+                bindings: [
+                    .annotation(keyCode: kVK_RightArrow, keyEquivalent: "→", keyCap: "→")
+                ]
             ),
             ShortcutDefinition(
                 id: "tool.width.decrease",

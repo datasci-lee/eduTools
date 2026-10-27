@@ -1,9 +1,11 @@
+import AppKit
 import Foundation
 
 final class AppCommandDispatcher {
     private let state: AppState
     weak var paletteController: PaletteController?
     weak var helpController: HelpController?
+    weak var overlayController: OverlayController?
 
     init(state: AppState) {
         self.state = state
@@ -12,6 +14,9 @@ final class AppCommandDispatcher {
     static func supports(_ command: AppCommand) -> Bool {
         switch command {
         case .toggleAnnotationMode,
+             .toggleBoard,
+             .previousBoardPage,
+             .nextBoardPage,
              .selectTool,
              .useLaser,
              .selectOrCycleEraser,
@@ -55,6 +60,24 @@ final class AppCommandDispatcher {
         switch command {
         case .toggleAnnotationMode:
             state.toggleAnnotationMode()
+        case let .toggleBoard(kind):
+            guard let targetDisplayUUID = overlayController?.displayUUIDUnderMouse()
+                ?? displayUUID
+                ?? state.activeDisplayUUID
+            else {
+                NSLog("EduTools: board command could not find a target display")
+                return
+            }
+            state.toggleBoard(kind, on: targetDisplayUUID)
+            overlayController?.focusPanelForBoard(on: targetDisplayUUID)
+        case .previousBoardPage:
+            if let targetDisplayUUID = displayUUID ?? state.activeDisplayUUID {
+                _ = state.moveToPreviousBoardPage(on: targetDisplayUUID)
+            }
+        case .nextBoardPage:
+            if let targetDisplayUUID = displayUUID ?? state.activeDisplayUUID {
+                _ = state.moveToNextBoardPage(on: targetDisplayUUID)
+            }
         case let .selectTool(tool):
             state.selectTool(tool)
         case .useLaser:
@@ -92,5 +115,10 @@ final class AppCommandDispatcher {
         case .showHelp:
             helpController?.showPinned()
         }
+    }
+
+    @discardableResult
+    func forwardToUnderlyingApplication(_ event: NSEvent) -> Bool {
+        overlayController?.forwardToUnderlyingApplication(event) ?? false
     }
 }

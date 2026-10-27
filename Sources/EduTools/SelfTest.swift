@@ -334,6 +334,67 @@ func runSelfTests() -> Int32 {
         "clear all should restore every display with one undo"
     )
 
+    let transitionState = AppState()
+    transitionState.addStroke(filterPen, to: "transition-display")
+    transitionState.toggleBoard(.white, on: "transition-display")
+    transitionState.addStroke(filterHighlighter, to: "transition-display")
+    let boardWasVisible = transitionState.strokes(for: "transition-display").map(\.identifier)
+        == [filterHighlighter.identifier]
+    transitionState.toggleBoard(.white, on: "transition-display")
+    let screenWasRestored = transitionState.strokes(for: "transition-display").map(\.identifier)
+        == [filterPen.identifier]
+    transitionState.toggleBoard(.white, on: "transition-display")
+    let boardWasRestored = transitionState.strokes(for: "transition-display").map(\.identifier)
+        == [filterHighlighter.identifier]
+    runner.expect(
+        boardWasVisible && screenWasRestored && boardWasRestored,
+        "screen and board strokes should survive repeated board transitions"
+    )
+
+    let pageState = AppState()
+    pageState.toggleBoard(.white, on: "page-display")
+    pageState.addStroke(filterPen, to: "page-display")
+    let createdSecondPage = pageState.moveToNextBoardPage(on: "page-display")
+    pageState.addStroke(filterHighlighter, to: "page-display")
+    let undidSecondPage = pageState.undo(on: "page-display")
+        && pageState.strokes(for: "page-display").isEmpty
+    let returnedToFirstPage = pageState.moveToPreviousBoardPage(on: "page-display")
+        && pageState.strokes(for: "page-display").map(\.identifier) == [filterPen.identifier]
+    let undidFirstPage = pageState.undo(on: "page-display")
+        && pageState.strokes(for: "page-display").isEmpty
+    let secondPageRemainedIndependent = pageState.moveToNextBoardPage(on: "page-display")
+        && pageState.strokes(for: "page-display").isEmpty
+        && pageState.boardPagePosition(on: "page-display") == BoardPagePosition(current: 2, total: 2)
+    runner.expect(
+        createdSecondPage
+            && undidSecondPage
+            && returnedToFirstPage
+            && undidFirstPage
+            && secondPageRemainedIndependent,
+        "each board page should keep an independent undo history"
+    )
+
+    let blackStroke = InkStroke(
+        tool: .pen,
+        color: .black,
+        width: 3,
+        usesPressure: false,
+        points: []
+    )
+    let displayedBlackStrokeColor = BoardAppearance.displayColor(
+        for: blackStroke.color,
+        on: .black
+    ).usingColorSpace(.deviceRGB)
+    let blackStrokeDisplaysWhite = displayedBlackStrokeColor.map {
+        $0.redComponent >= 0.999
+            && $0.greenComponent >= 0.999
+            && $0.blueComponent >= 0.999
+    } ?? false
+    runner.expect(
+        BoardAppearance.isBlack(blackStroke.color) && blackStrokeDisplaysWhite,
+        "a stored black stroke should display as white on the blackboard"
+    )
+
     if runner.failures.isEmpty {
         print("SelfTest: \(runner.passed) passed, 0 failed")
         return 0
