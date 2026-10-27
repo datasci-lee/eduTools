@@ -454,6 +454,42 @@ func runSelfTests() -> Int32 {
         "lesson badge snapping should distinguish positions inside and outside 16 pixels"
     )
 
+    let playlistURLValidationPassed = BreakMusicURL.validated(
+        "https://music.youtube.com/playlist?list=valid"
+    ) != nil
+        && BreakMusicURL.validated("https://music.youtube.com.evil.example/playlist") == nil
+        && BreakMusicURL.validated("http://music.youtube.com/playlist") == nil
+    runner.expect(
+        playlistURLValidationPassed,
+        "break music should accept only https://music.youtube.com/ playlist URLs"
+    )
+
+    let fadeOriginalVolume = Float32(0.8)
+    let fadeNow = Date(timeIntervalSinceReferenceDate: 2_000_000)
+    let volumeDuringFade = BreakMusicFade.volume(
+        originalVolume: fadeOriginalVolume,
+        now: fadeNow,
+        endDate: fadeNow.addingTimeInterval(30),
+        duration: 60
+    )
+    let volumeAfterEndDateExtension = BreakMusicFade.volume(
+        originalVolume: fadeOriginalVolume,
+        now: fadeNow,
+        endDate: fadeNow.addingTimeInterval(120),
+        duration: 60
+    )
+    runner.expect(
+        abs(volumeDuringFade - 0.4) < 0.000_001
+            && abs(volumeAfterEndDateExtension - fadeOriginalVolume) < 0.000_001,
+        "break music fade should be linear and move when the break end date changes"
+    )
+
+    runner.expect(
+        AppleScriptString.literal("https://music.youtube.com/a\\\"b\n")
+            == "\"https://music.youtube.com/a\\\\\\\"b\\n\"",
+        "break music should escape URL text before inserting it into AppleScript"
+    )
+
     if runner.failures.isEmpty {
         print("SelfTest: \(runner.passed) passed, 0 failed")
         return 0

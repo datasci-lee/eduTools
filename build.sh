@@ -44,6 +44,7 @@ for arch in "${ARCHITECTURES[@]}"; do
         -framework AppKit \
         -framework Carbon \
         -framework ColorSync \
+        -framework CoreAudio \
         -framework CoreGraphics \
         -o "$arch_executable"
 done
@@ -80,6 +81,8 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
     <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>쉬는 시간이 끝나면 EduTools가 연 Google Chrome 음악 탭만 닫는 데 사용합니다.</string>
 </dict>
 </plist>
 PLIST
