@@ -15,7 +15,7 @@ private final class ZoomCaptureSession: NSObject, SCStreamOutput, SCStreamDelega
     private let displayID: CGDirectDisplayID
     private let pixelSize: CGSize
     private let captureQueue = DispatchQueue(
-        label: "com.jia.edutools.zoom.capture",
+        label: "kr.datasci.edutools.zoom.capture",
         qos: .userInteractive
     )
     private let imageContext = CIContext()

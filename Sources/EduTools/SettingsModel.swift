@@ -413,7 +413,7 @@ struct SettingsPayload: Codable, Equatable {
 }
 
 struct SettingsDocument: Codable, Equatable {
-    static let format = "com.jia.edutools.pansetting"
+    static let format = "kr.datasci.edutools.pansetting"
     static let currentVersion = 1
 
     var format: String

@@ -102,7 +102,7 @@ final class SettingsController: NSObject {
         let panel = NSSavePanel()
         panel.title = "설정 내보내기"
         panel.nameFieldStringValue = "EduTools-settings.pansetting"
-        panel.allowedContentTypes = [UTType(exportedAs: "com.jia.edutools.pansetting")]
+        panel.allowedContentTypes = [UTType(exportedAs: SettingsDocument.format)]
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             let document = try SettingsTransfer.exportDocument(
@@ -122,7 +122,7 @@ final class SettingsController: NSObject {
         panel.title = "설정 가져오기"
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
-        panel.allowedContentTypes = [UTType(exportedAs: "com.jia.edutools.pansetting")]
+        panel.allowedContentTypes = [UTType(exportedAs: SettingsDocument.format)]
         guard panel.runModal() == .OK, let url = panel.url else { return }
         openImportPreview(for: url)
     }
