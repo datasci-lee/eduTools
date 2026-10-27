@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var paletteController: PaletteController?
     private var helpController: HelpController?
     private var timerCoordinator: TimerCoordinator?
+    private var zoomController: ZoomController?
     private var dispatcher: AppCommandDispatcher?
     private var hotkeyCenter: HotkeyCenter?
 
@@ -38,6 +39,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let overlayController = OverlayController(state: appState, dispatcher: dispatcher)
         self.overlayController = overlayController
         dispatcher.overlayController = overlayController
+
+        let zoomController = ZoomController(state: appState, dispatcher: dispatcher)
+        self.zoomController = zoomController
+        zoomController.overlayController = overlayController
+        dispatcher.zoomController = zoomController
 
         let hotkeyCenter = HotkeyCenter()
         self.hotkeyCenter = hotkeyCenter
@@ -81,6 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        zoomController?.stopZoom()
         timerCoordinator?.stopBreakMusicForTermination()
         hotkeyCenter?.invalidate()
     }

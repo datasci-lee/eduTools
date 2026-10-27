@@ -121,6 +121,60 @@ func runSelfTests() -> Int32 {
         "normalized and screen coordinates should round-trip"
     )
 
+    let zoomStepAndClampPassed = ZoomGeometry.adjustedMagnification(2, by: 1) == 2.25
+        && ZoomGeometry.adjustedMagnification(1.25, by: -1) == 1.25
+        && ZoomGeometry.adjustedMagnification(8, by: 1) == 8
+    runner.expect(
+        zoomStepAndClampPassed,
+        "zoom magnification should move by 0.25 and stay within 1.25 through 8"
+    )
+
+    let zoomScreenSize = CGSize(width: 1_000, height: 800)
+    let edgeFollowCenter = CGPoint(x: 500, y: 400)
+    let centerPointerResult = ZoomGeometry.followedCenter(
+        current: edgeFollowCenter,
+        pointer: CGPoint(x: 500, y: 400),
+        screenSize: zoomScreenSize,
+        magnification: 2,
+        mode: .edge,
+        smoothness: 1
+    )
+    let edgePointerResult = ZoomGeometry.followedCenter(
+        current: edgeFollowCenter,
+        pointer: CGPoint(x: 740, y: 400),
+        screenSize: zoomScreenSize,
+        magnification: 2,
+        mode: .edge,
+        smoothness: 1
+    )
+    runner.expect(
+        centerPointerResult == edgeFollowCenter && edgePointerResult == CGPoint(x: 540, y: 400),
+        "edge following should stay still in the center and move only past the inner edge"
+    )
+
+    runner.expect(
+        ZoomGeometry.clampedCenter(
+            CGPoint(x: 1, y: 799),
+            screenSize: zoomScreenSize,
+            magnification: 2
+        ) == CGPoint(x: 250, y: 600),
+        "zoom center should clamp the viewport to every screen edge"
+    )
+
+    let frozenOriginalPoint = ZoomGeometry.originalPoint(
+        fromZoomed: CGPoint(x: 250, y: 600),
+        in: CGSize(width: 1_000, height: 800),
+        sourceRect: CGRect(x: 250, y: 200, width: 500, height: 400)
+    )
+    let frozenNormalizedPoint = InkGeometry.normalizedPoint(
+        from: frozenOriginalPoint,
+        in: zoomScreenSize
+    )
+    runner.expect(
+        frozenNormalizedPoint == CGPoint(x: 0.375, y: 0.625),
+        "frozen zoom input should map back to the original screen coordinate"
+    )
+
     let curvePoints = [
         InkPoint(location: CGPoint(x: 0.1, y: 0.2), pressure: 1, timestamp: 0),
         InkPoint(location: CGPoint(x: 0.35, y: 0.8), pressure: 1, timestamp: 1),

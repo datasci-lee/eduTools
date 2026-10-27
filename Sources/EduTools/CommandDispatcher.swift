@@ -7,6 +7,7 @@ final class AppCommandDispatcher {
     weak var helpController: HelpController?
     weak var overlayController: OverlayController?
     weak var timerCoordinator: TimerCoordinator?
+    weak var zoomController: ZoomController?
 
     init(state: AppState) {
         self.state = state
@@ -15,6 +16,7 @@ final class AppCommandDispatcher {
     static func supports(_ command: AppCommand) -> Bool {
         switch command {
         case .toggleAnnotationMode,
+             .toggleZoom,
              .toggleLessonTimer,
              .showBreakTimerSetup,
              .toggleBoard,
@@ -30,7 +32,13 @@ final class AppCommandDispatcher {
              .clearAll,
              .togglePalette,
              .stepBack,
-             .showHelp:
+             .showHelp,
+             .adjustZoom,
+             .resetZoom,
+             .toggleZoomFreeze,
+             .stopZoom,
+             .beginZoomPreview,
+             .cycleZoomFollowMode:
             return true
         }
     }
@@ -51,8 +59,14 @@ final class AppCommandDispatcher {
     }
 
     func keyUp(definition: ShortcutDefinition) {
-        guard definition.command == .showHelp else { return }
-        helpController?.shortcutDidRelease()
+        switch definition.command {
+        case .showHelp:
+            helpController?.shortcutDidRelease()
+        case .beginZoomPreview:
+            zoomController?.finishPreview()
+        default:
+            break
+        }
     }
 
     func execute(
@@ -63,6 +77,8 @@ final class AppCommandDispatcher {
         switch command {
         case .toggleAnnotationMode:
             state.toggleAnnotationMode()
+        case .toggleZoom:
+            zoomController?.toggleZoom()
         case .toggleLessonTimer:
             timerCoordinator?.toggleLessonTimer()
         case .showBreakTimerSetup:
@@ -121,6 +137,18 @@ final class AppCommandDispatcher {
             }
         case .showHelp:
             helpController?.showPinned()
+        case let .adjustZoom(steps):
+            zoomController?.adjustMagnification(by: steps)
+        case .resetZoom:
+            zoomController?.resetMagnification()
+        case .toggleZoomFreeze:
+            zoomController?.toggleFreeze()
+        case .stopZoom:
+            zoomController?.stopOrCancelPreview()
+        case .beginZoomPreview:
+            zoomController?.beginPreview()
+        case .cycleZoomFollowMode:
+            zoomController?.cycleFollowMode()
         }
     }
 
