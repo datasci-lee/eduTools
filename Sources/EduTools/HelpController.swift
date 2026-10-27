@@ -465,6 +465,15 @@ final class HelpController: NSObject {
         if definition.command == .selectOrCycleEraser {
             return "\(definition.name) · \(state.eraserMode.displayName)"
         }
+        if definition.command == .toggleEraserAreaShape {
+            return "\(definition.name) · \(state.eraserAreaShape.displayName)"
+        }
+        if definition.command == .toggleShapeRecognition {
+            return "\(definition.name) · \(state.isShapeRecognitionEnabled ? "켬" : "끔")"
+        }
+        if definition.command == .selectTool(.arrow) {
+            return "화살표 · \(state.arrowStyle.displayName)"
+        }
         return definition.name
     }
 
@@ -476,6 +485,10 @@ final class HelpController: NSObject {
             return state.currentTool == .laser
         case .selectOrCycleEraser:
             return state.currentTool == .eraser
+        case .toggleShapeRecognition:
+            return state.isShapeRecognitionEnabled
+        case .toggleEraserAreaShape:
+            return state.currentTool == .eraser && state.eraserMode == .area
         default:
             return false
         }

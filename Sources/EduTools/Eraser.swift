@@ -4,6 +4,7 @@ import Foundation
 enum EraserGesture {
     case sweep(points: [CGPoint])
     case area(CGRect)
+    case lasso(points: [CGPoint])
 }
 
 enum EraserEngine {
@@ -37,6 +38,13 @@ enum EraserEngine {
             return eraseStrokes(
                 strokes,
                 in: standardized(rect),
+                settings: settings,
+                canvasSize: canvasSize
+            )
+        case let (.area, .lasso(points)):
+            return eraseStrokes(
+                strokes,
+                in: points,
                 settings: settings,
                 canvasSize: canvasSize
             )
@@ -84,6 +92,12 @@ enum EraserEngine {
         radius: CGFloat,
         canvasSize: CGSize
     ) -> [InkStroke]? {
+        if stroke.content != .freehand {
+            let itemPoints = InkItemGeometry.screenPoints(for: stroke, canvasSize: canvasSize)
+            return distance(between: itemPoints, and: eraserPoints) <= radius + stroke.width / 2
+                ? []
+                : nil
+        }
         let samples = resampledPoints(
             stroke.points,
             canvasSize: canvasSize,
@@ -178,9 +192,7 @@ enum EraserEngine {
             switch settings.hitRule {
             case .touching:
                 let hitArea = area.insetBy(dx: -stroke.width / 2, dy: -stroke.width / 2)
-                let points = stroke.points.map {
-                    InkGeometry.screenPoint(from: $0.location, in: canvasSize)
-                }
+                let points = InkItemGeometry.screenPoints(for: stroke, canvasSize: canvasSize)
                 shouldErase = polyline(points, intersects: hitArea)
             case .contained:
                 shouldErase = contains(area, screenBounds)
@@ -189,15 +201,25 @@ enum EraserEngine {
         }
     }
 
+    private static func eraseStrokes(
+        _ strokes: [InkStroke],
+        in lasso: [CGPoint],
+        settings: EraserSettings,
+        canvasSize: CGSize
+    ) -> [InkStroke] {
+        strokes.filter { stroke in
+            guard settings.targetFilter.includes(stroke.tool) else { return true }
+            return !LassoGeometry.selects(
+                stroke,
+                polygon: lasso,
+                hitRule: settings.hitRule,
+                canvasSize: canvasSize
+            )
+        }
+    }
+
     private static func strokeBounds(_ stroke: InkStroke, canvasSize: CGSize) -> CGRect {
-        guard !stroke.pointBounds.isNull else { return .null }
-        let pointBounds = CGRect(
-            x: stroke.pointBounds.minX * canvasSize.width,
-            y: stroke.pointBounds.minY * canvasSize.height,
-            width: stroke.pointBounds.width * canvasSize.width,
-            height: stroke.pointBounds.height * canvasSize.height
-        )
-        return pointBounds.insetBy(dx: -stroke.width / 2, dy: -stroke.width / 2)
+        InkItemGeometry.bounds(for: stroke, canvasSize: canvasSize)
     }
 
     private static func resampledPoints(

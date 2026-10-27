@@ -25,11 +25,14 @@ final class AppCommandDispatcher {
              .selectTool,
              .useLaser,
              .selectOrCycleEraser,
+             .toggleEraserAreaShape,
+             .toggleShapeRecognition,
              .selectColor,
              .adjustWidth,
              .undo,
              .redo,
              .clearAll,
+             .deleteSelection,
              .togglePalette,
              .stepBack,
              .showHelp,
@@ -111,6 +114,10 @@ final class AppCommandDispatcher {
             }
         case .selectOrCycleEraser:
             _ = state.selectOrCycleEraser()
+        case .toggleEraserAreaShape:
+            state.toggleEraserAreaShape()
+        case .toggleShapeRecognition:
+            state.toggleShapeRecognition()
         case let .selectColor(index):
             state.selectColor(at: index)
         case let .adjustWidth(delta):
@@ -125,11 +132,19 @@ final class AppCommandDispatcher {
             }
         case .clearAll:
             _ = state.clearAllInk()
+        case .deleteSelection:
+            if let targetDisplayUUID = displayUUID ?? state.activeDisplayUUID {
+                _ = state.deleteSelection(on: targetDisplayUUID)
+            }
         case .togglePalette:
             state.togglePaletteVisibility()
         case .stepBack:
             if helpController?.isVisible == true {
                 helpController?.close()
+            } else if let targetDisplayUUID = displayUUID ?? state.activeDisplayUUID,
+                      state.clearSelection(on: targetDisplayUUID)
+            {
+                return
             } else if state.currentTool != .pen {
                 state.selectTool(.pen)
             } else {

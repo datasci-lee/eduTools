@@ -22,6 +22,7 @@ final class AppState {
     private var inkObservers: [UUID: InkObserver] = [:]
     private var boardObservers: [UUID: BoardObserver] = [:]
     private var zoomObservers: [UUID: ZoomObserver] = [:]
+    private var selectedStrokeIdentifiersByDisplay: [String: Set<UUID>] = [:]
     private let inkState = InkLayerState()
     private let boardDocuments: [BoardKind: BoardDocument] = [
         .white: BoardDocument(),
@@ -60,6 +61,7 @@ final class AppState {
         didSet {
             guard oldValue != isAnnotationModeEnabled else { return }
             if !isAnnotationModeEnabled {
+                clearAllSelections()
                 dismissBoard()
             }
             for observer in annotationModeObservers.values {
@@ -96,6 +98,24 @@ final class AppState {
             notifyToolSettingsObservers()
         }
     }
+    private(set) var textFontSize = InkDefaults.textFontSize {
+        didSet {
+            guard oldValue != textFontSize else { return }
+            notifyToolSettingsObservers()
+        }
+    }
+    private(set) var arrowStyle = ArrowStyle.single {
+        didSet {
+            guard oldValue != arrowStyle else { return }
+            notifyToolSettingsObservers()
+        }
+    }
+    private(set) var isShapeRecognitionEnabled = true {
+        didSet {
+            guard oldValue != isShapeRecognitionEnabled else { return }
+            notifyToolSettingsObservers()
+        }
+    }
     private(set) var eraserDiameter = EraserDefaults.defaultDiameter {
         didSet {
             guard oldValue != eraserDiameter else { return }
@@ -105,6 +125,12 @@ final class AppState {
     private(set) var eraserMode = EraserDefaults.defaultMode {
         didSet {
             guard oldValue != eraserMode else { return }
+            notifyToolSettingsObservers()
+        }
+    }
+    private(set) var eraserAreaShape = EraserAreaShape.rectangle {
+        didSet {
+            guard oldValue != eraserAreaShape else { return }
             notifyToolSettingsObservers()
         }
     }
@@ -129,7 +155,8 @@ final class AppState {
             diameter: eraserDiameter,
             mode: eraserMode,
             hitRule: eraserHitRule,
-            targetFilter: eraserTargetFilter
+            targetFilter: eraserTargetFilter,
+            areaShape: eraserAreaShape
         )
     }
 
@@ -146,6 +173,7 @@ final class AppState {
     }
 
     func toggleBoard(_ kind: BoardKind, on displayUUID: String) {
+        _ = clearSelection(on: displayUUID)
         knownDisplayUUIDs.insert(displayUUID)
         activeDisplayUUID = displayUUID
         if presentedBoard?.kind == kind {
@@ -190,6 +218,7 @@ final class AppState {
         else {
             return false
         }
+        _ = clearSelection(on: displayUUID)
         notifyBoardObservers()
         return true
     }
@@ -201,6 +230,7 @@ final class AppState {
         else {
             return false
         }
+        _ = clearSelection(on: displayUUID)
         notifyBoardObservers()
         return true
     }
@@ -218,7 +248,22 @@ final class AppState {
     }
 
     func selectTool(_ tool: InkTool) {
+        if tool == .arrow, currentTool == .arrow {
+            arrowStyle = arrowStyle.next
+            return
+        }
+        if tool != .select {
+            clearAllSelections()
+        }
         currentTool = tool
+    }
+
+    func toggleShapeRecognition() {
+        isShapeRecognitionEnabled.toggle()
+    }
+
+    func toggleEraserAreaShape() {
+        eraserAreaShape = eraserAreaShape.next
     }
 
     @discardableResult
@@ -226,7 +271,7 @@ final class AppState {
         if currentTool == .eraser {
             eraserMode = eraserMode.next
         } else {
-            currentTool = .eraser
+            selectTool(.eraser)
         }
         return eraserMode
     }
@@ -261,7 +306,7 @@ final class AppState {
         if isAnnotationModeEnabled, currentTool == .laser {
             isAnnotationModeEnabled = false
         } else {
-            currentTool = .laser
+            selectTool(.laser)
             isAnnotationModeEnabled = true
         }
     }
@@ -284,6 +329,15 @@ final class AppState {
             break
         case .eraser:
             setEraserDiameter(eraserDiameter + delta * EraserDefaults.diameterAdjustmentStep)
+        case .arrow, .rectangle, .ellipse:
+            penWidth = min(max(penWidth + delta, InkDefaults.minimumWidth), InkDefaults.maximumWidth)
+        case .text:
+            textFontSize = min(
+                max(textFontSize + delta, InkDefaults.minimumTextFontSize),
+                InkDefaults.maximumTextFontSize
+            )
+        case .select:
+            break
         }
     }
 
@@ -306,6 +360,62 @@ final class AppState {
     }
 
     @discardableResult
+    func replaceStrokes(_ after: [InkStroke], on displayUUID: String) -> Bool {
+        knownDisplayUUIDs.insert(displayUUID)
+        let before = strokes(for: displayUUID)
+        guard before != after else { return false }
+        if let document = presentedBoardDocument(on: displayUUID) {
+            _ = document.replaceStrokes(with: after)
+        } else {
+            inkState.execute(
+                .replaceDisplayStrokes(
+                    displayUUID: displayUUID,
+                    before: before,
+                    after: after
+                )
+            )
+        }
+        let availableIdentifiers = Set(after.map(\.identifier))
+        selectedStrokeIdentifiersByDisplay[displayUUID] = selectedStrokeIdentifiers(
+            on: displayUUID
+        ).intersection(availableIdentifiers)
+        notifyInkObservers(displayUUID: displayUUID, change: .rebuilt)
+        return true
+    }
+
+    func selectedStrokeIdentifiers(on displayUUID: String) -> Set<UUID> {
+        selectedStrokeIdentifiersByDisplay[displayUUID] ?? []
+    }
+
+    func setSelectedStrokeIdentifiers(_ identifiers: Set<UUID>, on displayUUID: String) {
+        knownDisplayUUIDs.insert(displayUUID)
+        let available = Set(strokes(for: displayUUID).map(\.identifier))
+        let selection = identifiers.intersection(available)
+        guard selectedStrokeIdentifiersByDisplay[displayUUID] != selection else { return }
+        selectedStrokeIdentifiersByDisplay[displayUUID] = selection
+        notifyInkObservers(displayUUID: displayUUID, change: .rebuilt)
+    }
+
+    @discardableResult
+    func clearSelection(on displayUUID: String) -> Bool {
+        guard selectedStrokeIdentifiersByDisplay[displayUUID]?.isEmpty == false else {
+            return false
+        }
+        selectedStrokeIdentifiersByDisplay[displayUUID] = []
+        notifyInkObservers(displayUUID: displayUUID, change: .rebuilt)
+        return true
+    }
+
+    @discardableResult
+    func deleteSelection(on displayUUID: String) -> Bool {
+        let selected = selectedStrokeIdentifiers(on: displayUUID)
+        guard !selected.isEmpty else { return false }
+        let after = strokes(for: displayUUID).filter { !selected.contains($0.identifier) }
+        selectedStrokeIdentifiersByDisplay[displayUUID] = []
+        return replaceStrokes(after, on: displayUUID)
+    }
+
+    @discardableResult
     func erase(
         _ gesture: EraserGesture,
         settings: EraserSettings,
@@ -320,21 +430,7 @@ final class AppState {
             settings: settings,
             canvasSize: canvasSize
         )
-        guard before.map(\.identifier) != after.map(\.identifier) else { return false }
-
-        if let document = presentedBoardDocument(on: displayUUID) {
-            _ = document.replaceStrokes(with: after)
-        } else {
-            inkState.execute(
-                .replaceDisplayStrokes(
-                    displayUUID: displayUUID,
-                    before: before,
-                    after: after
-                )
-            )
-        }
-        notifyInkObservers(displayUUID: displayUUID, change: .rebuilt)
-        return true
+        return replaceStrokes(after, on: displayUUID)
     }
 
     @discardableResult
@@ -353,6 +449,7 @@ final class AppState {
                 )
             )
         }
+        selectedStrokeIdentifiersByDisplay[displayUUID] = []
         notifyInkObservers(displayUUID: displayUUID, change: .rebuilt)
         return true
     }
@@ -368,12 +465,14 @@ final class AppState {
         if let presentedBoard {
             let document = boardDocument(for: presentedBoard.kind)
             guard document.clear() else { return false }
+            selectedStrokeIdentifiersByDisplay[presentedBoard.displayUUID] = []
             notifyInkObservers(displayUUID: presentedBoard.displayUUID, change: .rebuilt)
             return true
         }
         let before = inkState.allDisplayStrokes
         guard before.values.contains(where: { !$0.isEmpty }) else { return false }
         inkState.execute(.replaceAllDisplayStrokes(before: before, after: [:]))
+        selectedStrokeIdentifiersByDisplay.removeAll(keepingCapacity: true)
         notifyAllInkObservers()
         return true
     }
@@ -528,6 +627,7 @@ final class AppState {
     @discardableResult
     func undo(on displayUUID: String) -> Bool {
         knownDisplayUUIDs.insert(displayUUID)
+        selectedStrokeIdentifiersByDisplay[displayUUID] = []
         if let document = presentedBoardDocument(on: displayUUID) {
             guard document.undo() else { return false }
             notifyInkObservers(displayUUID: displayUUID, change: .rebuilt)
@@ -541,6 +641,7 @@ final class AppState {
     @discardableResult
     func redo(on displayUUID: String) -> Bool {
         knownDisplayUUIDs.insert(displayUUID)
+        selectedStrokeIdentifiersByDisplay[displayUUID] = []
         if let document = presentedBoardDocument(on: displayUUID) {
             guard document.redo() else { return false }
             notifyInkObservers(displayUUID: displayUUID, change: .rebuilt)
@@ -654,6 +755,17 @@ final class AppState {
 
     private func notifyAllInkObservers() {
         for displayUUID in knownDisplayUUIDs {
+            notifyInkObservers(displayUUID: displayUUID, change: .rebuilt)
+        }
+    }
+
+    private func clearAllSelections() {
+        let selectedDisplays = selectedStrokeIdentifiersByDisplay.compactMap { entry in
+            entry.value.isEmpty ? nil : entry.key
+        }
+        guard !selectedDisplays.isEmpty else { return }
+        for displayUUID in selectedDisplays {
+            selectedStrokeIdentifiersByDisplay[displayUUID] = []
             notifyInkObservers(displayUUID: displayUUID, change: .rebuilt)
         }
     }
