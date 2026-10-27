@@ -48,40 +48,39 @@ final class AppState {
     ]
     private var knownDisplayUUIDs: Set<String> = []
     private let defaults: UserDefaults
+    private let settingsStore: SettingsStore
+    private var settingsObserverIdentifier: UUID?
     private var zoomPreviewOrigin: (center: CGPoint, magnification: CGFloat)?
 
     var archiveBeforeRemoval: ((Set<String>) -> Bool)?
 
     private enum DefaultsKey {
         static let lastZoomMagnification = "EduTools.zoom.lastMagnification"
-        static let showsHelpInSharing = "EduTools.sharing.showsHelp"
-        static let autoArchiveEnabled = "EduTools.archive.autoEnabled"
-        static let clearsInkWhenAnnotationModeEnds = "EduTools.annotation.clearsOnExit"
-        static let displayDisconnectPolicy = "EduTools.display.disconnectPolicy"
-        static let automaticallyRestoresDisconnectedDisplays = "EduTools.display.autoRestore"
     }
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, settingsStore: SettingsStore? = nil) {
         self.defaults = defaults
-        showsHelpInSharing = defaults.bool(forKey: DefaultsKey.showsHelpInSharing)
-        autoArchiveEnabled = defaults.object(forKey: DefaultsKey.autoArchiveEnabled) == nil
-            ? true
-            : defaults.bool(forKey: DefaultsKey.autoArchiveEnabled)
-        clearsInkWhenAnnotationModeEnds = defaults.bool(
-            forKey: DefaultsKey.clearsInkWhenAnnotationModeEnds
-        )
-        displayDisconnectPolicy = defaults.string(
-            forKey: DefaultsKey.displayDisconnectPolicy
-        ).flatMap(DisplayDisconnectPolicy.init(rawValue:)) ?? .archive
-        automaticallyRestoresDisconnectedDisplays = defaults.bool(
-            forKey: DefaultsKey.automaticallyRestoresDisconnectedDisplays
-        )
+        let resolvedSettingsStore = settingsStore ?? SettingsStore(defaults: defaults)
+        self.settingsStore = resolvedSettingsStore
+        let settings = resolvedSettingsStore.settings
+        showsHelpInSharing = settings.help.showsHelpInSharing
+        autoArchiveEnabled = settings.general.autoArchiveEnabled
+        clearsInkWhenAnnotationModeEnds = settings.general.clearsInkWhenAnnotationModeEnds
+        displayDisconnectPolicy = DisplayDisconnectPolicy(
+            rawValue: settings.general.displayDisconnectPolicy
+        ) ?? .archive
+        automaticallyRestoresDisconnectedDisplays = settings.general.automaticallyRestoresDisconnectedDisplays
+        settingsObserverIdentifier = resolvedSettingsStore.addObserver { [weak self] settings in
+            self?.apply(settings)
+        }
     }
 
     private(set) var activeDisplayUUID: String?
     private(set) var presentedBoard: BoardPresentation?
     private(set) var blackboardBackground = BlackboardBackground.black
     private(set) var boardBackgroundPattern = BoardBackgroundPattern.none
+    private(set) var whiteboardColor = AppSettings.default.board.whiteboardColor.nsColor
+    private(set) var blackboardColor = AppSettings.default.board.blackboardColor.nsColor
     private(set) var autoArchiveEnabled: Bool
     private(set) var clearsInkWhenAnnotationModeEnds: Bool
     private(set) var displayDisconnectPolicy: DisplayDisconnectPolicy
@@ -140,6 +139,10 @@ final class AppState {
             notifyToolSettingsObservers()
         }
     }
+    private(set) var highlighterOpacity = CGFloat(AppSettings.default.tools.highlighterOpacity)
+    private(set) var laserColor = AppSettings.default.tools.laserColor.nsColor
+    private(set) var laserSize = CGFloat(AppSettings.default.tools.laserSize)
+    private(set) var laserTrailDuration = AppSettings.default.tools.laserTrailDuration
     private(set) var textFontSize = InkDefaults.textFontSize {
         didSet {
             guard oldValue != textFontSize else { return }
@@ -199,7 +202,6 @@ final class AppState {
     private(set) var showsHelpInSharing: Bool {
         didSet {
             guard oldValue != showsHelpInSharing else { return }
-            defaults.set(showsHelpInSharing, forKey: DefaultsKey.showsHelpInSharing)
             for observer in sharingSettingsObservers.values {
                 observer(showsHelpInSharing)
             }
@@ -216,7 +218,13 @@ final class AppState {
     }
 
     var selectedColor: NSColor {
-        InkDefaults.colors[selectedColorIndex]
+        let colors = settingsStore.settings.tools.colors
+        guard colors.indices.contains(selectedColorIndex) else { return .systemRed }
+        return colors[selectedColorIndex].nsColor
+    }
+
+    var colorPresets: [NSColor] {
+        settingsStore.settings.tools.colors.map(\.nsColor)
     }
 
     var eraserSettings: EraserSettings {
@@ -242,27 +250,21 @@ final class AppState {
     }
 
     func setAutoArchiveEnabled(_ isEnabled: Bool) {
-        guard autoArchiveEnabled != isEnabled else { return }
-        autoArchiveEnabled = isEnabled
-        defaults.set(isEnabled, forKey: DefaultsKey.autoArchiveEnabled)
+        settingsStore.update { $0.general.autoArchiveEnabled = isEnabled }
     }
 
     func setClearsInkWhenAnnotationModeEnds(_ isEnabled: Bool) {
-        guard clearsInkWhenAnnotationModeEnds != isEnabled else { return }
-        clearsInkWhenAnnotationModeEnds = isEnabled
-        defaults.set(isEnabled, forKey: DefaultsKey.clearsInkWhenAnnotationModeEnds)
+        settingsStore.update { $0.general.clearsInkWhenAnnotationModeEnds = isEnabled }
     }
 
     func setDisplayDisconnectPolicy(_ policy: DisplayDisconnectPolicy) {
-        guard displayDisconnectPolicy != policy else { return }
-        displayDisconnectPolicy = policy
-        defaults.set(policy.rawValue, forKey: DefaultsKey.displayDisconnectPolicy)
+        settingsStore.update { $0.general.displayDisconnectPolicy = policy.rawValue }
     }
 
     func setAutomaticallyRestoresDisconnectedDisplays(_ isEnabled: Bool) {
-        guard automaticallyRestoresDisconnectedDisplays != isEnabled else { return }
-        automaticallyRestoresDisconnectedDisplays = isEnabled
-        defaults.set(isEnabled, forKey: DefaultsKey.automaticallyRestoresDisconnectedDisplays)
+        settingsStore.update {
+            $0.general.automaticallyRestoresDisconnectedDisplays = isEnabled
+        }
     }
 
     func togglePaletteVisibility() {
@@ -282,7 +284,7 @@ final class AppState {
     }
 
     func toggleHelpSharing() {
-        showsHelpInSharing.toggle()
+        settingsStore.update { $0.help.showsHelpInSharing.toggle() }
     }
 
     func toggleBoard(_ kind: BoardKind, on displayUUID: String) {
@@ -349,15 +351,31 @@ final class AppState {
     }
 
     func setBlackboardBackground(_ background: BlackboardBackground) {
-        guard blackboardBackground != background else { return }
-        blackboardBackground = background
-        notifyBoardObservers()
+        let color: SettingsColor
+        switch background {
+        case .black:
+            color = SettingsColor(red: 0, green: 0, blue: 0)
+        case .chalkGreen:
+            color = SettingsColor(red: 0.055, green: 0.18, blue: 0.13)
+        }
+        settingsStore.update { $0.board.blackboardColor = color }
     }
 
     func setBoardBackgroundPattern(_ pattern: BoardBackgroundPattern) {
-        guard boardBackgroundPattern != pattern else { return }
-        boardBackgroundPattern = pattern
-        notifyBoardObservers()
+        settingsStore.update {
+            switch pattern {
+            case .none: $0.board.backgroundPattern = "none"
+            case .grid: $0.board.backgroundPattern = "grid"
+            case .lines: $0.board.backgroundPattern = "lines"
+            }
+        }
+    }
+
+    func boardBackgroundColor(for kind: BoardKind) -> NSColor {
+        switch kind {
+        case .white: return whiteboardColor
+        case .black: return blackboardColor
+        }
     }
 
     func selectTool(_ tool: InkTool) {
@@ -372,17 +390,19 @@ final class AppState {
     }
 
     func toggleShapeRecognition() {
-        isShapeRecognitionEnabled.toggle()
+        settingsStore.update { $0.tools.shapeRecognitionEnabled.toggle() }
     }
 
     func toggleEraserAreaShape() {
-        eraserAreaShape = eraserAreaShape.next
+        settingsStore.update {
+            $0.eraser.areaShape = eraserAreaShape.next == .rectangle ? "rectangle" : "lasso"
+        }
     }
 
     @discardableResult
     func selectOrCycleEraser() -> EraserMode {
         if currentTool == .eraser {
-            eraserMode = eraserMode.next
+            setEraserMode(eraserMode.next)
         } else {
             selectTool(.eraser)
         }
@@ -390,28 +410,44 @@ final class AppState {
     }
 
     func setEraserMode(_ mode: EraserMode) {
-        eraserMode = mode
+        settingsStore.update {
+            switch mode {
+            case .partial: $0.eraser.mode = "partial"
+            case .stroke: $0.eraser.mode = "stroke"
+            case .area: $0.eraser.mode = "area"
+            }
+        }
     }
 
     func setEraserHitRule(_ hitRule: EraserHitRule) {
-        eraserHitRule = hitRule
+        settingsStore.update {
+            $0.eraser.hitRule = hitRule == .touching ? "touching" : "contained"
+        }
     }
 
     func setEraserTargetFilter(_ targetFilter: EraserTargetFilter) {
-        eraserTargetFilter = targetFilter
+        settingsStore.update {
+            switch targetFilter {
+            case .all: $0.eraser.targetFilter = "all"
+            case .penOnly: $0.eraser.targetFilter = "penOnly"
+            case .highlighterOnly: $0.eraser.targetFilter = "highlighterOnly"
+            }
+        }
     }
 
     func setEraserDiameter(_ diameter: CGFloat) {
-        eraserDiameter = min(
+        let clamped = min(
             max(diameter, EraserDefaults.minimumDiameter),
             EraserDefaults.maximumDiameter
         )
+        settingsStore.update { $0.eraser.diameter = Double(clamped) }
     }
 
     @discardableResult
     func selectEraserDiameterPreset(at index: Int) -> Bool {
-        guard EraserDefaults.presetDiameters.indices.contains(index) else { return false }
-        setEraserDiameter(EraserDefaults.presetDiameters[index])
+        let presets = settingsStore.settings.eraser.presetDiameters
+        guard presets.indices.contains(index) else { return false }
+        setEraserDiameter(CGFloat(presets[index]))
         return true
     }
 
@@ -425,30 +461,34 @@ final class AppState {
     }
 
     func selectColor(at index: Int) {
-        guard InkDefaults.colors.indices.contains(index) else { return }
+        guard settingsStore.settings.tools.colors.indices.contains(index) else { return }
         selectedColorIndex = index
     }
 
     func adjustCurrentToolWidth(by delta: CGFloat) {
         switch currentTool {
         case .pen:
-            penWidth = min(max(penWidth + delta, InkDefaults.minimumWidth), InkDefaults.maximumWidth)
+            let value = min(max(penWidth + delta, InkDefaults.minimumWidth), InkDefaults.maximumWidth)
+            settingsStore.update { $0.tools.penWidth = Double(value) }
         case .highlighter:
-            highlighterWidth = min(
+            let value = min(
                 max(highlighterWidth + delta, InkDefaults.minimumWidth),
                 InkDefaults.maximumWidth
             )
+            settingsStore.update { $0.tools.highlighterWidth = Double(value) }
         case .laser:
             break
         case .eraser:
             setEraserDiameter(eraserDiameter + delta * EraserDefaults.diameterAdjustmentStep)
         case .arrow, .rectangle, .ellipse:
-            penWidth = min(max(penWidth + delta, InkDefaults.minimumWidth), InkDefaults.maximumWidth)
+            let value = min(max(penWidth + delta, InkDefaults.minimumWidth), InkDefaults.maximumWidth)
+            settingsStore.update { $0.tools.penWidth = Double(value) }
         case .text:
-            textFontSize = min(
+            let value = min(
                 max(textFontSize + delta, InkDefaults.minimumTextFontSize),
                 InkDefaults.maximumTextFontSize
             )
+            settingsStore.update { $0.tools.textFontSize = Double(value) }
         case .select, .cover:
             break
         }
@@ -708,22 +748,24 @@ final class AppState {
         let savedMagnification = (defaults.object(
             forKey: DefaultsKey.lastZoomMagnification
         ) as? NSNumber).map { CGFloat($0.doubleValue) }
-        let magnification = ZoomGeometry.steppedMagnification(
-            savedMagnification ?? ZoomDefaults.startingMagnification
+        let zoomSettings = settingsStore.settings.zoom
+        let startingMagnification = CGFloat(zoomSettings.startingMagnification)
+        let magnification = steppedZoomMagnification(
+            savedMagnification ?? startingMagnification
         )
         zoomPreviewOrigin = nil
         zoomSession = ZoomSessionState(
             displayUUID: displayUUID,
             screenSize: screenSize,
             magnification: magnification,
-            startingMagnification: ZoomDefaults.startingMagnification,
+            startingMagnification: startingMagnification,
             center: ZoomGeometry.clampedCenter(
                 center,
                 screenSize: screenSize,
                 magnification: magnification
             ),
-            followMode: ZoomDefaults.defaultFollowMode,
-            followSmoothness: ZoomDefaults.followSmoothness,
+            followMode: ZoomFollowMode(rawValue: zoomSettings.followMode) ?? .edge,
+            followSmoothness: CGFloat(zoomSettings.followSmoothness),
             previewDimming: ZoomDefaults.previewDimming,
             isFrozen: false,
             isPreviewing: false
@@ -738,9 +780,9 @@ final class AppState {
     @discardableResult
     func adjustZoomMagnification(by steps: Int) -> CGFloat? {
         guard var session = zoomSession else { return nil }
-        session.magnification = ZoomGeometry.adjustedMagnification(
-            session.magnification,
-            by: steps
+        let step = CGFloat(settingsStore.settings.zoom.magnificationStep)
+        session.magnification = steppedZoomMagnification(
+            session.magnification + CGFloat(steps) * step
         )
         session.center = ZoomGeometry.clampedCenter(
             session.center,
@@ -758,9 +800,7 @@ final class AppState {
     @discardableResult
     func resetZoomMagnification() -> CGFloat? {
         guard var session = zoomSession else { return nil }
-        session.magnification = ZoomGeometry.steppedMagnification(
-            session.startingMagnification
-        )
+        session.magnification = steppedZoomMagnification(session.startingMagnification)
         session.center = ZoomGeometry.clampedCenter(
             session.center,
             screenSize: session.screenSize,
@@ -838,6 +878,16 @@ final class AppState {
             smoothness: session.followSmoothness
         )
         zoomSession = session
+    }
+
+    private func steppedZoomMagnification(_ value: CGFloat) -> CGFloat {
+        let zoom = settingsStore.settings.zoom
+        let step = CGFloat(zoom.magnificationStep)
+        let rounded = (value / step).rounded() * step
+        return min(
+            max(rounded, ZoomDefaults.minimumMagnification),
+            CGFloat(zoom.maximumMagnification)
+        )
     }
 
     @discardableResult
@@ -1005,6 +1055,54 @@ final class AppState {
         }
     }
 
+    private func apply(_ settings: AppSettings) {
+        autoArchiveEnabled = settings.general.autoArchiveEnabled
+        clearsInkWhenAnnotationModeEnds = settings.general.clearsInkWhenAnnotationModeEnds
+        displayDisconnectPolicy = DisplayDisconnectPolicy(
+            rawValue: settings.general.displayDisconnectPolicy
+        ) ?? .archive
+        automaticallyRestoresDisconnectedDisplays = settings.general.automaticallyRestoresDisconnectedDisplays
+        showsHelpInSharing = settings.help.showsHelpInSharing
+
+        selectedColorIndex = min(selectedColorIndex, settings.tools.colors.count - 1)
+        penWidth = CGFloat(settings.tools.penWidth)
+        highlighterWidth = CGFloat(settings.tools.highlighterWidth)
+        highlighterOpacity = CGFloat(settings.tools.highlighterOpacity)
+        laserColor = settings.tools.laserColor.nsColor
+        laserSize = CGFloat(settings.tools.laserSize)
+        laserTrailDuration = settings.tools.laserTrailDuration
+        textFontSize = CGFloat(settings.tools.textFontSize)
+        isShapeRecognitionEnabled = settings.tools.shapeRecognitionEnabled
+
+        switch settings.eraser.mode {
+        case "stroke": eraserMode = .stroke
+        case "area": eraserMode = .area
+        default: eraserMode = .partial
+        }
+        eraserDiameter = CGFloat(settings.eraser.diameter)
+        eraserHitRule = settings.eraser.hitRule == "contained" ? .contained : .touching
+        switch settings.eraser.targetFilter {
+        case "penOnly": eraserTargetFilter = .penOnly
+        case "highlighterOnly": eraserTargetFilter = .highlighterOnly
+        default: eraserTargetFilter = .all
+        }
+        eraserAreaShape = settings.eraser.areaShape == "lasso" ? .lasso : .rectangle
+
+        whiteboardColor = settings.board.whiteboardColor.nsColor
+        blackboardColor = settings.board.blackboardColor.nsColor
+        switch settings.board.backgroundPattern {
+        case "grid": boardBackgroundPattern = .grid
+        case "lines": boardBackgroundPattern = .lines
+        default: boardBackgroundPattern = .none
+        }
+        blackboardBackground = settings.board.blackboardColor.green > settings.board.blackboardColor.red
+            ? .chalkGreen
+            : .black
+
+        notifyToolSettingsObservers()
+        notifyBoardObservers()
+    }
+
     private func clearAllSelections() {
         let selectedDisplays = selectedStrokeIdentifiersByDisplay.compactMap { entry in
             entry.value.isEmpty ? nil : entry.key
@@ -1026,6 +1124,12 @@ final class AppState {
             preconditionFailure("Missing board document for \(kind)")
         }
         return document
+    }
+
+    deinit {
+        if let settingsObserverIdentifier {
+            settingsStore.removeObserver(settingsObserverIdentifier)
+        }
     }
 }
 

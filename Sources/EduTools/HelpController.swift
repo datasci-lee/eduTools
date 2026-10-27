@@ -379,7 +379,7 @@ final class HelpController: NSObject {
             ? .zoom
             : (state.isAnnotationModeEnabled ? .annotation : .global)
         let filteredDefinitions = ShortcutCatalog.filtered(
-            ShortcutCatalog.definitions,
+            ShortcutCatalog.activeDefinitions,
             query: isPinned ? searchField.stringValue : ""
         ).enumerated().sorted { lhs, rhs in
             let lhsIsCurrent = lhs.element.modes.contains(activeMode)

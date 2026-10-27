@@ -162,7 +162,7 @@ final class PaletteController: NSObject {
         addBoardButton(command: .toggleBoard(.white), kind: .white)
         addBoardButton(command: .toggleBoard(.black), kind: .black)
 
-        for index in InkDefaults.colors.indices {
+        for index in state.colorPresets.indices {
             let button = makeColorButton(index: index)
             colorButtons.append(button)
             controlsStack.addArrangedSubview(button)
@@ -227,7 +227,7 @@ final class PaletteController: NSObject {
         button.identifier = NSUserInterfaceItemIdentifier(definition.id)
         button.isBordered = false
         button.wantsLayer = true
-        button.layer?.backgroundColor = InkDefaults.colors[index].cgColor
+        button.layer?.backgroundColor = state.colorPresets[index].cgColor
         button.layer?.cornerRadius = 9
         button.toolTip = "\(definition.name) (\(definition.displayKeys))"
         button.setAccessibilityLabel(definition.name)
@@ -283,12 +283,28 @@ final class PaletteController: NSObject {
     }
 
     private func updateSelection() {
+        let shortcutButtons = Array(toolButtons.values) + colorButtons + Array(boardButtons.values)
+        for button in shortcutButtons {
+            guard let identifier = button.identifier?.rawValue,
+                  let definition = ShortcutCatalog.activeDefinitions.first(where: {
+                      $0.id == identifier
+                  })
+            else {
+                continue
+            }
+            button.toolTip = definition.displayKeys.isEmpty
+                ? definition.name
+                : "\(definition.name) (\(definition.displayKeys))"
+        }
         for (tool, button) in toolButtons {
             let isSelected = tool == state.currentTool
             button.state = isSelected ? .on : .off
             button.contentTintColor = isSelected ? .controlAccentColor : .labelColor
         }
         for (index, button) in colorButtons.enumerated() {
+            if state.colorPresets.indices.contains(index) {
+                button.layer?.backgroundColor = state.colorPresets[index].cgColor
+            }
             let isSelected = index == state.selectedColorIndex
             button.layer?.borderWidth = isSelected ? 3 : 1
             button.layer?.borderColor = isSelected

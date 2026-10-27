@@ -4,6 +4,7 @@ import Carbon
 final class StatusMenu: NSObject {
     private let state: AppState
     private let dispatcher: AppCommandDispatcher
+    private let settingsController: SettingsController
     private let statusItem: NSStatusItem
     private let modeItem: NSMenuItem
     private let toolItem: NSMenuItem
@@ -21,9 +22,14 @@ final class StatusMenu: NSObject {
     private var hotkeyRegistrationFailed = false
     private var accessibilityTrusted = false
 
-    init(state: AppState, dispatcher: AppCommandDispatcher) {
+    init(
+        state: AppState,
+        dispatcher: AppCommandDispatcher,
+        settingsController: SettingsController
+    ) {
         self.state = state
         self.dispatcher = dispatcher
+        self.settingsController = settingsController
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         modeItem = NSMenuItem(title: "판서 모드", action: nil, keyEquivalent: "")
         toolItem = NSMenuItem(title: "도구: 펜", action: nil, keyEquivalent: "")
@@ -204,6 +210,40 @@ final class StatusMenu: NSObject {
         menu.addItem(helpSharingItem)
         menu.addItem(.separator())
 
+        let settingsItem = NSMenuItem(
+            title: "설정…",
+            action: #selector(showSettings(_:)),
+            keyEquivalent: ","
+        )
+        settingsItem.keyEquivalentModifierMask = .command
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+
+        let exportSettingsItem = NSMenuItem(
+            title: "설정 내보내기…",
+            action: #selector(exportSettings(_:)),
+            keyEquivalent: ""
+        )
+        exportSettingsItem.target = self
+        menu.addItem(exportSettingsItem)
+
+        let importSettingsItem = NSMenuItem(
+            title: "설정 가져오기…",
+            action: #selector(importSettings(_:)),
+            keyEquivalent: ""
+        )
+        importSettingsItem.target = self
+        menu.addItem(importSettingsItem)
+
+        let resetSettingsItem = NSMenuItem(
+            title: "기본값으로 초기화",
+            action: #selector(resetSettings(_:)),
+            keyEquivalent: ""
+        )
+        resetSettingsItem.target = self
+        menu.addItem(resetSettingsItem)
+        menu.addItem(.separator())
+
         let quitItem = NSMenuItem(
             title: "EduTools 종료",
             action: #selector(terminateApplication(_:)),
@@ -233,6 +273,11 @@ final class StatusMenu: NSObject {
 
     func setHotkeyRegistrationStatus(_ status: OSStatus) {
         hotkeyRegistrationFailed = hotkeyRegistrationFailed || status != noErr
+        updateAnnotationMode(state.isAnnotationModeEnabled)
+    }
+
+    func resetHotkeyRegistrationStatus() {
+        hotkeyRegistrationFailed = false
         updateAnnotationMode(state.isAnnotationModeEnabled)
     }
 
@@ -366,6 +411,22 @@ final class StatusMenu: NSObject {
 
     @objc private func showHelp(_ sender: Any?) {
         dispatcher.execute(.showHelp, scope: .global)
+    }
+
+    @objc private func showSettings(_ sender: Any?) {
+        settingsController.showSettings()
+    }
+
+    @objc private func exportSettings(_ sender: Any?) {
+        settingsController.exportSettings()
+    }
+
+    @objc private func importSettings(_ sender: Any?) {
+        settingsController.chooseSettingsToImport()
+    }
+
+    @objc private func resetSettings(_ sender: Any?) {
+        settingsController.confirmResetToDefaults()
     }
 
     @objc private func terminateApplication(_ sender: Any?) {

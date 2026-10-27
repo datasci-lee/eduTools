@@ -14,7 +14,9 @@ enum LessonTimerPhase: Equatable {
 }
 
 final class LessonTimerEngine {
-    static let defaultDuration: TimeInterval = 50 * 60
+    static var defaultDuration: TimeInterval {
+        TimeInterval(AppSettings.default.timer.lessonDefaultMinutes * 60)
+    }
 
     private(set) var mode = LessonTimerMode.countdown(duration: defaultDuration)
     private(set) var phase = LessonTimerPhase.stopped
@@ -46,10 +48,13 @@ final class LessonTimerEngine {
         accumulatedElapsed = 0
     }
 
-    func toggleDefault(now: Date) {
+    func toggleDefault(
+        now: Date,
+        defaultDuration: TimeInterval = LessonTimerEngine.defaultDuration
+    ) {
         switch phase {
         case .stopped, .finished:
-            startCountdown(duration: Self.defaultDuration, now: now)
+            startCountdown(duration: defaultDuration, now: now)
         case .running:
             pause(now: now)
         case .paused:

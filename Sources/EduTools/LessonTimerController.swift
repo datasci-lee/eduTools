@@ -38,11 +38,6 @@ final class LessonTimerController: NSObject, NSMenuDelegate {
     private enum DefaultsKey {
         static let positions = "EduTools.lessonTimer.positions"
         static let displayUUID = "EduTools.lessonTimer.displayUUID"
-        static let size = "EduTools.lessonTimer.size"
-        static let opacity = "EduTools.lessonTimer.opacity"
-        static let displayMode = "EduTools.lessonTimer.displayMode"
-        static let autoBreakEnabled = "EduTools.lessonTimer.autoBreakEnabled"
-        static let autoBreakMinutes = "EduTools.lessonTimer.autoBreakMinutes"
     }
 
     private enum SizePreset: String, CaseIterable {
@@ -74,6 +69,7 @@ final class LessonTimerController: NSObject, NSMenuDelegate {
 
     private let engine = LessonTimerEngine()
     private let defaults: UserDefaults
+    private let settingsStore: SettingsStore
     private let panel: LessonTimerPanel
     private let rootView = LessonTimerDragView()
     private let timeLabel = LessonTimerDragLabel(labelWithString: "50:00")
@@ -81,6 +77,7 @@ final class LessonTimerController: NSObject, NSMenuDelegate {
     private let pauseItem = NSMenuItem()
     private let displayModeItem = NSMenuItem()
     private let autoBreakItem = NSMenuItem()
+    private let presetsMenu = NSMenu(title: "프리셋")
     private var refreshTimer: Timer?
     private var blinkTimer: Timer?
     private var notificationObservers: [NSObjectProtocol] = []
@@ -90,16 +87,19 @@ final class LessonTimerController: NSObject, NSMenuDelegate {
     private var displayMode: DisplayMode
     private var dragStartMouseLocation: CGPoint?
     private var dragStartPanelOrigin: CGPoint?
+    private var settingsObserverIdentifier: UUID?
 
     var onDisplayTextChange: ((String) -> Void)?
     var onAutoBreakRequested: ((Int) -> Void)?
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, settingsStore: SettingsStore? = nil) {
         self.defaults = defaults
+        let resolvedSettingsStore = settingsStore ?? SettingsStore(defaults: defaults)
+        self.settingsStore = resolvedSettingsStore
         displayMode = DisplayMode(
-            rawValue: defaults.string(forKey: DefaultsKey.displayMode) ?? ""
+            rawValue: resolvedSettingsStore.settings.timer.lessonDisplayMode
         ) ?? .remaining
-        let savedSize = SizePreset(rawValue: defaults.string(forKey: DefaultsKey.size) ?? "")
+        let savedSize = SizePreset(rawValue: resolvedSettingsStore.settings.timer.lessonBadgeSize)
             ?? .medium
         panel = LessonTimerPanel(
             contentRect: NSRect(origin: .zero, size: savedSize.size),
@@ -115,10 +115,23 @@ final class LessonTimerController: NSObject, NSMenuDelegate {
         observeSystemEvents()
         startDisplayRefreshTimer()
         refresh(now: Date())
+        settingsObserverIdentifier = resolvedSettingsStore.addObserver { [weak self] settings in
+            guard let self else { return }
+            self.panel.alphaValue = CGFloat(settings.timer.lessonBadgeOpacity)
+            if let size = SizePreset(rawValue: settings.timer.lessonBadgeSize) {
+                self.resize(to: size.size)
+            }
+            self.displayMode = DisplayMode(rawValue: settings.timer.lessonDisplayMode) ?? .remaining
+            self.rebuildPresetMenu()
+            self.refresh(now: Date())
+        }
     }
 
     func toggleFromShortcut() {
-        engine.toggleDefault(now: Date())
+        engine.toggleDefault(
+            now: Date(),
+            defaultDuration: TimeInterval(settingsStore.settings.timer.lessonDefaultMinutes * 60)
+        )
         showPanel()
         refresh(now: Date())
     }
@@ -203,8 +216,7 @@ final class LessonTimerController: NSObject, NSMenuDelegate {
         let menu = NSMenu(title: "수업 타이머")
         menu.delegate = self
 
-        let presets = NSMenu(title: "프리셋")
-        for minutes in [25, 45, 50, 90] {
+        for minutes in settingsStore.settings.timer.lessonPresets {
             let item = NSMenuItem(
                 title: "\(minutes)분",
                 action: #selector(startPreset(_:)),
@@ -212,10 +224,10 @@ final class LessonTimerController: NSObject, NSMenuDelegate {
             )
             item.target = self
             item.representedObject = NSNumber(value: minutes)
-            presets.addItem(item)
+            presetsMenu.addItem(item)
         }
         let presetItem = NSMenuItem(title: "프리셋", action: nil, keyEquivalent: "")
-        presetItem.submenu = presets
+        presetItem.submenu = presetsMenu
         menu.addItem(presetItem)
 
         let countUpItem = NSMenuItem(
@@ -288,12 +300,26 @@ final class LessonTimerController: NSObject, NSMenuDelegate {
         rootView.menu = menu
     }
 
+    private func rebuildPresetMenu() {
+        presetsMenu.removeAllItems()
+        for minutes in settingsStore.settings.timer.lessonPresets {
+            let item = NSMenuItem(
+                title: "\(minutes)분",
+                action: #selector(startPreset(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = NSNumber(value: minutes)
+            presetsMenu.addItem(item)
+        }
+    }
+
     func menuWillOpen(_ menu: NSMenu) {
         pauseItem.title = engine.phase == .paused ? "재시작" : "일시정지"
         pauseItem.isEnabled = engine.isActive
         displayModeItem.title = displayMode == .remaining ? "경과 시간 표시" : "남은 시간 표시"
         autoBreakItem.title = "종료 후 \(autoBreakMinutes())분 쉬는 시간 자동 시작"
-        autoBreakItem.state = defaults.bool(forKey: DefaultsKey.autoBreakEnabled) ? .on : .off
+        autoBreakItem.state = settingsStore.settings.timer.autoStartBreak ? .on : .off
     }
 
     @objc private func startPreset(_ sender: NSMenuItem) {
@@ -331,8 +357,7 @@ final class LessonTimerController: NSObject, NSMenuDelegate {
             NSLog("EduTools: lesson timer size menu has no preset")
             return
         }
-        defaults.set(preset.rawValue, forKey: DefaultsKey.size)
-        resize(to: preset.size)
+        settingsStore.update { $0.timer.lessonBadgeSize = preset.rawValue }
     }
 
     @objc private func selectOpacity(_ sender: NSMenuItem) {
@@ -340,13 +365,12 @@ final class LessonTimerController: NSObject, NSMenuDelegate {
             NSLog("EduTools: lesson timer opacity menu has no value")
             return
         }
-        panel.alphaValue = min(max(opacity, 0.4), 1)
-        defaults.set(panel.alphaValue, forKey: DefaultsKey.opacity)
+        settingsStore.update { $0.timer.lessonBadgeOpacity = min(max(opacity, 0.4), 1) }
     }
 
     @objc private func toggleDisplayMode(_ sender: Any?) {
         displayMode = displayMode == .remaining ? .elapsed : .remaining
-        defaults.set(displayMode.rawValue, forKey: DefaultsKey.displayMode)
+        settingsStore.update { $0.timer.lessonDisplayMode = displayMode.rawValue }
         refresh(now: Date())
     }
 
@@ -360,8 +384,8 @@ final class LessonTimerController: NSObject, NSMenuDelegate {
     }
 
     @objc private func toggleAutoBreak(_ sender: Any?) {
-        let enabled = !defaults.bool(forKey: DefaultsKey.autoBreakEnabled)
-        defaults.set(enabled, forKey: DefaultsKey.autoBreakEnabled)
+        let enabled = !settingsStore.settings.timer.autoStartBreak
+        settingsStore.update { $0.timer.autoStartBreak = enabled }
         autoBreakItem.state = enabled ? .on : .off
     }
 
@@ -425,9 +449,9 @@ final class LessonTimerController: NSObject, NSMenuDelegate {
     }
 
     private func handleCompletion() {
-        TimerSound.playCompletion()
+        TimerSound.playCompletion(named: settingsStore.settings.timer.notificationSound)
         startBlinking()
-        if defaults.bool(forKey: DefaultsKey.autoBreakEnabled) {
+        if settingsStore.settings.timer.autoStartBreak {
             onAutoBreakRequested?(autoBreakMinutes())
         }
     }
@@ -459,13 +483,11 @@ final class LessonTimerController: NSObject, NSMenuDelegate {
     }
 
     private func savedOpacity() -> CGFloat {
-        guard defaults.object(forKey: DefaultsKey.opacity) != nil else { return 0.9 }
-        return min(max(defaults.double(forKey: DefaultsKey.opacity), 0.4), 1)
+        CGFloat(settingsStore.settings.timer.lessonBadgeOpacity)
     }
 
     private func autoBreakMinutes() -> Int {
-        let saved = defaults.integer(forKey: DefaultsKey.autoBreakMinutes)
-        return saved > 0 ? saved : 10
+        settingsStore.settings.timer.breakDefaultMinutes
     }
 
     private func observeSystemEvents() {
@@ -665,6 +687,9 @@ final class LessonTimerController: NSObject, NSMenuDelegate {
     }
 
     deinit {
+        if let settingsObserverIdentifier {
+            settingsStore.removeObserver(settingsObserverIdentifier)
+        }
         refreshTimer?.invalidate()
         blinkTimer?.invalidate()
         for observer in notificationObservers {
@@ -676,11 +701,11 @@ final class LessonTimerController: NSObject, NSMenuDelegate {
 }
 
 enum TimerSound {
-    static func playCompletion() {
-        if let sound = NSSound(named: NSSound.Name("Glass")) {
+    static func playCompletion(named name: String = AppSettings.default.timer.notificationSound) {
+        if let sound = NSSound(named: NSSound.Name(name)) {
             sound.play()
         } else {
-            NSLog("EduTools: Glass system sound was unavailable; using the system beep")
+            NSLog("EduTools: %@ system sound was unavailable; using the system beep", name)
             NSSound.beep()
         }
     }

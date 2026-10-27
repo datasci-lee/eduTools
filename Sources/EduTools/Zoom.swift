@@ -25,12 +25,14 @@ enum ZoomFollowMode: String, CaseIterable {
 
 enum ZoomDefaults {
     static let minimumMagnification = CGFloat(1.25)
-    static let maximumMagnification = CGFloat(8)
-    static let magnificationStep = CGFloat(0.25)
-    static let startingMagnification = CGFloat(2)
-    static let defaultFollowMode = ZoomFollowMode.edge
+    static var maximumMagnification: CGFloat { CGFloat(AppSettings.default.zoom.maximumMagnification) }
+    static var magnificationStep: CGFloat { CGFloat(AppSettings.default.zoom.magnificationStep) }
+    static var startingMagnification: CGFloat { CGFloat(AppSettings.default.zoom.startingMagnification) }
+    static var defaultFollowMode: ZoomFollowMode {
+        ZoomFollowMode(rawValue: AppSettings.default.zoom.followMode) ?? .edge
+    }
     static let followEdgeInsetRatio = CGFloat(0.1)
-    static let followSmoothness = CGFloat(0.22)
+    static var followSmoothness: CGFloat { CGFloat(AppSettings.default.zoom.followSmoothness) }
     static let previewDimming = CGFloat(0.62)
     static let previewAnimationDuration = TimeInterval(0.15)
 }

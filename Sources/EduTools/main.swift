@@ -3,7 +3,8 @@ import Carbon
 import Darwin
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let appState = AppState()
+    private let settingsStore: SettingsStore
+    private let appState: AppState
     private var statusMenu: StatusMenu?
     private var overlayController: OverlayController?
     private var paletteController: PaletteController?
@@ -15,9 +16,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var exportController: ExportController?
     private var dispatcher: AppCommandDispatcher?
     private var hotkeyCenter: HotkeyCenter?
+    private var settingsController: SettingsController?
+    private var settingsObserverIdentifier: UUID?
+    private var lastShortcutSettings: ShortcutGroupSettings?
+
+    override init() {
+        let store = SettingsStore()
+        settingsStore = store
+        appState = AppState(settingsStore: store)
+        super.init()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         _ = NSApp.setActivationPolicy(.accessory)
+        ShortcutCatalog.configure(settingsStore: settingsStore)
 
         let dispatcher = AppCommandDispatcher(state: appState)
         self.dispatcher = dispatcher
@@ -34,11 +46,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.paletteController = paletteController
         dispatcher.paletteController = paletteController
 
-        let timerCoordinator = TimerCoordinator()
+        let timerCoordinator = TimerCoordinator(settingsStore: settingsStore)
         self.timerCoordinator = timerCoordinator
         dispatcher.timerCoordinator = timerCoordinator
 
-        let statusMenu = StatusMenu(state: appState, dispatcher: dispatcher)
+        let settingsController = SettingsController(settingsStore: settingsStore)
+        self.settingsController = settingsController
+        let statusMenu = StatusMenu(
+            state: appState,
+            dispatcher: dispatcher,
+            settingsController: settingsController
+        )
         self.statusMenu = statusMenu
         presenterEffectsController.setAccessibilityStatusHandler { [weak statusMenu] trusted in
             statusMenu?.setAccessibilityTrusted(trusted)
@@ -52,7 +70,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let archiveController = ArchiveController(
             state: appState,
-            overlayController: overlayController
+            overlayController: overlayController,
+            settingsStore: settingsStore
         )
         self.archiveController = archiveController
         overlayController.archiveController = archiveController
@@ -72,12 +91,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         zoomController.overlayController = overlayController
         dispatcher.zoomController = zoomController
 
+        registerGlobalShortcuts(dispatcher: dispatcher, statusMenu: statusMenu)
+        lastShortcutSettings = settingsStore.settings.shortcuts
+        settingsObserverIdentifier = settingsStore.addObserver { [weak self, weak dispatcher, weak statusMenu] settings in
+            guard let self, settings.shortcuts != self.lastShortcutSettings,
+                  let dispatcher, let statusMenu
+            else {
+                return
+            }
+            self.lastShortcutSettings = settings.shortcuts
+            self.registerGlobalShortcuts(dispatcher: dispatcher, statusMenu: statusMenu)
+        }
+
+        DispatchQueue.main.async { [weak helpController, weak settingsController] in
+            helpController?.showFirstRunIfNeeded()
+            settingsController?.showFirstRunPermissionsIfNeeded()
+            settingsController?.showVoiceOverWarningIfNeeded()
+        }
+    }
+
+    private func registerGlobalShortcuts(
+        dispatcher: AppCommandDispatcher,
+        statusMenu: StatusMenu
+    ) {
+        hotkeyCenter?.invalidate()
         let hotkeyCenter = HotkeyCenter()
         self.hotkeyCenter = hotkeyCenter
+        statusMenu.resetHotkeyRegistrationStatus()
+        var warnings = ShortcutConflictDetector.warnings(for: settingsStore.settings.shortcuts)
 
         for (definition, binding) in ShortcutCatalog.globalDefinitions {
             guard let serialized = binding.serializedGlobalShortcut,
-                  let shortcut = Shortcut(serialized: serialized)
+                  let shortcut = Shortcut(
+                    serialized: serialized,
+                    appModifier: settingsStore.settings.shortcuts.appModifier
+                  )
             else {
                 let status = OSStatus(paramErr)
                 NSLog(
@@ -86,6 +134,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     status
                 )
                 statusMenu.setHotkeyRegistrationStatus(status)
+                warnings[ShortcutCatalog.overrideKey(
+                    definitionID: definition.id,
+                    scope: .global
+                )] = "등록할 수 없는 조합입니다. 대안 단축키를 선택하세요."
                 continue
             }
 
@@ -104,12 +156,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     shortcut.serialized,
                     status
                 )
+                warnings[ShortcutCatalog.overrideKey(
+                    definitionID: definition.id,
+                    scope: .global
+                )] = "다른 앱이 사용 중이거나 등록이 거부되었습니다(OSStatus \(status)). 대안을 선택하세요."
             }
             statusMenu.setHotkeyRegistrationStatus(status)
         }
+        settingsStore.setRuntimeShortcutWarnings(warnings)
+        settingsController?.refreshShortcutPresentation()
+    }
 
-        DispatchQueue.main.async { [weak helpController] in
-            helpController?.showFirstRunIfNeeded()
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls where url.pathExtension.lowercased() == "pansetting" {
+            settingsController?.openImportPreview(for: url)
         }
     }
 
@@ -117,6 +177,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         zoomController?.stopZoom()
         timerCoordinator?.stopBreakMusicForTermination()
         hotkeyCenter?.invalidate()
+        if let settingsObserverIdentifier {
+            settingsStore.removeObserver(settingsObserverIdentifier)
+        }
     }
 }
 

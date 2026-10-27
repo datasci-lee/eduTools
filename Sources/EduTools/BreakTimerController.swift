@@ -47,6 +47,7 @@ private final class BreakProgressView: NSView {
 
 final class BreakTimerController: NSObject {
     private let engine = BreakTimerEngine()
+    private let settingsStore: SettingsStore
     private let musicController: BreakMusicController
     private let panel: BreakTimerPanel
     private let setupPanel: NSPanel
@@ -65,10 +66,13 @@ final class BreakTimerController: NSObject {
     private var quickEndDate: Date?
     private var targetDisplayUUID: String?
     private var isCollapsed = false
+    private var settingsObserverIdentifier: UUID?
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, settingsStore: SettingsStore? = nil) {
+        let resolvedSettingsStore = settingsStore ?? SettingsStore(defaults: defaults)
+        self.settingsStore = resolvedSettingsStore
         musicController = BreakMusicController(
-            settings: BreakMusicSettings(defaults: defaults)
+            settings: BreakMusicSettings(settingsStore: resolvedSettingsStore)
         )
         panel = BreakTimerPanel(
             contentRect: .zero,
@@ -91,13 +95,18 @@ final class BreakTimerController: NSObject {
         configureSetupPanel()
         observeSystemEvents()
         startDisplayRefreshTimer()
+        settingsObserverIdentifier = resolvedSettingsStore.addObserver { [weak self] settings in
+            self?.resumeLabel.stringValue = settings.timer.breakMessage
+            self?.rootView.layer?.backgroundColor = settings.timer.breakBackgroundColor.nsColor.cgColor
+            self?.reloadMusicControls()
+        }
     }
 
     func openSetup() {
         let now = Date()
         let proposed = engine.phase == .running
-            ? engine.endDate ?? BreakTimerEngine.endDate(addingMinutes: 10, to: now)
-            : BreakTimerEngine.endDate(addingMinutes: 10, to: now)
+            ? engine.endDate ?? defaultEndDate(now: now)
+            : defaultEndDate(now: now)
         quickEndDate = proposed
         timePicker.dateValue = proposed
         warningLabel.isHidden = true
@@ -566,7 +575,17 @@ final class BreakTimerController: NSObject {
         musicController.breakDidEnd()
     }
 
+    private func defaultEndDate(now: Date) -> Date {
+        BreakTimerEngine.endDate(
+            addingMinutes: settingsStore.settings.timer.breakDefaultMinutes,
+            to: now
+        )
+    }
+
     deinit {
+        if let settingsObserverIdentifier {
+            settingsStore.removeObserver(settingsObserverIdentifier)
+        }
         musicController.breakDidEnd()
         refreshTimer?.invalidate()
         for observer in notificationObservers {

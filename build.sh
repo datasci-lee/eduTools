@@ -45,6 +45,7 @@ for arch in "${ARCHITECTURES[@]}"; do
         -framework ApplicationServices \
         -framework Carbon \
         -framework ColorSync \
+        -framework Combine \
         -framework CoreAudio \
         -framework CoreGraphics \
         -framework CoreImage \
@@ -52,6 +53,9 @@ for arch in "${ARCHITECTURES[@]}"; do
         -framework CoreVideo \
         -framework QuartzCore \
         -framework ScreenCaptureKit \
+        -framework ServiceManagement \
+        -framework SwiftUI \
+        -framework UniformTypeIdentifiers \
         -o "$arch_executable"
 done
 
@@ -81,6 +85,44 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
     <string>$MARKETING_VERSION</string>
     <key>CFBundleVersion</key>
     <string>$BUILD_VERSION</string>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>EduTools Settings</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Owner</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.jia.edutools.pansetting</string>
+            </array>
+        </dict>
+    </array>
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>com.jia.edutools.pansetting</string>
+            <key>UTTypeDescription</key>
+            <string>EduTools Settings</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.json</string>
+                <string>public.data</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>pansetting</string>
+                </array>
+                <key>public.mime-type</key>
+                <string>application/vnd.jia.edutools-settings+json</string>
+            </dict>
+        </dict>
+    </array>
     <key>LSMinimumSystemVersion</key>
     <string>$MIN_MACOS_VERSION</string>
     <key>LSUIElement</key>

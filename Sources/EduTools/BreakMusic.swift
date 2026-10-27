@@ -62,78 +62,27 @@ enum AppleScriptString {
 
 final class BreakMusicSettings {
     static let maximumPlaylistCount = 5
-    static let defaultFadeDuration: TimeInterval = 60
+    static var defaultFadeDuration: TimeInterval { AppSettings.default.timer.fadeDuration }
 
-    private enum DefaultsKey {
-        static let playlistURLs = "EduTools.breakMusic.playlistURLs"
-        static let defaultPlaylistIndex = "EduTools.breakMusic.defaultPlaylistIndex"
-        static let browser = "EduTools.breakMusic.browser"
-        static let fadeEnabled = "EduTools.breakMusic.fadeEnabled"
-        static let fadeDuration = "EduTools.breakMusic.fadeDuration"
-        static let musicEnabled = "EduTools.breakMusic.enabled"
+    private let settingsStore: SettingsStore
+
+    var playlistURLs: [URL] {
+        settingsStore.settings.timer.playlistURLs.compactMap(BreakMusicURL.validated)
+    }
+    var defaultPlaylistIndex: Int { settingsStore.settings.timer.defaultPlaylistIndex }
+    var browser: BreakMusicBrowser {
+        BreakMusicBrowser(rawValue: settingsStore.settings.timer.musicBrowser) ?? .chrome
+    }
+    var isFadeEnabled: Bool { settingsStore.settings.timer.fadeEnabled }
+    var fadeDuration: TimeInterval { settingsStore.settings.timer.fadeDuration }
+    var isMusicEnabled: Bool { settingsStore.settings.timer.musicEnabled }
+
+    init(settingsStore: SettingsStore) {
+        self.settingsStore = settingsStore
     }
 
-    private let defaults: UserDefaults
-    private(set) var playlistURLs: [URL]
-    private(set) var defaultPlaylistIndex: Int
-    private(set) var browser: BreakMusicBrowser
-    private(set) var isFadeEnabled: Bool
-    private(set) var fadeDuration: TimeInterval
-    private(set) var isMusicEnabled: Bool
-
-    init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
-
-        let storedURLs = defaults.stringArray(forKey: DefaultsKey.playlistURLs) ?? []
-        var acceptedURLs: [URL] = []
-        for storedURL in storedURLs.prefix(Self.maximumPlaylistCount) {
-            if let url = BreakMusicURL.validated(storedURL) {
-                acceptedURLs.append(url)
-            } else {
-                NSLog("EduTools: ignored an invalid break music playlist URL: %@", storedURL)
-            }
-        }
-        if storedURLs.count > Self.maximumPlaylistCount {
-            NSLog(
-                "EduTools: ignored %d break music playlist URLs above the maximum of %d",
-                storedURLs.count - Self.maximumPlaylistCount,
-                Self.maximumPlaylistCount
-            )
-        }
-        playlistURLs = acceptedURLs
-
-        let storedIndex = defaults.integer(forKey: DefaultsKey.defaultPlaylistIndex)
-        defaultPlaylistIndex = acceptedURLs.indices.contains(storedIndex) ? storedIndex : 0
-
-        if let storedBrowser = defaults.string(forKey: DefaultsKey.browser) {
-            if let decodedBrowser = BreakMusicBrowser(rawValue: storedBrowser) {
-                browser = decodedBrowser
-            } else {
-                browser = .chrome
-                NSLog("EduTools: unknown break music browser setting; using Chrome")
-            }
-        } else {
-            browser = .chrome
-        }
-
-        if defaults.object(forKey: DefaultsKey.fadeEnabled) == nil {
-            isFadeEnabled = true
-        } else {
-            isFadeEnabled = defaults.bool(forKey: DefaultsKey.fadeEnabled)
-        }
-
-        if defaults.object(forKey: DefaultsKey.fadeDuration) == nil {
-            fadeDuration = Self.defaultFadeDuration
-        } else {
-            let storedDuration = defaults.double(forKey: DefaultsKey.fadeDuration)
-            if storedDuration > 0 {
-                fadeDuration = storedDuration
-            } else {
-                fadeDuration = Self.defaultFadeDuration
-                NSLog("EduTools: invalid break music fade duration; using 60 seconds")
-            }
-        }
-        isMusicEnabled = defaults.bool(forKey: DefaultsKey.musicEnabled)
+    convenience init(defaults: UserDefaults = .standard) {
+        self.init(settingsStore: SettingsStore(defaults: defaults))
     }
 
     var selectedPlaylistURL: URL? {
@@ -151,29 +100,26 @@ final class BreakMusicSettings {
             return false
         }
 
-        playlistURLs = validatedURLs
-        defaultPlaylistIndex = validatedURLs.isEmpty ? 0 : defaultIndex
-        defaults.set(validatedURLs.map(\.absoluteString), forKey: DefaultsKey.playlistURLs)
-        defaults.set(defaultPlaylistIndex, forKey: DefaultsKey.defaultPlaylistIndex)
+        settingsStore.update {
+            $0.timer.playlistURLs = validatedURLs.map(\.absoluteString)
+            $0.timer.defaultPlaylistIndex = validatedURLs.isEmpty ? 0 : defaultIndex
+        }
         return true
     }
 
     @discardableResult
     func selectPlaylist(at index: Int) -> Bool {
         guard playlistURLs.indices.contains(index) else { return false }
-        defaultPlaylistIndex = index
-        defaults.set(index, forKey: DefaultsKey.defaultPlaylistIndex)
+        settingsStore.update { $0.timer.defaultPlaylistIndex = index }
         return true
     }
 
     func setMusicEnabled(_ isEnabled: Bool) {
-        isMusicEnabled = isEnabled
-        defaults.set(isEnabled, forKey: DefaultsKey.musicEnabled)
+        settingsStore.update { $0.timer.musicEnabled = isEnabled }
     }
 
     func setBrowser(_ browser: BreakMusicBrowser) {
-        self.browser = browser
-        defaults.set(browser.rawValue, forKey: DefaultsKey.browser)
+        settingsStore.update { $0.timer.musicBrowser = browser.rawValue }
     }
 
     func setFade(enabled: Bool, duration: TimeInterval) {
@@ -181,10 +127,10 @@ final class BreakMusicSettings {
             NSLog("EduTools: rejected a non-positive break music fade duration")
             return
         }
-        isFadeEnabled = enabled
-        fadeDuration = duration
-        defaults.set(enabled, forKey: DefaultsKey.fadeEnabled)
-        defaults.set(duration, forKey: DefaultsKey.fadeDuration)
+        settingsStore.update {
+            $0.timer.fadeEnabled = enabled
+            $0.timer.fadeDuration = duration
+        }
     }
 }
 
