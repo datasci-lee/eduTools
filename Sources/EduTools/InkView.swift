@@ -84,6 +84,7 @@ final class InkView: NSView {
     }
 
     private let state: AppState
+    private let dispatcher: AppCommandDispatcher
     private let displayUUID: String
     private let requestKeyFocus: () -> Void
     private let completedLayer = CALayer()
@@ -105,10 +106,12 @@ final class InkView: NSView {
     init(
         frame frameRect: NSRect,
         state: AppState,
+        dispatcher: AppCommandDispatcher,
         displayUUID: String,
         requestKeyFocus: @escaping () -> Void
     ) {
         self.state = state
+        self.dispatcher = dispatcher
         self.displayUUID = displayUUID
         self.requestKeyFocus = requestKeyFocus
         super.init(frame: frameRect)
@@ -302,61 +305,36 @@ final class InkView: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
-        let keyCode = Int(event.keyCode)
-        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-
-        if keyCode == kVK_Delete, modifiers == .command {
-            _ = state.clearAllInk()
-            return
-        }
-
-        if keyCode == kVK_ANSI_Z, modifiers.contains(.command) {
-            if modifiers.contains(.shift) {
-                _ = state.redo(on: displayUUID)
-            } else {
-                _ = state.undo(on: displayUUID)
-            }
-            return
-        }
-
-        let unsupportedModifiers: NSEvent.ModifierFlags = [.command, .control, .option]
-        guard modifiers.intersection(unsupportedModifiers).isEmpty else {
+        guard let definition = ShortcutCatalog.matching(event, scope: .annotation) else {
             super.keyDown(with: event)
             return
         }
 
-        switch keyCode {
-        case kVK_ANSI_P:
-            state.selectTool(.pen)
-        case kVK_ANSI_H:
-            state.selectTool(.highlighter)
-        case kVK_ANSI_L:
-            state.selectTool(.laser)
-        case kVK_ANSI_E:
-            let mode = state.selectOrCycleEraser()
-            showEraserMode(mode)
-        case kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3,
-             kVK_ANSI_4, kVK_ANSI_5, kVK_ANSI_6:
-            let colorKeyCodes = [
-                kVK_ANSI_1,
-                kVK_ANSI_2,
-                kVK_ANSI_3,
-                kVK_ANSI_4,
-                kVK_ANSI_5,
-                kVK_ANSI_6,
-            ]
-            if let colorIndex = colorKeyCodes.firstIndex(of: keyCode) {
-                state.selectColor(at: colorIndex)
-            }
-        case kVK_ANSI_LeftBracket:
-            state.adjustCurrentToolWidth(by: -1)
-            refreshEraserCursorIfNeeded()
-        case kVK_ANSI_RightBracket:
-            state.adjustCurrentToolWidth(by: 1)
+        dispatcher.keyDown(
+            definition: definition,
+            scope: .annotation,
+            displayUUID: displayUUID,
+            isRepeat: event.isARepeat
+        )
+        guard !event.isARepeat else { return }
+        switch definition.command {
+        case .selectOrCycleEraser:
+            showEraserMode(state.eraserMode)
+        case .adjustWidth:
             refreshEraserCursorIfNeeded()
         default:
-            super.keyDown(with: event)
+            break
         }
+    }
+
+    override func keyUp(with event: NSEvent) {
+        guard let definition = ShortcutCatalog.matchingKeyUp(event, scope: .annotation),
+              definition.command == .showHelp
+        else {
+            super.keyUp(with: event)
+            return
+        }
+        dispatcher.keyUp(definition: definition)
     }
 
     private func appendActivePoint(from event: NSEvent) {
