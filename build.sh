@@ -3,7 +3,7 @@
 set -euo pipefail
 
 APP_NAME="EduTools"
-BUNDLE_ID="com.jia.edutools"
+BUNDLE_ID="kr.datasci.edutools"
 APP_VERSION="0.1.0"
 BUILD_VERSION="1"
 MIN_MACOS_VERSION="26.0"
@@ -312,7 +312,7 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
             <string>Owner</string>
             <key>LSItemContentTypes</key>
             <array>
-                <string>com.jia.edutools.pansetting</string>
+                <string>kr.datasci.edutools.pansetting</string>
             </array>
         </dict>
     </array>
@@ -320,7 +320,7 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
     <array>
         <dict>
             <key>UTTypeIdentifier</key>
-            <string>com.jia.edutools.pansetting</string>
+            <string>kr.datasci.edutools.pansetting</string>
             <key>UTTypeDescription</key>
             <string>EduTools Settings</string>
             <key>UTTypeConformsTo</key>
