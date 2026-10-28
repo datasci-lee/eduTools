@@ -440,9 +440,6 @@ final class AppState {
         let clamped = min(max(Double(width), slot.sizeRange.lowerBound), slot.sizeRange.upperBound)
         settingsStore.update {
             $0.tools.perToolMemory[keyPath: slot.keyPath].size = clamped
-            if let legacySizeKeyPath = slot.legacySizeKeyPath {
-                $0.tools[keyPath: legacySizeKeyPath] = clamped
-            }
         }
     }
 
@@ -536,13 +533,14 @@ final class AppState {
     }
 
     func selectColor(at index: Int) {
-        guard settingsStore.settings.tools.colors.indices.contains(index),
-              let slot = currentTool.memorySlot
-        else {
-            return
-        }
-        settingsStore.update {
-            $0.tools.perToolMemory[keyPath: slot.keyPath].colorIndex = index
+        let colors = settingsStore.settings.tools.colors
+        guard colors.indices.contains(index) else { return }
+        if currentTool == .laser {
+            setLaserColor(colors[index].nsColor)
+        } else if let slot = currentTool.memorySlot {
+            settingsStore.update {
+                $0.tools.perToolMemory[keyPath: slot.keyPath].colorIndex = index
+            }
         }
     }
 

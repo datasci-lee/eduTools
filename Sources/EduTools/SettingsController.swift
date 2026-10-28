@@ -460,9 +460,6 @@ private struct SettingsRootView: View {
             set: { value in
                 store.update {
                     $0.tools.perToolMemory[keyPath: slot.keyPath].size = value
-                    if let legacySizeKeyPath = slot.legacySizeKeyPath {
-                        $0.tools[keyPath: legacySizeKeyPath] = value
-                    }
                 }
             }
         )

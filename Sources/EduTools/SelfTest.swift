@@ -813,6 +813,10 @@ func runSelfTests() -> Int32 {
             object["zoom"] = zoom
         }
         if var tools = object["tools"] as? [String: Any] {
+            let memory = AppSettings.default.tools.perToolMemory
+            tools["penWidth"] = memory.pen.size
+            tools["highlighterWidth"] = memory.highlighter.size
+            tools["textFontSize"] = memory.text.size
             tools.removeValue(forKey: "perToolMemory")
             object["tools"] = tools
         }
