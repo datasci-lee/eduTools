@@ -17,12 +17,22 @@ extension NSWindow {
         level = AppWindowLevel.dialog
         collectionBehavior.formUnion([.moveToActiveSpace, .fullScreenAuxiliary])
     }
+
+    /// `runModal()` resets the window to the modal-panel level (8) as it starts, which would put the
+    /// dialog under the overlay. A level set after the session has begun sticks, so queue it behind
+    /// the start; the main queue keeps running inside the modal loop.
+    func raiseAfterModalStarts() {
+        DispatchQueue.main.async { [weak self] in
+            self?.level = AppWindowLevel.dialog
+        }
+    }
 }
 
 extension NSAlert {
     @discardableResult
     func runAboveOverlay() -> NSApplication.ModalResponse {
         window.configureAsAppDialog()
+        window.raiseAfterModalStarts()
         return runModal()
     }
 }
@@ -31,6 +41,7 @@ extension NSSavePanel {
     @discardableResult
     func runAboveOverlay() -> NSApplication.ModalResponse {
         configureAsAppDialog()
+        raiseAfterModalStarts()
         return runModal()
     }
 }
