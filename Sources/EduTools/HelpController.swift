@@ -264,7 +264,7 @@ final class HelpController: NSObject {
         panel.isMovable = false
         panel.isReleasedWhenClosed = false
         panel.animationBehavior = .none
-        panel.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 3)
+        panel.level = AppWindowLevel.guidance
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.sharingType = state.showsHelpInSharing ? .readOnly : .none
 

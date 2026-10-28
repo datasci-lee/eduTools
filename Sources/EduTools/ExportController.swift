@@ -260,7 +260,7 @@ final class ExportController {
         alert.messageText = "배경 없이 판서만 저장합니다"
         alert.informativeText = "화면 기록 권한을 확인해 주세요.\n\(reason)"
         alert.addButton(withTitle: "확인")
-        alert.runModal()
+        alert.runAboveOverlay()
         completion(
             existingInkImage
                 ?? overlayController?.renderedInkImage(
@@ -308,7 +308,7 @@ final class ExportController {
         alert.messageText = title
         alert.informativeText = message
         alert.addButton(withTitle: "확인")
-        alert.runModal()
+        alert.runAboveOverlay()
     }
 
     private static func composite(background: CGImage, foreground: CGImage) -> CGImage? {
