@@ -71,6 +71,21 @@ final class AppCommandDispatcher {
             return
         }
         guard !isRepeat else { return }
+        if definition.command == .togglePassThroughMode {
+            guard scope == .annotation,
+                  let binding = definition.binding(in: scope),
+                  binding.modifiers.isEmpty
+            else {
+                return
+            }
+            if let displayUUID {
+                overlayController?.finishActiveInteraction(on: displayUUID)
+            } else {
+                overlayController?.finishAllActiveInteractions()
+            }
+            state.beginKeyPassThrough(keyCode: binding.keyCode)
+            return
+        }
         execute(definition.command, scope: scope, displayUUID: displayUUID)
     }
 
@@ -80,6 +95,13 @@ final class AppCommandDispatcher {
             helpController?.shortcutDidRelease()
         case .beginZoomPreview:
             zoomController?.finishPreview()
+        case .togglePassThroughMode:
+            guard let binding = definition.binding(in: .annotation),
+                  binding.modifiers.isEmpty
+            else {
+                return
+            }
+            state.endKeyPassThrough(keyCode: binding.keyCode)
         default:
             break
         }

@@ -192,7 +192,6 @@ final class OverlayController {
     private func setPassThroughModeEnabled(_ isEnabled: Bool) {
         for panel in panelsByDisplayUUID.values {
             panel.ignoresMouseEvents = !state.isAnnotationModeEnabled || isEnabled
-            panel.orderFrontRegardless()
         }
     }
 
