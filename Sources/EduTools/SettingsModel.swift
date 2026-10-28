@@ -42,6 +42,25 @@ struct GeneralSettings: Codable, Equatable {
     var automaticallyRestoresDisconnectedDisplays: Bool
 }
 
+enum PaletteStyle: String, Codable, CaseIterable, Hashable {
+    case radial
+    case linear
+
+    var displayName: String {
+        switch self {
+        case .radial: return "원형"
+        case .linear: return "가로"
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .radial: return "circle.grid.3x3.fill"
+        case .linear: return "rectangle.split.3x1"
+        }
+    }
+}
+
 struct ToolSettings: Codable, Equatable {
     var colors: [SettingsColor]
     var penWidth: Double
@@ -52,6 +71,59 @@ struct ToolSettings: Codable, Equatable {
     var laserTrailDuration: Double
     var textFontSize: Double
     var shapeRecognitionEnabled: Bool
+    var paletteStyle: PaletteStyle
+
+    init(
+        colors: [SettingsColor],
+        penWidth: Double,
+        highlighterWidth: Double,
+        highlighterOpacity: Double,
+        laserColor: SettingsColor,
+        laserSize: Double,
+        laserTrailDuration: Double,
+        textFontSize: Double,
+        shapeRecognitionEnabled: Bool,
+        paletteStyle: PaletteStyle = .radial
+    ) {
+        self.colors = colors
+        self.penWidth = penWidth
+        self.highlighterWidth = highlighterWidth
+        self.highlighterOpacity = highlighterOpacity
+        self.laserColor = laserColor
+        self.laserSize = laserSize
+        self.laserTrailDuration = laserTrailDuration
+        self.textFontSize = textFontSize
+        self.shapeRecognitionEnabled = shapeRecognitionEnabled
+        self.paletteStyle = paletteStyle
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case colors
+        case penWidth
+        case highlighterWidth
+        case highlighterOpacity
+        case laserColor
+        case laserSize
+        case laserTrailDuration
+        case textFontSize
+        case shapeRecognitionEnabled
+        case paletteStyle
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        colors = try container.decode([SettingsColor].self, forKey: .colors)
+        penWidth = try container.decode(Double.self, forKey: .penWidth)
+        highlighterWidth = try container.decode(Double.self, forKey: .highlighterWidth)
+        highlighterOpacity = try container.decode(Double.self, forKey: .highlighterOpacity)
+        laserColor = try container.decode(SettingsColor.self, forKey: .laserColor)
+        laserSize = try container.decode(Double.self, forKey: .laserSize)
+        laserTrailDuration = try container.decode(Double.self, forKey: .laserTrailDuration)
+        textFontSize = try container.decode(Double.self, forKey: .textFontSize)
+        shapeRecognitionEnabled = try container.decode(Bool.self, forKey: .shapeRecognitionEnabled)
+        paletteStyle = try container.decodeIfPresent(PaletteStyle.self, forKey: .paletteStyle)
+            ?? .radial
+    }
 }
 
 struct EraserGroupSettings: Codable, Equatable {

@@ -393,9 +393,61 @@ final class AppState {
         settingsStore.update { $0.tools.shapeRecognitionEnabled.toggle() }
     }
 
+    func setShapeRecognitionEnabled(_ isEnabled: Bool) {
+        settingsStore.update { $0.tools.shapeRecognitionEnabled = isEnabled }
+    }
+
+    func setPenWidth(_ width: CGFloat) {
+        let clamped = min(max(width, InkDefaults.minimumWidth), InkDefaults.maximumWidth)
+        settingsStore.update { $0.tools.penWidth = Double(clamped) }
+    }
+
+    func setHighlighterWidth(_ width: CGFloat) {
+        let clamped = min(max(width, InkDefaults.minimumWidth), InkDefaults.maximumWidth)
+        settingsStore.update { $0.tools.highlighterWidth = Double(clamped) }
+    }
+
+    func setHighlighterOpacity(_ opacity: CGFloat) {
+        let clamped = min(
+            max(opacity, InkDefaults.minimumHighlighterOpacity),
+            InkDefaults.maximumHighlighterOpacity
+        )
+        settingsStore.update { $0.tools.highlighterOpacity = Double(clamped) }
+    }
+
+    func setTextFontSize(_ size: CGFloat) {
+        let clamped = min(
+            max(size, InkDefaults.minimumTextFontSize),
+            InkDefaults.maximumTextFontSize
+        )
+        settingsStore.update { $0.tools.textFontSize = Double(clamped) }
+    }
+
+    func setLaserColor(_ color: NSColor) {
+        settingsStore.update { $0.tools.laserColor = SettingsColor(color) }
+    }
+
+    func setLaserTrailDuration(_ duration: TimeInterval) {
+        let clamped = min(
+            max(duration, InkDefaults.minimumLaserTrailDuration),
+            InkDefaults.maximumLaserTrailDuration
+        )
+        settingsStore.update { $0.tools.laserTrailDuration = clamped }
+    }
+
+    func setArrowStyle(_ style: ArrowStyle) {
+        arrowStyle = style
+    }
+
     func toggleEraserAreaShape() {
         settingsStore.update {
             $0.eraser.areaShape = eraserAreaShape.next == .rectangle ? "rectangle" : "lasso"
+        }
+    }
+
+    func setEraserAreaShape(_ shape: EraserAreaShape) {
+        settingsStore.update {
+            $0.eraser.areaShape = shape == .rectangle ? "rectangle" : "lasso"
         }
     }
 
@@ -468,27 +520,17 @@ final class AppState {
     func adjustCurrentToolWidth(by delta: CGFloat) {
         switch currentTool {
         case .pen:
-            let value = min(max(penWidth + delta, InkDefaults.minimumWidth), InkDefaults.maximumWidth)
-            settingsStore.update { $0.tools.penWidth = Double(value) }
+            setPenWidth(penWidth + delta)
         case .highlighter:
-            let value = min(
-                max(highlighterWidth + delta, InkDefaults.minimumWidth),
-                InkDefaults.maximumWidth
-            )
-            settingsStore.update { $0.tools.highlighterWidth = Double(value) }
+            setHighlighterWidth(highlighterWidth + delta)
         case .laser:
             break
         case .eraser:
             setEraserDiameter(eraserDiameter + delta * EraserDefaults.diameterAdjustmentStep)
         case .arrow, .rectangle, .ellipse:
-            let value = min(max(penWidth + delta, InkDefaults.minimumWidth), InkDefaults.maximumWidth)
-            settingsStore.update { $0.tools.penWidth = Double(value) }
+            setPenWidth(penWidth + delta)
         case .text:
-            let value = min(
-                max(textFontSize + delta, InkDefaults.minimumTextFontSize),
-                InkDefaults.maximumTextFontSize
-            )
-            settingsStore.update { $0.tools.textFontSize = Double(value) }
+            setTextFontSize(textFontSize + delta)
         case .select, .cover:
             break
         }
