@@ -95,7 +95,7 @@ private final class ZoomCaptureSession: NSObject, SCStreamOutput, SCStreamDelega
         configuration.minimumFrameInterval = CMTime(value: 1, timescale: 60)
         configuration.queueDepth = 3
         configuration.pixelFormat = kCVPixelFormatType_32BGRA
-        configuration.showsCursor = true
+        configuration.showsCursor = false
         configuration.capturesAudio = false
 
         let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
@@ -162,6 +162,49 @@ private final class ZoomCaptureSession: NSObject, SCStreamOutput, SCStreamDelega
 }
 
 private final class ZoomView: NSView {
+    private struct PointerShape {
+        let bounds: CGRect
+        let path: CGPath
+        let hotSpot: CGPoint
+
+        static func make() -> PointerShape {
+            let size = CGSize(width: 18, height: 24)
+            let tip = CGPoint(x: size.width * 0.1, y: size.height * 0.92)
+            let path = CGMutablePath()
+            path.move(to: tip)
+            path.addLine(to: CGPoint(x: size.width * 0.1, y: size.height * 0.16))
+            path.addLine(to: CGPoint(x: size.width * 0.39, y: size.height * 0.36))
+            path.addLine(to: CGPoint(x: size.width * 0.58, y: size.height * 0.06))
+            path.addLine(to: CGPoint(x: size.width * 0.76, y: size.height * 0.15))
+            path.addLine(to: CGPoint(x: size.width * 0.57, y: size.height * 0.44))
+            path.addLine(to: CGPoint(x: size.width * 0.91, y: size.height * 0.44))
+            path.closeSubpath()
+            return PointerShape(
+                bounds: CGRect(origin: .zero, size: size),
+                path: path,
+                hotSpot: tip
+            )
+        }
+    }
+
+    private static let pointerEventMask: NSEvent.EventTypeMask = [
+        .mouseMoved,
+        .leftMouseDragged,
+        .rightMouseDragged,
+        .otherMouseDragged,
+    ]
+    private static let pointerOutlineWidth = CGFloat(1.25)
+    private static let pointerZPosition = CGFloat(10_000)
+    private static let transparentCursor: NSCursor = {
+        let image = NSImage(
+            size: NSSize(width: 1, height: 1),
+            flipped: false
+        ) { _ in
+            true
+        }
+        return NSCursor(image: image, hotSpot: .zero)
+    }()
+
     var pointerMoved: ((CGPoint) -> Void)?
     var scrollInput: ((NSEvent) -> Bool)?
     var magnifyInput: ((NSEvent) -> Bool)?
@@ -174,9 +217,11 @@ private final class ZoomView: NSView {
     private let previewBorderLayer = CAShapeLayer()
     private let previewLabelLayer = CATextLayer()
     private let messageLayer = CATextLayer()
+    private let pointerLayer = CAShapeLayer()
     private let inkView: InkView
     private let colorControls: CIFilter?
     private var trackingAreaReference: NSTrackingArea?
+    private var pointerEventMonitor: Any?
     private var renderedState: ZoomSessionState?
     private var messagePresentation = 0
     private var pressedShortcutDefinitions: [UInt16: ShortcutDefinition] = [:]
@@ -210,11 +255,32 @@ private final class ZoomView: NSView {
         super.init(frame: frameRect)
         configureLayers()
         configureInkView()
+        installPointerEventMonitor()
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is unavailable")
+    }
+
+    deinit {
+        if let pointerEventMonitor {
+            NSEvent.removeMonitor(pointerEventMonitor)
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        pointerLayer.contentsScale = window?.backingScaleFactor
+            ?? NSScreen.main?.backingScaleFactor
+            ?? 1
+        window?.invalidateCursorRects(for: self)
+        updatePointerLayer()
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: Self.transparentCursor)
     }
 
     override func layout() {
@@ -261,12 +327,9 @@ private final class ZoomView: NSView {
         return self
     }
 
-    override func mouseMoved(with event: NSEvent) {
-        pointerMoved?(convert(event.locationInWindow, from: nil))
-    }
-
-    override func mouseDragged(with event: NSEvent) {
-        pointerMoved?(convert(event.locationInWindow, from: nil))
+    override func mouseExited(with event: NSEvent) {
+        updatePointerLayer(atScreenPoint: screenPoint(for: event))
+        super.mouseExited(with: event)
     }
 
     override func scrollWheel(with event: NSEvent) {
@@ -302,6 +365,10 @@ private final class ZoomView: NSView {
         renderedState = state
         inkView.isHidden = !state.isFrozen
         applyGeometry(state, animated: previewChanged)
+    }
+
+    func refreshPointer(atScreenPoint screenPoint: CGPoint) {
+        updatePointerLayer(atScreenPoint: screenPoint)
     }
 
     func showMessage(_ message: String) {
@@ -368,6 +435,21 @@ private final class ZoomView: NSView {
         }
         previewLabelLayer.isHidden = true
         messageLayer.isHidden = true
+
+        let pointerShape = PointerShape.make()
+        pointerLayer.bounds = pointerShape.bounds
+        pointerLayer.path = pointerShape.path
+        pointerLayer.anchorPoint = CGPoint(
+            x: pointerShape.hotSpot.x / pointerShape.bounds.width,
+            y: pointerShape.hotSpot.y / pointerShape.bounds.height
+        )
+        pointerLayer.fillColor = NSColor.black.cgColor
+        pointerLayer.strokeColor = NSColor.white.cgColor
+        pointerLayer.lineWidth = Self.pointerOutlineWidth
+        pointerLayer.lineJoin = .round
+        pointerLayer.zPosition = Self.pointerZPosition
+        pointerLayer.isHidden = true
+        layer?.addSublayer(pointerLayer)
     }
 
     private func configureInkView() {
@@ -386,6 +468,58 @@ private final class ZoomView: NSView {
             self?.magnifyInput?(event) ?? false
         }
         addSubview(inkView)
+    }
+
+    private func installPointerEventMonitor() {
+        pointerEventMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: Self.pointerEventMask
+        ) { [weak self] event in
+            self?.handlePointerEvent(event)
+            return event
+        }
+        if pointerEventMonitor == nil {
+            NSLog("EduTools: failed to install the zoom pointer event monitor")
+        }
+    }
+
+    private func handlePointerEvent(_ event: NSEvent) {
+        let screenPoint = screenPoint(for: event)
+        updatePointerLayer(atScreenPoint: screenPoint)
+        guard let localPoint = localPointIfOnTargetScreen(screenPoint) else { return }
+        pointerMoved?(localPoint)
+    }
+
+    private func screenPoint(for event: NSEvent) -> CGPoint {
+        event.window?.convertPoint(toScreen: event.locationInWindow) ?? NSEvent.mouseLocation
+    }
+
+    private func localPointIfOnTargetScreen(_ screenPoint: CGPoint) -> CGPoint? {
+        guard let window, window.frame.contains(screenPoint) else { return nil }
+        let windowPoint = window.convertPoint(fromScreen: screenPoint)
+        return convert(windowPoint, from: nil)
+    }
+
+    private func updatePointerLayer(atScreenPoint screenPoint: CGPoint = NSEvent.mouseLocation) {
+        guard let state = renderedState,
+              let sourcePoint = localPointIfOnTargetScreen(screenPoint)
+        else {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            pointerLayer.isHidden = true
+            CATransaction.commit()
+            return
+        }
+        let presentationPoint = ZoomGeometry.pointerPresentationPoint(
+            sourcePoint,
+            for: state
+        )
+        let scale = ZoomGeometry.pointerScale(for: state)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        pointerLayer.position = presentationPoint
+        pointerLayer.setAffineTransform(CGAffineTransform(scaleX: scale, y: scale))
+        pointerLayer.isHidden = false
+        CATransaction.commit()
     }
 
     private func handleKeyDown(_ event: NSEvent) -> Bool {
@@ -458,6 +592,7 @@ private final class ZoomView: NSView {
             state.isPreviewing ? nil : sourceRect,
             animated: animated
         )
+        updatePointerLayer()
     }
 
     private func previewLabelFrame(for sourceRect: CGRect) -> CGRect {
@@ -491,6 +626,7 @@ final class ZoomController {
     private var previewOriginalFrame: CGImage?
     private var scrollAccumulator = CGFloat.zero
     private var magnifyAccumulator = CGFloat.zero
+    private let pointerWarpEventSource = CGEventSource(stateID: .combinedSessionState)
 
     init(state: AppState, dispatcher: AppCommandDispatcher) {
         self.state = state
@@ -585,6 +721,18 @@ final class ZoomController {
 
     func stopZoom() {
         guard state.isZoomEnabled || panel != nil else { return }
+        if let session = state.zoomSession,
+           session.isFrozen,
+           !session.isPreviewing,
+           let presentationPoint = pointerLocationOnTargetScreen()
+        {
+            let sourcePoint = ZoomGeometry.originalPoint(
+                fromZoomed: presentationPoint,
+                in: session.screenSize,
+                sourceRect: session.sourceRect
+            )
+            _ = warpPointer(toViewPoint: sourcePoint)
+        }
         let stoppedDisplayUUID = targetDisplayUUID
         captureSession?.stop()
         captureSession = nil
@@ -631,12 +779,35 @@ final class ZoomController {
     }
 
     func toggleFreeze() {
-        if state.zoomSession?.isFrozen == false, latestFrame == nil {
+        guard let session = state.zoomSession else { return }
+        if !session.isFrozen, latestFrame == nil {
             NSLog("EduTools: freeze zoom ignored until the first capture frame arrives")
             zoomView?.showMessage("첫 화면을 캡처하는 중입니다")
             return
         }
+        let warpDestination: CGPoint?
+        if let pointerLocation = pointerLocationOnTargetScreen() {
+            if session.isFrozen {
+                warpDestination = ZoomGeometry.originalPoint(
+                    fromZoomed: pointerLocation,
+                    in: session.screenSize,
+                    sourceRect: session.sourceRect
+                )
+            } else {
+                warpDestination = ZoomGeometry.pointerPresentationPoint(
+                    pointerLocation,
+                    for: session
+                )
+            }
+        } else {
+            warpDestination = nil
+        }
         guard let isFrozen = state.toggleZoomFrozen() else { return }
+        let warpedScreenPoint = warpDestination.flatMap(warpPointer(toViewPoint:))
+        // The transition render may use the old pointer once; this same-turn refresh replaces it.
+        if let warpedScreenPoint {
+            zoomView?.refreshPointer(atScreenPoint: warpedScreenPoint)
+        }
         if isFrozen {
             state.setAnnotationModeEnabled(true)
             zoomView?.showMessage("정지 줌 · 판서 켜짐")
@@ -751,6 +922,57 @@ final class ZoomController {
         } else if !session.isFrozen {
             state.advanceZoomFollow(toward: point)
         }
+    }
+
+    private func pointerLocationOnTargetScreen() -> CGPoint? {
+        guard let screenFrame = targetScreenFrame else { return nil }
+        let mouseLocation = NSEvent.mouseLocation
+        guard screenFrame.contains(mouseLocation) else { return nil }
+        return CGPoint(
+            x: mouseLocation.x - screenFrame.minX,
+            y: mouseLocation.y - screenFrame.minY
+        )
+    }
+
+    private func warpPointer(toViewPoint viewPoint: CGPoint) -> CGPoint? {
+        guard let screenFrame = targetScreenFrame else { return nil }
+        let localBounds = CGRect(origin: .zero, size: screenFrame.size)
+        guard localBounds.contains(viewPoint) else {
+            NSLog(
+                "EduTools: zoom pointer warp skipped because destination was outside the target display: %.2f, %.2f",
+                viewPoint.x,
+                viewPoint.y
+            )
+            return nil
+        }
+        guard let pointerWarpEventSource else {
+            NSLog("EduTools: zoom pointer warp skipped because its event source was unavailable")
+            return nil
+        }
+        let previousSuppressionInterval = pointerWarpEventSource.localEventsSuppressionInterval
+        pointerWarpEventSource.localEventsSuppressionInterval = 0
+        defer {
+            pointerWarpEventSource.localEventsSuppressionInterval = previousSuppressionInterval
+        }
+
+        let appKitScreenPoint = CGPoint(
+            x: screenFrame.minX + viewPoint.x,
+            y: screenFrame.minY + viewPoint.y
+        )
+        let mainDisplayBounds = CGDisplayBounds(CGMainDisplayID())
+        let quartzScreenPoint = CGPoint(
+            x: mainDisplayBounds.minX + appKitScreenPoint.x,
+            y: mainDisplayBounds.maxY - appKitScreenPoint.y
+        )
+        let error = CGWarpMouseCursorPosition(quartzScreenPoint)
+        guard error == .success else {
+            NSLog(
+                "EduTools: failed to warp the zoom pointer (CoreGraphics error %d)",
+                error.rawValue
+            )
+            return nil
+        }
+        return appKitScreenPoint
     }
 
     private func handleScroll(_ event: NSEvent) -> Bool {

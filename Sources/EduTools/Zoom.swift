@@ -206,4 +206,21 @@ enum ZoomGeometry {
             ty: -sourceRect.minY * scaleY
         )
     }
+
+    static func pointerPresentationPoint(
+        _ sourcePoint: CGPoint,
+        for state: ZoomSessionState
+    ) -> CGPoint {
+        guard !state.isFrozen, !state.isPreviewing else { return sourcePoint }
+        return sourcePoint.applying(
+            presentationTransform(
+                sourceRect: state.sourceRect,
+                destinationSize: state.screenSize
+            )
+        )
+    }
+
+    static func pointerScale(for state: ZoomSessionState) -> CGFloat {
+        state.isPreviewing ? 1 : state.magnification
+    }
 }
