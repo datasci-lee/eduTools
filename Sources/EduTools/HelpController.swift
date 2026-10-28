@@ -42,6 +42,10 @@ private final class HelpSearchField: NSSearchField {
     }
 }
 
+private final class HelpCardsDocumentView: NSView {
+    override var isFlipped: Bool { true }
+}
+
 private final class HelpItemButton: NSButton {
     init(
         definition: ShortcutDefinition,
@@ -112,6 +116,26 @@ final class HelpController: NSObject {
         static let didShowFirstRunHelp = "EduTools.help.didShowFirstRun"
     }
 
+    private enum Layout {
+        static let cardMinimumWidth: CGFloat = 320
+        static let cardSpacing: CGFloat = 10
+        static let contentHorizontalInset: CGFloat = 18
+        static let contentTopInset: CGFloat = 18
+        static let contentBottomInset: CGFloat = 18
+        static let headerCardsSpacing: CGFloat = 14
+        static let visibleHorizontalMargin: CGFloat = 40
+        static let visibleVerticalMargin: CGFloat = 30
+        static let initialContentHeight: CGFloat = 120
+        static let columnCandidates = [4, 2, 1]
+    }
+
+    private struct LayoutMetrics {
+        let columnCount: Int
+        let contentWidth: CGFloat
+        let maximumContentHeight: CGFloat
+        let centerOffset: CGPoint
+    }
+
     private let state: AppState
     private let dispatcher: AppCommandDispatcher
     private let defaults: UserDefaults
@@ -120,7 +144,14 @@ final class HelpController: NSObject {
     private let contentView = NSVisualEffectView()
     private let titleLabel = NSTextField(labelWithString: "")
     private let searchField = HelpSearchField()
+    private let headerStack = NSStackView()
+    private let cardsScrollView = NSScrollView()
+    private let cardsDocumentView = HelpCardsDocumentView()
     private let cardsStack = NSStackView()
+    private var contentCenterXConstraint: NSLayoutConstraint!
+    private var contentCenterYConstraint: NSLayoutConstraint!
+    private var contentWidthConstraint: NSLayoutConstraint!
+    private var contentHeightConstraint: NSLayoutConstraint!
     private var definitionByIdentifier: [String: ShortcutDefinition] = [:]
     private var toolSettingsObserverIdentifier: UUID?
     private var annotationObserverIdentifier: UUID?
@@ -263,7 +294,6 @@ final class HelpController: NSObject {
         contentView.translatesAutoresizingMaskIntoConstraints = false
         rootView.addSubview(contentView)
 
-        let headerStack = NSStackView()
         headerStack.orientation = .vertical
         headerStack.alignment = .leading
         headerStack.spacing = 8
@@ -284,27 +314,80 @@ final class HelpController: NSObject {
         headerStack.addArrangedSubview(searchField)
 
         cardsStack.orientation = .vertical
-        cardsStack.alignment = .width
-        cardsStack.spacing = 10
+        cardsStack.alignment = .leading
+        cardsStack.spacing = Layout.cardSpacing
         cardsStack.translatesAutoresizingMaskIntoConstraints = false
 
+        cardsScrollView.drawsBackground = false
+        cardsScrollView.borderType = .noBorder
+        cardsScrollView.hasHorizontalScroller = false
+        cardsScrollView.hasVerticalScroller = true
+        cardsScrollView.autohidesScrollers = true
+        cardsScrollView.scrollerStyle = .overlay
+        cardsScrollView.verticalScrollElasticity = .none
+        cardsScrollView.translatesAutoresizingMaskIntoConstraints = false
+
+        cardsDocumentView.translatesAutoresizingMaskIntoConstraints = false
+        cardsDocumentView.addSubview(cardsStack)
+        cardsScrollView.documentView = cardsDocumentView
+
         contentView.addSubview(headerStack)
-        contentView.addSubview(cardsStack)
-        let preferredWidth = contentView.widthAnchor.constraint(equalToConstant: 900)
-        preferredWidth.priority = .defaultHigh
+        contentView.addSubview(cardsScrollView)
+        contentCenterXConstraint = contentView.centerXAnchor.constraint(
+            equalTo: rootView.centerXAnchor
+        )
+        contentCenterYConstraint = contentView.centerYAnchor.constraint(
+            equalTo: rootView.centerYAnchor
+        )
+        contentWidthConstraint = contentView.widthAnchor.constraint(
+            equalToConstant: contentWidth(forColumnCount: 1)
+        )
+        contentHeightConstraint = contentView.heightAnchor.constraint(
+            equalToConstant: Layout.initialContentHeight
+        )
         NSLayoutConstraint.activate([
-            contentView.centerXAnchor.constraint(equalTo: rootView.centerXAnchor),
-            contentView.centerYAnchor.constraint(equalTo: rootView.centerYAnchor),
-            preferredWidth,
-            contentView.widthAnchor.constraint(lessThanOrEqualTo: rootView.widthAnchor, constant: -80),
-            contentView.heightAnchor.constraint(lessThanOrEqualTo: rootView.heightAnchor, constant: -60),
+            contentCenterXConstraint,
+            contentCenterYConstraint,
+            contentWidthConstraint,
+            contentHeightConstraint,
             headerStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 22),
             headerStack.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -22),
-            headerStack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 18),
-            cardsStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 18),
-            cardsStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -18),
-            cardsStack.topAnchor.constraint(equalTo: headerStack.bottomAnchor, constant: 14),
-            cardsStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -18),
+            headerStack.topAnchor.constraint(
+                equalTo: contentView.topAnchor,
+                constant: Layout.contentTopInset
+            ),
+            cardsScrollView.leadingAnchor.constraint(
+                equalTo: contentView.leadingAnchor,
+                constant: Layout.contentHorizontalInset
+            ),
+            cardsScrollView.trailingAnchor.constraint(
+                equalTo: contentView.trailingAnchor,
+                constant: -Layout.contentHorizontalInset
+            ),
+            cardsScrollView.topAnchor.constraint(
+                equalTo: headerStack.bottomAnchor,
+                constant: Layout.headerCardsSpacing
+            ),
+            cardsScrollView.bottomAnchor.constraint(
+                equalTo: contentView.bottomAnchor,
+                constant: -Layout.contentBottomInset
+            ),
+            cardsDocumentView.leadingAnchor.constraint(
+                equalTo: cardsScrollView.contentView.leadingAnchor
+            ),
+            cardsDocumentView.trailingAnchor.constraint(
+                equalTo: cardsScrollView.contentView.trailingAnchor
+            ),
+            cardsDocumentView.topAnchor.constraint(
+                equalTo: cardsScrollView.contentView.topAnchor
+            ),
+            cardsDocumentView.widthAnchor.constraint(
+                equalTo: cardsScrollView.contentView.widthAnchor
+            ),
+            cardsStack.leadingAnchor.constraint(equalTo: cardsDocumentView.leadingAnchor),
+            cardsStack.trailingAnchor.constraint(equalTo: cardsDocumentView.trailingAnchor),
+            cardsStack.topAnchor.constraint(equalTo: cardsDocumentView.topAnchor),
+            cardsStack.bottomAnchor.constraint(equalTo: cardsDocumentView.bottomAnchor),
         ])
         rootView.contentFrame = { [weak self] in
             self?.contentView.frame ?? .zero
@@ -358,6 +441,9 @@ final class HelpController: NSObject {
             return
         }
         panel.setFrame(targetScreen.frame, display: true)
+        if isVisible {
+            updateContent()
+        }
     }
 
     private func updateContent() {
@@ -389,20 +475,80 @@ final class HelpController: NSObject {
             }
             return lhs.offset < rhs.offset
         }.map(\.element)
+        guard let screen = panel.screen ?? screenUnderMouse() ?? NSScreen.screens.first else {
+            NSLog("EduTools: help could not lay out content without a screen")
+            return
+        }
+        let metrics = layoutMetrics(for: screen)
         let groups = orderedGroups()
-        for pairStart in stride(from: 0, to: groups.count, by: 2) {
+        for rowStart in stride(from: 0, to: groups.count, by: metrics.columnCount) {
             let row = NSStackView()
             row.orientation = .horizontal
             row.alignment = .top
             row.distribution = .fillEqually
-            row.spacing = 10
-            for group in groups[pairStart..<min(pairStart + 2, groups.count)] {
+            row.spacing = Layout.cardSpacing
+            for group in groups[rowStart..<min(rowStart + metrics.columnCount, groups.count)] {
                 let definitions = filteredDefinitions.filter { $0.group == group }
                 row.addArrangedSubview(makeCard(group: group, definitions: definitions))
             }
-            cardsStack.addArrangedSubview(row)
+            addFullWidthArrangedSubview(row, to: cardsStack)
         }
-        contentView.layoutSubtreeIfNeeded()
+        apply(metrics)
+    }
+
+    private func contentWidth(forColumnCount columnCount: Int) -> CGFloat {
+        (CGFloat(columnCount) * Layout.cardMinimumWidth)
+            + (CGFloat(columnCount - 1) * Layout.cardSpacing)
+            + (2 * Layout.contentHorizontalInset)
+    }
+
+    private func layoutMetrics(for screen: NSScreen) -> LayoutMetrics {
+        let visibleFrame = screen.visibleFrame.offsetBy(
+            dx: -screen.frame.minX,
+            dy: -screen.frame.minY
+        )
+        let maximumContentWidth = max(
+            1,
+            visibleFrame.width - (2 * Layout.visibleHorizontalMargin)
+        )
+        let columnCount = Layout.columnCandidates.first {
+            contentWidth(forColumnCount: $0) <= maximumContentWidth
+        } ?? 1
+        let maximumContentHeight = max(
+            1,
+            visibleFrame.height - (2 * Layout.visibleVerticalMargin)
+        )
+        let panelBounds = CGRect(origin: .zero, size: screen.frame.size)
+        return LayoutMetrics(
+            columnCount: columnCount,
+            contentWidth: min(contentWidth(forColumnCount: columnCount), maximumContentWidth),
+            maximumContentHeight: maximumContentHeight,
+            centerOffset: CGPoint(
+                x: visibleFrame.midX - panelBounds.midX,
+                y: panelBounds.midY - visibleFrame.midY
+            )
+        )
+    }
+
+    private func addFullWidthArrangedSubview(_ view: NSView, to stack: NSStackView) {
+        stack.addArrangedSubview(view)
+        view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+    }
+
+    private func apply(_ metrics: LayoutMetrics) {
+        contentCenterXConstraint.constant = metrics.centerOffset.x
+        contentCenterYConstraint.constant = metrics.centerOffset.y
+        contentWidthConstraint.constant = metrics.contentWidth
+
+        rootView.layoutSubtreeIfNeeded()
+        let preferredHeight = Layout.contentTopInset
+            + headerStack.fittingSize.height
+            + Layout.headerCardsSpacing
+            + cardsStack.fittingSize.height
+            + Layout.contentBottomInset
+        contentHeightConstraint.constant = min(preferredHeight, metrics.maximumContentHeight)
+        rootView.layoutSubtreeIfNeeded()
+        cardsScrollView.reflectScrolledClipView(cardsScrollView.contentView)
     }
 
     private func orderedGroups() -> [ShortcutGroup] {
@@ -427,19 +573,19 @@ final class HelpController: NSObject {
 
         let stack = NSStackView()
         stack.orientation = .vertical
-        stack.alignment = .width
+        stack.alignment = .leading
         stack.spacing = 2
         stack.translatesAutoresizingMaskIntoConstraints = false
 
         let heading = NSTextField(labelWithString: group.displayName)
         heading.font = .systemFont(ofSize: 14, weight: .bold)
-        stack.addArrangedSubview(heading)
+        addFullWidthArrangedSubview(heading, to: stack)
 
         if definitions.isEmpty {
             let emptyLabel = NSTextField(labelWithString: "일치하는 항목 없음")
             emptyLabel.textColor = .tertiaryLabelColor
             emptyLabel.font = .systemFont(ofSize: 12)
-            stack.addArrangedSubview(emptyLabel)
+            addFullWidthArrangedSubview(emptyLabel, to: stack)
         } else {
             for definition in definitions {
                 let displayName = contextualName(for: definition)
@@ -451,7 +597,7 @@ final class HelpController: NSObject {
                     action: #selector(performDefinition(_:))
                 )
                 definitionByIdentifier[definition.id] = definition
-                stack.addArrangedSubview(button)
+                addFullWidthArrangedSubview(button, to: stack)
             }
         }
 
