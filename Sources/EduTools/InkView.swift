@@ -5,28 +5,55 @@ import QuartzCore
 private final class LaserRenderer {
     let layer = CALayer()
     var color = NSColor.systemRed {
-        didSet { layer.shadowColor = color.cgColor }
+        didSet {
+            layer.shadowColor = color.cgColor
+            trailLayer.strokeColor = color.cgColor
+        }
     }
     var radius: CGFloat = 8 {
-        didSet { layer.shadowRadius = radius }
+        didSet {
+            layer.shadowRadius = radius
+            trailLayer.lineWidth = trailWidth
+        }
     }
     var trailDuration: TimeInterval = 1
 
+    /// The trail is one stroked path whose oldest points retract after `trailDuration`. One path has
+    /// no joints, so nothing darkens where pieces would overlap, and round caps close both ends.
+    private let trailLayer = CAShapeLayer()
+    private var trails: [[(location: CGPoint, time: TimeInterval)]] = []
+    private var isTrailing = false
+    private var retractTimer: Timer?
+    private var currentDot: CAShapeLayer?
+
+    private var trailWidth: CGFloat { max(4, radius * 1.25) }
+
     init() {
-        // One glow on the container: per-segment shadows overlap at the joints and read as beads.
         layer.shadowColor = color.cgColor
         layer.shadowOpacity = 0.9
         layer.shadowRadius = radius
         layer.shadowOffset = .zero
+        trailLayer.fillColor = nil
+        trailLayer.strokeColor = color.cgColor
+        trailLayer.lineWidth = trailWidth
+        trailLayer.lineCap = .round
+        trailLayer.lineJoin = .round
+        trailLayer.opacity = 0.7
+        layer.addSublayer(trailLayer)
     }
-
-    private var currentDot: CAShapeLayer?
-    private var previousLocation: CGPoint?
 
     /// Hovering shows only the dot; a trail is left only while pressed (mouse button or pen contact).
     func move(to location: CGPoint, leavesTrail: Bool) {
-        if leavesTrail, let previousLocation {
-            addFadingTrail(from: previousLocation, to: location)
+        if leavesTrail {
+            if !isTrailing {
+                trails.append([])
+                isTrailing = true
+            }
+            trails[trails.count - 1].append((location, ProcessInfo.processInfo.systemUptime))
+            startRetracting()
+            redrawTrail()
+        } else {
+            isTrailing = false
         }
 
         let dot = currentDot ?? makeDot(radius: radius, opacity: 1)
@@ -39,48 +66,65 @@ private final class LaserRenderer {
         dot.position = location
         dot.opacity = 1
         CATransaction.commit()
-        previousLocation = leavesTrail ? location : nil
     }
 
     func hideCurrent() {
         currentDot?.removeFromSuperlayer()
         currentDot = nil
-        previousLocation = nil
+        isTrailing = false
     }
 
     func clear() {
-        layer.sublayers?.forEach { $0.removeFromSuperlayer() }
+        retractTimer?.invalidate()
+        retractTimer = nil
+        trails.removeAll()
+        isTrailing = false
+        currentDot?.removeFromSuperlayer()
         currentDot = nil
-        previousLocation = nil
+        redrawTrail()
     }
 
-    // A segment per move keeps the trail continuous however far the pointer jumps between events.
-    private func addFadingTrail(from start: CGPoint, to end: CGPoint) {
-        let segment = CAShapeLayer()
-        let path = CGMutablePath()
-        path.move(to: start)
-        path.addLine(to: end)
-        segment.path = path
-        segment.strokeColor = color.cgColor
-        segment.fillColor = nil
-        segment.lineWidth = max(4, radius * 1.25)
-        // Butt caps: adjacent translucent segments must not overlap, or each joint darkens into a dot.
-        segment.lineCap = .butt
-        // An implicit opacity change on a layer that has never been rendered jumps straight to the
-        // final value, so the fade must be an explicit animation.
-        segment.opacity = 0
-        layer.addSublayer(segment)
-
-        let fade = CABasicAnimation(keyPath: "opacity")
-        fade.fromValue = 0.7
-        fade.toValue = 0
-        fade.duration = trailDuration
-        fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
-        CATransaction.begin()
-        CATransaction.setCompletionBlock { [weak segment] in
-            segment?.removeFromSuperlayer()
+    private func startRetracting() {
+        guard retractTimer == nil else { return }
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            self?.retract()
         }
-        segment.add(fade, forKey: "fade")
+        // .common keeps the trail retracting while AppKit is tracking a drag.
+        RunLoop.main.add(timer, forMode: .common)
+        retractTimer = timer
+    }
+
+    private func retract() {
+        let cutoff = ProcessInfo.processInfo.systemUptime - trailDuration
+        for index in trails.indices {
+            // Keep the last expired point so the tail ends exactly at the cutoff instead of jumping.
+            if let firstFresh = trails[index].firstIndex(where: { $0.time >= cutoff }), firstFresh > 1 {
+                trails[index].removeFirst(firstFresh - 1)
+            } else if trails[index].last.map({ $0.time < cutoff }) == true {
+                trails[index].removeAll()
+            }
+        }
+        let activeIndex = isTrailing ? trails.count - 1 : nil
+        trails = trails.enumerated().filter { !$0.element.isEmpty || $0.offset == activeIndex }.map(\.element)
+        if trails.allSatisfy(\.isEmpty), !isTrailing {
+            trails.removeAll()
+            retractTimer?.invalidate()
+            retractTimer = nil
+        }
+        redrawTrail()
+    }
+
+    private func redrawTrail() {
+        let path = CGMutablePath()
+        for trail in trails where trail.count > 1 {
+            path.move(to: trail[0].location)
+            for point in trail.dropFirst() {
+                path.addLine(to: point.location)
+            }
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        trailLayer.path = path
         CATransaction.commit()
     }
 
