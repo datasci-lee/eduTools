@@ -1,0 +1,114 @@
+# 아이콘 목록
+
+현재는 전부 **macOS 기본 아이콘(SF Symbols)** 입니다(2026-10-28 기준). 새 아이콘 파일은 [`assets/icons/`](../assets/icons/README.md) 에 둡니다. 이름은 SF Symbols 이름입니다. "키" 는 새 아이콘을 연결할 때 쓸 이름(단축키 정의의 id, 없으면 제안)입니다.
+
+## 표시 크기 (아이콘이 실제로 그려지는 크기)
+| 위치 | 크기(pt) | 비고 |
+| --- | --- | --- |
+| 원형 1링(그룹) | 13 | 아래 6개 + 라벨 글자 |
+| 원형 2링(도구·명령) | 14 | 라벨 없음, 아이콘만 |
+| 원형 3링(설정값) | 10 | 아이콘 + 짧은 글자, 대부분은 글자/색 칸만 |
+| 원형 중심 | 18 | 지금 도구의 아이콘, 색 테두리 안 |
+| 가로 팔레트 버튼 | 32 칸 안 | 2링 아이콘과 같은 정의를 씀 |
+| 도움말 줄 | 17 | 단축키 목록 왼쪽 |
+| 메뉴바 | 시스템 표준 | 켜짐/꺼짐 2종 |
+
+→ 10~14pt(@2x 로 20~28px)에서 읽혀야 하므로 단순한 형태, 한 가지 색(윤곽)으로 보내 주시면 됩니다. 색·선택·호버는 앱이 입힙니다.
+
+## 1. 원형 1링 — 역할 그룹 (6)
+| 키(제안) | 뜻 | 현재 | 그룹에 들어 있는 것 |
+| --- | --- | --- | --- |
+| group.writing | 작성 | `pencil.and.outline` | 펜·형광펜·텍스트 |
+| group.shapes | 도형 | `square.on.circle` | 화살표·사각형·원 |
+| group.erasing | 지우기 | `eraser` | 지우개·실행 취소·다시 실행·전체 지우기 |
+| group.board | 보드·설정 | `rectangle.on.rectangle` | 보드·페이지·저장·복사·도움말·설정·팔레트 모양 |
+| group.presenting | 발표 | `person.fill.viewfinder` | 레이저·스포트라이트·화면 가리개·줌·커서 강조 |
+| group.favorites | 즐겨찾기(저장한 설정, 아직 비활성) | `star.fill` | — |
+
+## 2. 원형 2링 · 가로 팔레트 · 도움말 — 도구·명령
+| 키 | 뜻 | 현재 |
+| --- | --- | --- |
+| tool.pen | 펜 | `pencil.tip` |
+| tool.highlighter | 형광펜 | `highlighter` |
+| tool.text | 텍스트 | `textformat` |
+| tool.arrow | 화살표(한쪽/양쪽) | `arrow.right` |
+| tool.rectangle | 사각형 | `rectangle` |
+| tool.ellipse | 원 | `circle` |
+| tool.eraser | 지우개(부분·획·영역) | `eraser` |
+| edit.undo | 실행 취소 | `arrow.uturn.backward` |
+| edit.redo | 다시 실행 | `arrow.uturn.forward` |
+| edit.clear-all | 전체 지우기 | `trash` |
+| board.white | 화이트보드 | `rectangle.fill` |
+| board.black | 블랙보드 | `rectangle.inset.filled` |
+| board.page.previous | 이전 보드 페이지 | `chevron.left` |
+| board.page.next | 다음 보드 페이지 | `chevron.right` |
+| export.save | PNG 저장 / 보드 PDF 저장 | `square.and.arrow.down` |
+| export.copy | 클립보드 복사 | `doc.on.doc` |
+| help.show | 도움말 | `questionmark.circle` |
+| palette.settings | 설정 열기 | `gearshape` |
+| palette.style.radial | 팔레트 모양: 원형 | `circle.grid.3x3.fill` |
+| palette.style.linear | 팔레트 모양: 가로 | `rectangle.split.3x1` |
+| tool.laser | 레이저 | `laser.burst` |
+| spotlight.toggle | 스포트라이트 | `light.beacon.max` |
+| tool.cover | 화면 가리개 | `rectangle.fill` |
+| zoom.toggle | 화면 줌 | `plus.magnifyingglass` |
+| cursor-highlight.toggle | 커서 강조 | `cursorarrow.rays` |
+
+## 3. 원형 3링 — 설정값에 쓰이는 아이콘 (나머지 칸은 글자·색)
+| 키(제안) | 뜻 | 현재 |
+| --- | --- | --- |
+| option.on | 켬(손그림 도형 보정) | `checkmark` |
+| option.off | 끔 | `xmark` |
+| option.arrow.single | 화살표 한쪽 | `arrow.right` |
+| option.arrow.double | 화살표 양쪽 | `arrow.left.and.right` |
+| option.area.rectangle | 영역 지우개: 사각형 | `rectangle.dashed` |
+| option.area.lasso | 영역 지우개: 올가미 | `lasso` |
+
+## 4. 중심 원 (지금 도구 아이콘 = 위 2링의 같은 키)
+선택·이동(`tool.select`) 도 중심에 나옵니다: `lasso`.
+
+## 5. 팔레트에는 안 나오지만 가로 팔레트·도움말 목록에 쓰이는 것
+| 키 | 뜻 | 현재 |
+| --- | --- | --- |
+| annotation.toggle | 판서 모드 켜기/끄기 | `pencil` |
+| tool.select | 올가미 선택·이동 | `lasso` |
+| tool.shape-recognition | 손그림 도형 자동 보정 | `wand.and.stars` |
+| eraser.area-shape | 영역 지우개 사각형/올가미 | `rectangle.dashed` |
+| tool.width.decrease / increase | 현재 도구 크기 줄이기 / 키우기 | `minus` / `plus` |
+| color.1 ~ color.6 | 색상 1~6 (가로 팔레트에서는 색 원을 직접 그림) | `circle.fill` |
+| edit.delete-selection | 선택한 항목 삭제 | `delete.left` |
+| palette.toggle | 도구 팔레트 숨기기/보이기 | `rectangle.on.rectangle` |
+| palette.radial.toggle | 원형 팔레트 열기/접기(M) | `circle.grid.cross` |
+| annotation.step-back | 한 단계 나가기(Esc) | `escape` |
+| annotation.pass-through | 아래 화면 클릭(통과 모드, U) — 036 구현 중, 심볼은 구현 때 확정 | `cursorarrow.click` (예정) |
+| zoom.increase / decrease / reset | 줌 배율 올리기 / 내리기 / 시작 배율 | `plus.magnifyingglass` / `minus.magnifyingglass` / `1.magnifyingglass` |
+| zoom.freeze | 화면 멈추고 판서 | `pause.circle` |
+| zoom.preview | 확대 위치 미리보기 | `rectangle.dashed` |
+| zoom.follow | 따라가기 방식 바꾸기 | `cursorarrow.motionlines` |
+| zoom.stop | 줌 종료 | `escape` |
+| keystroke-display.toggle | 키 입력 표시 | `command` |
+| timer.lesson.toggle | 수업 타이머 | `timer` |
+| timer.break.open | 쉬는 시간 타이머 | `cup.and.saucer` |
+
+## 6. 메뉴바
+| 키(제안) | 뜻 | 현재 |
+| --- | --- | --- |
+| status.annotation.off | 판서 모드 꺼짐 | `pencil` |
+| status.annotation.on | 판서 모드 켜짐 | `pencil.circle.fill` |
+
+## 7. 같은 아이콘을 두 번 쓰는 곳 (디자인할 때 구분해 주세요)
+| 아이콘 | 겹치는 뜻 |
+| --- | --- |
+| `rectangle.fill` | 화이트보드 ↔ 화면 가리개 (같은 모양이라 구분이 안 됨) |
+| `rectangle.dashed` | 영역 지우개 사각형 ↔ 확대 위치 미리보기 |
+| `rectangle.on.rectangle` | 보드·설정 그룹 ↔ 도구 팔레트 숨기기 |
+| `plus.magnifyingglass` | 화면 줌 켜기 ↔ 줌 배율 올리기 |
+| `escape` | 한 단계 나가기 ↔ 줌 종료 |
+| `arrow.right` | 화살표 도구 ↔ 화살표 한쪽 모양 |
+| `pencil` / `pencil.tip` / `pencil.and.outline` | 판서 모드 / 펜 / 작성 그룹 — 세 가지가 비슷해 보임 |
+
+## 8. 아이콘 연결 방식 (제안)
+- 파일: **SVG**(한 색, 윤곽 또는 채움, `viewBox` 24×24 권장) 또는 PDF 벡터. 파일 이름 = 위 "키" (예: `tool.pen.svg`).
+- 앱은 **키별로 새 아이콘이 있으면 쓰고, 없으면 지금 SF Symbols 를 그대로** 씁니다. 일부만 먼저 바꿔도 됩니다.
+- 색·선택·호버·비활성 표현은 앱이 입히므로 **단색 모양만** 주시면 됩니다(템플릿 이미지로 사용).
+- 선택 상태에서 모양이 바뀌는 아이콘(예: 속이 빈/찬 모양)이 필요하면 `<키>.selected.svg` 로 따로 주세요.
