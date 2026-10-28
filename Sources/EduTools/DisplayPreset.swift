@@ -401,16 +401,30 @@ struct DisplayPlan: Equatable {
     var outsidePlacements: [DisplayOutsidePlacement]
     var missingPresetMonitors: [DisplayIdentity]
     var screens: [DisplayPlannedScreen]
+    var layoutIssues: [String]
+
+    var isApplicable: Bool {
+        mainDisplayID != nil && layoutIssues.isEmpty
+    }
 
     func summary() -> String {
-        var parts = screens.map { screen in
+        var parts: [String] = []
+        if !layoutIssues.isEmpty {
+            parts.append("적용 불가: " + layoutIssues.joined(separator: " · "))
+        }
+        if let anchor = screens.first, anchor.role != .main {
+            parts.append(
+                "주 화면 모니터 없음 → \(anchor.role.displayName) 이 주 디스플레이"
+            )
+        }
+        parts.append(contentsOf: screens.map { screen in
             var value = "\(screen.role.displayName) = \(screen.masterName)"
             if !screen.mirroredNames.isEmpty {
                 value += "(미러: \(screen.mirroredNames.joined(separator: ", ")))"
             }
             value += " \(screen.cell.coordinateDescription), 원점 \(pointDescription(screen.origin))"
             return value
-        }
+        })
         if screens.count > 1 {
             let ordered = screens.sorted {
                 $0.cell.y == $1.cell.y ? $0.cell.x < $1.cell.x : $0.cell.y < $1.cell.y
@@ -423,7 +437,7 @@ struct DisplayPlan: Equatable {
         }
         if !outsidePlacements.isEmpty {
             parts.append(
-                "프리셋 밖 = \(outsidePlacements.map(\.name).joined(separator: ", ")) (마지막 화면 오른쪽에 확장)"
+                "프리셋 밖 = \(outsidePlacements.map(\.name).joined(separator: ", ")) (배치 묶음 오른쪽에 확장)"
             )
         }
         if !missingPresetMonitors.isEmpty {
@@ -453,41 +467,164 @@ struct DisplayGridMetric {
 
 enum DisplayGridLayout {
     static func origins(for metrics: [DisplayGridMetric]) -> [GridCell: DisplayPoint] {
-        var columnWidths: [Int: Double] = [:]
-        var rowHeights: [Int: Double] = [:]
-        for metric in metrics {
-            columnWidths[metric.cell.x] = max(
-                columnWidths[metric.cell.x] ?? 0,
-                metric.size.width
+        guard let anchor = metrics.first else { return [:] }
+        precondition(
+            Set(metrics.map(\.cell)).count == metrics.count,
+            "Display layout requires unique grid cells"
+        )
+
+        var result: [GridCell: DisplayPoint] = [anchor.cell: .zero]
+        var placedIndices = [metrics.startIndex]
+        var placed = Set(placedIndices)
+        var pending = placedIndices
+        var pendingIndex = 0
+
+        while placed.count < metrics.count {
+            while pendingIndex < pending.count {
+                let parentIndex = pending[pendingIndex]
+                pendingIndex += 1
+                let parent = metrics[parentIndex]
+                guard let parentOrigin = result[parent.cell] else {
+                    preconditionFailure("Placed display is missing its origin")
+                }
+                for candidateIndex in metrics.indices where !placed.contains(candidateIndex) {
+                    let candidate = metrics[candidateIndex]
+                    guard candidate.cell.isOrthogonallyAdjacent(to: parent.cell) else {
+                        continue
+                    }
+                    result[candidate.cell] = adjacentOrigin(
+                        for: candidate,
+                        nextTo: parent,
+                        parentOrigin: parentOrigin
+                    )
+                    placed.insert(candidateIndex)
+                    placedIndices.append(candidateIndex)
+                    pending.append(candidateIndex)
+                }
+            }
+
+            guard placed.count < metrics.count,
+                  let detachedIndex = metrics.indices.first(where: { !placed.contains($0) })
+            else {
+                continue
+            }
+            result[metrics[detachedIndex].cell] = detachedOrigin(
+                for: metrics[detachedIndex],
+                anchorCell: anchor.cell,
+                metrics: metrics,
+                placedIndices: placedIndices,
+                origins: result
             )
-            rowHeights[metric.cell.y] = max(
-                rowHeights[metric.cell.y] ?? 0,
-                metric.size.height
+            placed.insert(detachedIndex)
+            placedIndices.append(detachedIndex)
+            pending.append(detachedIndex)
+        }
+        return result
+    }
+
+    private static func adjacentOrigin(
+        for metric: DisplayGridMetric,
+        nextTo parent: DisplayGridMetric,
+        parentOrigin: DisplayPoint
+    ) -> DisplayPoint {
+        switch (metric.cell.x - parent.cell.x, metric.cell.y - parent.cell.y) {
+        case (1, 0):
+            return DisplayPoint(
+                x: parentOrigin.x + parent.size.width,
+                y: parentOrigin.y
+            )
+        case (-1, 0):
+            return DisplayPoint(
+                x: parentOrigin.x - metric.size.width,
+                y: parentOrigin.y
+            )
+        case (0, 1):
+            return DisplayPoint(
+                x: parentOrigin.x,
+                y: parentOrigin.y + parent.size.height
+            )
+        case (0, -1):
+            return DisplayPoint(
+                x: parentOrigin.x,
+                y: parentOrigin.y - metric.size.height
+            )
+        default:
+            preconditionFailure("Adjacent display cells must share an edge")
+        }
+    }
+
+    private static func detachedOrigin(
+        for metric: DisplayGridMetric,
+        anchorCell: GridCell,
+        metrics: [DisplayGridMetric],
+        placedIndices: [Int],
+        origins: [GridCell: DisplayPoint]
+    ) -> DisplayPoint {
+        let deltaX = metric.cell.x - anchorCell.x
+        let deltaY = metric.cell.y - anchorCell.y
+        let isHorizontal = deltaX != 0 && abs(deltaX) >= abs(deltaY)
+
+        if isHorizontal {
+            if deltaX > 0 {
+                let edge = placedIndices.map {
+                    origin(for: metrics[$0], in: origins).x + metrics[$0].size.width
+                }.max() ?? 0
+                let support = placedIndices.first {
+                    let placedMetric = metrics[$0]
+                    return origin(for: placedMetric, in: origins).x
+                        + placedMetric.size.width == edge
+                } ?? placedIndices[0]
+                return DisplayPoint(
+                    x: edge,
+                    y: origin(for: metrics[support], in: origins).y
+                )
+            }
+            let edge = placedIndices.map {
+                origin(for: metrics[$0], in: origins).x
+            }.min() ?? 0
+            let support = placedIndices.first {
+                origin(for: metrics[$0], in: origins).x == edge
+            } ?? placedIndices[0]
+            return DisplayPoint(
+                x: edge - metric.size.width,
+                y: origin(for: metrics[support], in: origins).y
             )
         }
-        return Dictionary(uniqueKeysWithValues: metrics.map { metric in
-            let x: Double
-            if metric.cell.x < 0 {
-                x = -(metric.cell.x..<0).reduce(0) { partial, column in
-                    partial + (columnWidths[column] ?? 0)
-                }
-            } else {
-                x = (0..<metric.cell.x).reduce(0) { partial, column in
-                    partial + (columnWidths[column] ?? 0)
-                }
-            }
-            let y: Double
-            if metric.cell.y < 0 {
-                y = -(metric.cell.y..<0).reduce(0) { partial, row in
-                    partial + (rowHeights[row] ?? 0)
-                }
-            } else {
-                y = (0..<metric.cell.y).reduce(0) { partial, row in
-                    partial + (rowHeights[row] ?? 0)
-                }
-            }
-            return (metric.cell, DisplayPoint(x: x, y: y))
-        })
+
+        if deltaY > 0 {
+            let edge = placedIndices.map {
+                origin(for: metrics[$0], in: origins).y + metrics[$0].size.height
+            }.max() ?? 0
+            let support = placedIndices.first {
+                let placedMetric = metrics[$0]
+                return origin(for: placedMetric, in: origins).y
+                    + placedMetric.size.height == edge
+            } ?? placedIndices[0]
+            return DisplayPoint(
+                x: origin(for: metrics[support], in: origins).x,
+                y: edge
+            )
+        }
+        let edge = placedIndices.map {
+            origin(for: metrics[$0], in: origins).y
+        }.min() ?? 0
+        let support = placedIndices.first {
+            origin(for: metrics[$0], in: origins).y == edge
+        } ?? placedIndices[0]
+        return DisplayPoint(
+            x: origin(for: metrics[support], in: origins).x,
+            y: edge - metric.size.height
+        )
+    }
+
+    private static func origin(
+        for metric: DisplayGridMetric,
+        in origins: [GridCell: DisplayPoint]
+    ) -> DisplayPoint {
+        guard let origin = origins[metric.cell] else {
+            preconditionFailure("Placed display is missing its origin")
+        }
+        return origin
     }
 }
 
@@ -582,12 +719,17 @@ enum DisplayPlanner {
                     && online[left].currentMirrorMasterID == nil
                 let rightIsCurrentMain = isZero(online[right].origin)
                     && online[right].currentMirrorMasterID == nil
-                return leftIsCurrentMain && !rightIsCurrentMain
+                if leftIsCurrentMain != rightIsCurrentMain {
+                    return leftIsCurrentMain
+                }
+                return left < right
             }
         }
         var outsidePlacements: [DisplayOutsidePlacement] = []
         var outsideX = plannedScreens.map { $0.origin.x + $0.size.width }.max() ?? 0
-        let outsideY = plannedScreens.last?.origin.y ?? 0
+        let outsideY = plannedScreens.first(where: {
+            $0.origin.x + $0.size.width == outsideX
+        })?.origin.y ?? 0
         for onlineIndex in outside {
             let display = online[onlineIndex]
             let origin = DisplayPoint(x: outsideX, y: outsideY)
@@ -612,6 +754,7 @@ enum DisplayPlanner {
         let missing = slots.compactMap { slot in
             onlineIndexBySlot[slot.globalIndex] == nil ? slot.monitor.identity : nil
         }
+        let layoutIssues = overlappingLayoutIssues(in: plannedScreens)
         return DisplayPlan(
             mainDisplayID: plannedScreens.first?.masterID ?? outsidePlacements.first?.displayID,
             originsByMaster: origins,
@@ -619,8 +762,36 @@ enum DisplayPlanner {
             unmirrorDisplayIDs: unmirror,
             outsidePlacements: outsidePlacements,
             missingPresetMonitors: missing,
-            screens: plannedScreens
+            screens: plannedScreens,
+            layoutIssues: layoutIssues
         )
+    }
+
+    private static func overlappingLayoutIssues(
+        in screens: [DisplayPlannedScreen]
+    ) -> [String] {
+        var issues: [String] = []
+        for leftIndex in screens.indices {
+            for rightIndex in screens.indices where rightIndex > leftIndex {
+                let left = screens[leftIndex]
+                let right = screens[rightIndex]
+                guard rectanglesOverlap(left, right) else { continue }
+                issues.append(
+                    "화면이 겹칩니다(\(left.role.displayName) ↔ \(right.role.displayName))"
+                )
+            }
+        }
+        return issues
+    }
+
+    private static func rectanglesOverlap(
+        _ left: DisplayPlannedScreen,
+        _ right: DisplayPlannedScreen
+    ) -> Bool {
+        left.origin.x < right.origin.x + right.size.width
+            && right.origin.x < left.origin.x + left.size.width
+            && left.origin.y < right.origin.y + right.size.height
+            && right.origin.y < left.origin.y + left.size.height
     }
 
     static func presetForConnectedSet(

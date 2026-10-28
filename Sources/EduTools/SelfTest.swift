@@ -780,6 +780,371 @@ func runSelfTests() -> Int32 {
         "break music should escape URL text before inserting it into AppleScript"
     )
 
+    func displayFixture(
+        id: UInt32,
+        size: DisplaySize,
+        kind: DisplayKind = .external
+    ) -> (online: OnlineDisplay, monitor: PresetMonitor) {
+        let online = OnlineDisplay(
+            id: id,
+            uuid: "selftest-display-\(id)",
+            vendor: 1_000 + id,
+            model: 2_000 + id,
+            serial: 3_000 + id,
+            name: "SelfTest Display \(id)",
+            kind: kind,
+            size: size,
+            origin: .zero,
+            currentMirrorMasterID: nil
+        )
+        return (online, PresetMonitor(identity: online.identity))
+    }
+
+    let displayOne = displayFixture(
+        id: 1,
+        size: DisplaySize(width: 2560, height: 1440)
+    )
+    let displayTwo = displayFixture(
+        id: 2,
+        size: DisplaySize(width: 1920, height: 1080)
+    )
+    let displayThree = displayFixture(
+        id: 3,
+        size: DisplaySize(width: 1280, height: 720)
+    )
+    let horizontalPlan = DisplayPlanner.plan(
+        preset: DisplayPreset(
+            name: "Horizontal",
+            main: PresetScreen(monitors: [displayOne.monitor]),
+            secondary1: PresetScreen(
+                monitors: [displayTwo.monitor],
+                cell: GridCell(x: -1, y: 0)
+            ),
+            secondary2: PresetScreen(
+                monitors: [displayThree.monitor],
+                cell: GridCell(x: 1, y: 0)
+            )
+        ),
+        online: [displayOne.online, displayTwo.online, displayThree.online]
+    )
+    let verticalPlan = DisplayPlanner.plan(
+        preset: DisplayPreset(
+            name: "Vertical",
+            main: PresetScreen(monitors: [displayOne.monitor]),
+            secondary1: PresetScreen(
+                monitors: [displayTwo.monitor],
+                cell: GridCell(x: 0, y: -1)
+            ),
+            secondary2: PresetScreen(
+                monitors: [displayThree.monitor],
+                cell: GridCell(x: 0, y: 1)
+            )
+        ),
+        online: [displayOne.online, displayTwo.online, displayThree.online]
+    )
+    let cornerPlan = DisplayPlanner.plan(
+        preset: DisplayPreset(
+            name: "Corner",
+            main: PresetScreen(monitors: [displayOne.monitor]),
+            secondary1: PresetScreen(
+                monitors: [displayTwo.monitor],
+                cell: GridCell(x: -1, y: 0)
+            ),
+            secondary2: PresetScreen(
+                monitors: [displayThree.monitor],
+                cell: GridCell(x: 0, y: 1)
+            )
+        ),
+        online: [displayOne.online, displayTwo.online, displayThree.online]
+    )
+    let gapMain = displayFixture(
+        id: 11,
+        size: DisplaySize(width: 1920, height: 1080)
+    )
+    let gapBelow = displayFixture(
+        id: 12,
+        size: DisplaySize(width: 2560, height: 1080)
+    )
+    let gapRight = displayFixture(
+        id: 13,
+        size: DisplaySize(width: 1280, height: 720)
+    )
+    let gapRegressionPlan = DisplayPlanner.plan(
+        preset: DisplayPreset(
+            name: "Gap regression",
+            main: PresetScreen(monitors: [gapMain.monitor]),
+            secondary1: PresetScreen(
+                monitors: [gapBelow.monitor],
+                cell: GridCell(x: 0, y: 1)
+            ),
+            secondary2: PresetScreen(
+                monitors: [gapRight.monitor],
+                cell: GridCell(x: 1, y: 0)
+            )
+        ),
+        online: [gapMain.online, gapBelow.online, gapRight.online]
+    )
+    runner.expect(
+        horizontalPlan.originsByMaster[displayTwo.online.id]
+            == DisplayPoint(x: -1920, y: 0)
+            && horizontalPlan.originsByMaster[displayOne.online.id] == .zero
+            && horizontalPlan.originsByMaster[displayThree.online.id]
+                == DisplayPoint(x: 2560, y: 0)
+            && verticalPlan.originsByMaster[displayTwo.online.id]
+                == DisplayPoint(x: 0, y: -1080)
+            && verticalPlan.originsByMaster[displayThree.online.id]
+                == DisplayPoint(x: 0, y: 1440)
+            && cornerPlan.originsByMaster[displayThree.online.id]
+                == DisplayPoint(x: 0, y: 1440)
+            && gapRegressionPlan.originsByMaster[gapRight.online.id]
+                == DisplayPoint(x: 1920, y: 0),
+        "display grid planning should place all tested layouts edge-to-edge from the origin"
+    )
+
+    let absentMain = displayFixture(
+        id: 21,
+        size: DisplaySize(width: 1920, height: 1080)
+    )
+    let connectedLeft = displayFixture(
+        id: 22,
+        size: DisplaySize(width: 2560, height: 1440)
+    )
+    let connectedRight = displayFixture(
+        id: 23,
+        size: DisplaySize(width: 1280, height: 720)
+    )
+    let missingMainPlan = DisplayPlanner.plan(
+        preset: DisplayPreset(
+            name: "Missing main",
+            main: PresetScreen(monitors: [absentMain.monitor]),
+            secondary1: PresetScreen(
+                monitors: [connectedLeft.monitor],
+                cell: GridCell(x: -1, y: 0)
+            ),
+            secondary2: PresetScreen(
+                monitors: [connectedRight.monitor],
+                cell: GridCell(x: 1, y: 0)
+            )
+        ),
+        online: [connectedLeft.online, connectedRight.online]
+    )
+    let overlapMain = displayFixture(
+        id: 24,
+        size: DisplaySize(width: 1920, height: 1080)
+    )
+    let overlapRight = displayFixture(
+        id: 25,
+        size: DisplaySize(width: 1280, height: 1440)
+    )
+    let overlapBelow = displayFixture(
+        id: 26,
+        size: DisplaySize(width: 3000, height: 720)
+    )
+    let overlapPlan = DisplayPlanner.plan(
+        preset: DisplayPreset(
+            name: "Overlap",
+            main: PresetScreen(monitors: [overlapMain.monitor]),
+            secondary1: PresetScreen(
+                monitors: [overlapRight.monitor],
+                cell: GridCell(x: 1, y: 0)
+            ),
+            secondary2: PresetScreen(
+                monitors: [overlapBelow.monitor],
+                cell: GridCell(x: 0, y: 1)
+            )
+        ),
+        online: [overlapMain.online, overlapRight.online, overlapBelow.online]
+    )
+    runner.expect(
+        missingMainPlan.mainDisplayID == connectedLeft.online.id
+            && missingMainPlan.originsByMaster[connectedLeft.online.id] == .zero
+            && missingMainPlan.originsByMaster[connectedRight.online.id]
+                == DisplayPoint(x: 2560, y: 0)
+            && !overlapPlan.layoutIssues.isEmpty
+            && !overlapPlan.isApplicable,
+        "display planning should anchor the connected main display at zero and reject overlaps"
+    )
+
+    let mirrorPlan = DisplayPlanner.plan(
+        preset: DisplayPreset(
+            name: "Mirrored main",
+            main: PresetScreen(
+                monitors: [displayOne.monitor, displayTwo.monitor, displayThree.monitor]
+            )
+        ),
+        online: [displayOne.online, displayTwo.online, displayThree.online]
+    )
+    let extendedMirrorPlan = DisplayPlanner.plan(
+        preset: DisplayPreset(
+            name: "Mirrored secondary",
+            main: PresetScreen(monitors: [displayOne.monitor]),
+            secondary1: PresetScreen(
+                monitors: [displayTwo.monitor, displayThree.monitor],
+                cell: GridCell(x: 1, y: 0)
+            )
+        ),
+        online: [displayOne.online, displayTwo.online, displayThree.online]
+    )
+    let missingFirst = displayFixture(
+        id: 31,
+        size: DisplaySize(width: 1920, height: 1080)
+    )
+    let succeedingMaster = displayFixture(
+        id: 32,
+        size: DisplaySize(width: 1920, height: 1080)
+    )
+    let successionPlan = DisplayPlanner.plan(
+        preset: DisplayPreset(
+            name: "Master succession",
+            main: PresetScreen(monitors: [missingFirst.monitor, succeedingMaster.monitor])
+        ),
+        online: [succeedingMaster.online]
+    )
+    let outsideDisplay = displayFixture(
+        id: 33,
+        size: DisplaySize(width: 1024, height: 768),
+        kind: .virtual
+    )
+    let outsidePlan = DisplayPlanner.plan(
+        preset: DisplayPreset(
+            name: "Outside display",
+            main: PresetScreen(monitors: [displayOne.monitor])
+        ),
+        online: [displayOne.online, outsideDisplay.online]
+    )
+    let outsidePlacement = outsidePlan.outsidePlacements.first
+    runner.expect(
+        mirrorPlan.mainDisplayID == displayOne.online.id
+            && mirrorPlan.mirrors == [
+                DisplayMirrorPlan(slaveID: displayTwo.online.id, masterID: displayOne.online.id),
+                DisplayMirrorPlan(slaveID: displayThree.online.id, masterID: displayOne.online.id),
+            ]
+            && extendedMirrorPlan.mirrors == [
+                DisplayMirrorPlan(slaveID: displayThree.online.id, masterID: displayTwo.online.id),
+            ]
+            && extendedMirrorPlan.originsByMaster[displayTwo.online.id]
+                == DisplayPoint(x: 2560, y: 0)
+            && successionPlan.mainDisplayID == succeedingMaster.online.id
+            && successionPlan.missingPresetMonitors == [missingFirst.monitor.identity]
+            && outsidePlan.outsidePlacements.count == 1
+            && outsidePlacement?.displayID == outsideDisplay.online.id
+            && (outsidePlacement?.origin.x ?? -1) >= 2560,
+        "display planning should preserve mirror, master succession, missing, and outside monitor rules"
+    )
+
+    let duplicateCellPreset = DisplayPreset(
+        name: "Duplicate cell",
+        main: PresetScreen(monitors: [displayOne.monitor]),
+        secondary1: PresetScreen(monitors: [displayTwo.monitor])
+    )
+    let diagonalPreset = DisplayPreset(
+        name: "Diagonal",
+        main: PresetScreen(monitors: [displayOne.monitor]),
+        secondary1: PresetScreen(
+            monitors: [displayTwo.monitor],
+            cell: GridCell(x: 1, y: 1)
+        )
+    )
+    let connectedPreset = DisplayPreset(
+        name: "Connected",
+        main: PresetScreen(monitors: [displayOne.monitor]),
+        secondary1: PresetScreen(
+            monitors: [displayTwo.monitor],
+            cell: GridCell(x: 1, y: 0)
+        ),
+        secondary2: PresetScreen(
+            monitors: [displayThree.monitor],
+            cell: GridCell(x: 1, y: 1)
+        )
+    )
+    runner.expect(
+        DisplayGrid.validationError(for: duplicateCellPreset) == .duplicateGridCell
+            && DisplayGrid.validationError(for: diagonalPreset) == .disconnectedGrid
+            && DisplayGrid.validationError(for: connectedPreset) == nil,
+        "display grid validation should reject duplicate or diagonal cells and accept connected cells"
+    )
+
+    var autoMonitorOne = displayOne.monitor
+    autoMonitorOne.autoMatch = true
+    var autoMonitorTwo = displayTwo.monitor
+    autoMonitorTwo.autoMatch = true
+    let automaticPresetA = DisplayPreset(
+        name: "Automatic A",
+        main: PresetScreen(monitors: [autoMonitorOne, autoMonitorTwo])
+    )
+    let automaticPresetB = DisplayPreset(
+        name: "Automatic B",
+        main: PresetScreen(monitors: [autoMonitorOne, autoMonitorTwo])
+    )
+    let noAutomaticMonitors = DisplayPreset(
+        name: "No automatic monitors",
+        main: PresetScreen(monitors: [displayOne.monitor])
+    )
+    runner.expect(
+        DisplayPlanner.presetForConnectedSet(
+            connected: [displayOne.online, displayTwo.online],
+            presets: [automaticPresetA, automaticPresetB]
+        )?.id == automaticPresetA.id
+            && DisplayPlanner.presetForConnectedSet(
+                connected: [displayOne.online, displayTwo.online],
+                presets: [automaticPresetB, automaticPresetA]
+            )?.id == automaticPresetB.id
+            && DisplayPlanner.presetForConnectedSet(
+                connected: [displayOne.online, displayTwo.online, displayThree.online],
+                presets: [automaticPresetA]
+            ) == nil
+            && DisplayPlanner.presetForConnectedSet(
+                connected: [displayOne.online],
+                presets: [automaticPresetA]
+            ) == nil
+            && DisplayPlanner.presetForConnectedSet(
+                connected: [displayOne.online],
+                presets: [noAutomaticMonitors]
+            ) == nil,
+        "automatic display preset selection should require an exact set and preserve list priority"
+    )
+
+    let hardwareFixture = displayFixture(
+        id: 41,
+        size: DisplaySize(width: 1920, height: 1080)
+    )
+    var hardwareMatchedOnline = hardwareFixture.online
+    hardwareMatchedOnline.uuid = "different-hardware-uuid"
+    let hardwareMatches = DisplayMatcher.matches(
+        monitors: [hardwareFixture.monitor],
+        online: [hardwareMatchedOnline]
+    )
+    let zeroSerialFixture = displayFixture(
+        id: 42,
+        size: DisplaySize(width: 1920, height: 1080)
+    )
+    var zeroSerialMonitor = zeroSerialFixture.monitor
+    zeroSerialMonitor.identity.uuid = "preset-zero-serial"
+    zeroSerialMonitor.identity.serial = 0
+    var zeroSerialOnline = zeroSerialFixture.online
+    zeroSerialOnline.uuid = "online-zero-serial"
+    zeroSerialOnline.serial = 0
+    let zeroSerialMatches = DisplayMatcher.matches(
+        monitors: [zeroSerialMonitor],
+        online: [zeroSerialOnline]
+    )
+    let duplicateOnlineMatches = DisplayMatcher.matches(
+        monitors: [
+            hardwareFixture.monitor,
+            PresetMonitor(identity: hardwareFixture.monitor.identity),
+        ],
+        online: [hardwareFixture.online]
+    )
+    runner.expect(
+        hardwareMatches.count == 1
+            && hardwareMatches.first?.onlineIndex == 0
+            && zeroSerialMatches.isEmpty
+            && duplicateOnlineMatches.count == 1
+            && Set(duplicateOnlineMatches.map(\.onlineIndex)).count
+                == duplicateOnlineMatches.count,
+        "display matching should use valid hardware identity without reusing an online display"
+    )
+
     let settingsJSON = try? JSONEncoder().encode(AppSettings.default)
     let settingsRoundTrip = settingsJSON.flatMap {
         try? JSONDecoder().decode(AppSettings.self, from: $0)
