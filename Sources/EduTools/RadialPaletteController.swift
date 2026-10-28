@@ -388,8 +388,9 @@ private func nextRadialPaletteFocus(
 private final class RadialPaletteTooltip {
     private let panel: RadialPaletteTooltipPanel
     private let label = NSTextField(labelWithString: "")
+    private let glassView = NSGlassEffectView(frame: .zero)
 
-    init() {
+    init(glassOpacity: Double) {
         panel = RadialPaletteTooltipPanel(
             contentRect: .zero,
             styleMask: [.borderless, .nonactivatingPanel],
@@ -406,12 +407,14 @@ private final class RadialPaletteTooltip {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.sharingType = .none
 
-        let glassView = NSGlassEffectView(frame: .zero)
         glassView.style = .regular
         glassView.cornerRadius = 7
+        glassView.tintColor = RadialPaletteGlassStyle.surfaceTintColor(
+            opacity: glassOpacity
+        )
         let root = NSView(frame: .zero)
         label.font = .systemFont(ofSize: 12, weight: .medium)
-        label.textColor = .labelColor
+        label.textColor = RadialPaletteGlassStyle.primaryContentColor
         label.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(label)
         NSLayoutConstraint.activate([
@@ -422,6 +425,10 @@ private final class RadialPaletteTooltip {
         ])
         glassView.contentView = root
         panel.contentView = glassView
+    }
+
+    func updateGlassOpacity(_ opacity: Double) {
+        glassView.tintColor = RadialPaletteGlassStyle.surfaceTintColor(opacity: opacity)
     }
 
     func show(
@@ -656,7 +663,7 @@ final class RadialPaletteController: NSObject {
     private let openSettings: () -> Void
     private let panel: RadialPalettePanel
     private let paletteView = RadialPaletteView(frame: .zero)
-    private let tooltip = RadialPaletteTooltip()
+    private let tooltip: RadialPaletteTooltip
     private var selectedGroup = RadialPaletteGroupID.writing
     private var selectedEntryIdentifier: String?
     private var isExpanded = false
@@ -698,6 +705,9 @@ final class RadialPaletteController: NSObject {
         self.settingsStore = settingsStore
         self.defaults = defaults
         self.openSettings = openSettings
+        tooltip = RadialPaletteTooltip(
+            glassOpacity: settingsStore.settings.tools.paletteGlassOpacity
+        )
         panel = RadialPalettePanel(
             contentRect: .zero,
             styleMask: [.borderless, .nonactivatingPanel],
@@ -757,7 +767,8 @@ final class RadialPaletteController: NSObject {
         presenterObserverIdentifier = state.addPresenterEffectsObserver { [weak self] in
             self?.paletteView.redraw()
         }
-        settingsObserverIdentifier = settingsStore.addObserver { [weak self] _ in
+        settingsObserverIdentifier = settingsStore.addObserver { [weak self] settings in
+            self?.tooltip.updateGlassOpacity(settings.tools.paletteGlassOpacity)
             self?.updateVisibility()
             self?.paletteView.redraw()
         }
@@ -1724,6 +1735,10 @@ final class RadialPaletteController: NSObject {
         _ model: RadialPaletteRenderModel,
         hoveredIdentifier: String?
     ) {
+        let glassOpacity = settingsStore.settings.tools.paletteGlassOpacity
+        if model.glassOpacity != glassOpacity {
+            model.glassOpacity = glassOpacity
+        }
         let cells = isExpanded ? layoutCells() : []
         let focusedIdentifier = showsKeyboardFocus ? keyboardFocus?.identifier : nil
         let centerDefinition = state.isPassThroughModeEnabled
