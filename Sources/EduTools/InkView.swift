@@ -198,6 +198,11 @@ final class InkView: NSView {
         var end: InkPoint
     }
 
+    private enum MouseGestureButton: Equatable {
+        case primary
+        case secondary
+    }
+
     private enum SelectionInteraction {
         case lasso(points: [CGPoint])
         case move(start: CGPoint, originals: [InkStroke])
@@ -227,6 +232,7 @@ final class InkView: NSView {
     private var activeEraser: ActiveEraser?
     private var activeShape: ActiveShape?
     private var activeCover: ActiveCover?
+    private var activeMouseGestureButton: MouseGestureButton?
     private var selectionInteraction: SelectionInteraction?
     private var selectionPreview: [InkStroke]?
     private var textEntrySession: TextEntrySession?
@@ -389,6 +395,7 @@ final class InkView: NSView {
         if activeStroke != nil {
             finishActiveStroke()
         }
+        activeMouseGestureButton = nil
         laserRenderer.clear()
     }
 
@@ -491,6 +498,12 @@ final class InkView: NSView {
     override func mouseDown(with event: NSEvent) {
         requestKeyFocus()
         guard state.isAnnotationModeEnabled else { return }
+        guard let gestureButton = mouseGestureButton(for: event.type),
+              activeMouseGestureButton == nil
+        else {
+            return
+        }
+        activeMouseGestureButton = gestureButton
 
         let location = localLocation(for: event)
         lastPointerLocation = location
@@ -557,6 +570,11 @@ final class InkView: NSView {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        guard let gestureButton = mouseGestureButton(for: event.type),
+              activeMouseGestureButton == gestureButton
+        else {
+            return
+        }
         let location = localLocation(for: event)
         lastPointerLocation = location
         if activeEraser != nil {
@@ -584,6 +602,13 @@ final class InkView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        guard let gestureButton = mouseGestureButton(for: event.type),
+              activeMouseGestureButton == gestureButton
+        else {
+            return
+        }
+        defer { activeMouseGestureButton = nil }
+
         // The pen's eraser tip erases even while the laser is selected; that path finishes below.
         if activeEraser == nil, state.isAnnotationModeEnabled, state.currentTool == .laser {
             laserRenderer.move(to: localLocation(for: event), leavesTrail: false)
@@ -615,6 +640,31 @@ final class InkView: NSView {
         guard activeStroke != nil else { return }
         appendActivePoint(from: event)
         finishActiveStroke()
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        mouseDown(with: event)
+    }
+
+    override func rightMouseDragged(with event: NSEvent) {
+        mouseDragged(with: event)
+    }
+
+    override func rightMouseUp(with event: NSEvent) {
+        mouseUp(with: event)
+    }
+
+    override func changeMode(with event: NSEvent) {
+        guard state.isAnnotationModeEnabled else {
+            super.changeMode(with: event)
+            return
+        }
+        dispatcher.execute(
+            .toggleEraserTool,
+            scope: .annotation,
+            displayUUID: displayUUID
+        )
+        showEraserMode(state.eraserMode)
     }
 
     override func scrollWheel(with event: NSEvent) {
@@ -660,7 +710,7 @@ final class InkView: NSView {
         )
         guard !event.isARepeat else { return }
         switch definition.command {
-        case .selectOrCycleEraser:
+        case .selectOrCycleEraser, .toggleEraserTool:
             showEraserMode(state.eraserMode)
         case .adjustWidth:
             refreshEraserCursorIfNeeded()
@@ -872,6 +922,7 @@ final class InkView: NSView {
         activeEraser = nil
         activeShape = nil
         activeCover = nil
+        activeMouseGestureButton = nil
         selectionInteraction = nil
         selectionPreview = nil
         activeLayer.sublayers?.forEach { $0.removeFromSuperlayer() }
@@ -1405,7 +1456,23 @@ final class InkView: NSView {
     }
 
     private func usesEraser(for event: NSEvent) -> Bool {
-        state.currentTool == .eraser || event.pointingDeviceType == .eraser
+        switch event.type {
+        case .rightMouseDown, .rightMouseDragged, .rightMouseUp:
+            return true
+        default:
+            return state.currentTool == .eraser || event.pointingDeviceType == .eraser
+        }
+    }
+
+    private func mouseGestureButton(for eventType: NSEvent.EventType) -> MouseGestureButton? {
+        switch eventType {
+        case .leftMouseDown, .leftMouseDragged, .leftMouseUp:
+            return .primary
+        case .rightMouseDown, .rightMouseDragged, .rightMouseUp:
+            return .secondary
+        default:
+            return nil
+        }
     }
 
     private func effectivePoints(for stroke: ActiveStroke) -> [InkPoint] {

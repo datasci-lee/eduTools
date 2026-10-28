@@ -33,6 +33,7 @@ final class AppCommandDispatcher {
              .selectTool,
              .useLaser,
              .selectOrCycleEraser,
+             .toggleEraserTool,
              .toggleEraserAreaShape,
              .toggleShapeRecognition,
              .selectColor,
@@ -170,6 +171,8 @@ final class AppCommandDispatcher {
             }
         case .selectOrCycleEraser:
             _ = state.selectOrCycleEraser()
+        case .toggleEraserTool:
+            state.toggleEraserTool()
         case .toggleEraserAreaShape:
             state.toggleEraserAreaShape()
         case .toggleShapeRecognition:
