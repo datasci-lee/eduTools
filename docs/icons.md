@@ -80,6 +80,7 @@
 | palette.toggle | 도구 팔레트 숨기기/보이기 | `rectangle.on.rectangle` |
 | palette.radial.toggle | 원형 팔레트 열기/접기(M) | `circle.grid.cross` |
 | annotation.step-back | 한 단계 나가기(Esc) | `escape` |
+| annotation.pass-through | 아래 화면 클릭(통과 모드, `U` 를 누르고 있는 동안) | `cursorarrow.click` |
 | zoom.increase / decrease / reset | 줌 배율 올리기 / 내리기 / 시작 배율 | `plus.magnifyingglass` / `minus.magnifyingglass` / `1.magnifyingglass` |
 | zoom.freeze | 화면 멈추고 판서 | `pause.circle` |
 | zoom.preview | 확대 위치 미리보기 | `rectangle.dashed` |
