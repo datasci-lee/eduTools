@@ -872,8 +872,8 @@ final class RadialPaletteController: NSObject {
 
     private func paletteKeyboardInput(for keyCode: UInt16) -> PaletteKeyboardInput? {
         switch Int(keyCode) {
-        case kVK_UpArrow: return .navigate(.shallower)
-        case kVK_DownArrow: return .navigate(.deeper)
+        case kVK_UpArrow: return .navigate(.deeper)
+        case kVK_DownArrow: return .navigate(.shallower)
         case kVK_LeftArrow: return .navigate(.previous)
         case kVK_RightArrow: return .navigate(.next)
         case kVK_Return, kVK_ANSI_KeypadEnter, kVK_Space: return .activate
