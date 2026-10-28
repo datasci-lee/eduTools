@@ -681,8 +681,7 @@ final class ZoomController {
             contentRect: screen.frame,
             styleMask: [.borderless],
             backing: .buffered,
-            defer: false,
-            screen: screen
+            defer: false
         )
         panel.backgroundColor = .black
         panel.isOpaque = true

@@ -179,8 +179,7 @@ final class HelpController: NSObject {
             contentRect: initialScreen?.frame ?? .zero,
             styleMask: [.borderless],
             backing: .buffered,
-            defer: false,
-            screen: initialScreen
+            defer: false
         )
         super.init()
         configurePanel()
