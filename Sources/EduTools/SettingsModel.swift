@@ -61,68 +61,165 @@ enum PaletteStyle: String, Codable, CaseIterable, Hashable {
     }
 }
 
+struct ToolMemorySetting: Codable, Equatable {
+    var colorIndex: Int
+    var size: Double
+}
+
+struct PerToolMemorySettings: Codable, Equatable {
+    static let initialColorIndex = 0
+
+    static let `default`: PerToolMemorySettings = {
+        let pen = ToolMemorySetting(colorIndex: initialColorIndex, size: 3)
+        return PerToolMemorySettings(
+            pen: pen,
+            highlighter: ToolMemorySetting(colorIndex: initialColorIndex, size: 18),
+            arrow: pen,
+            rectangle: pen,
+            ellipse: pen,
+            text: ToolMemorySetting(colorIndex: initialColorIndex, size: 24)
+        )
+    }()
+
+    var pen: ToolMemorySetting
+    var highlighter: ToolMemorySetting
+    var arrow: ToolMemorySetting
+    var rectangle: ToolMemorySetting
+    var ellipse: ToolMemorySetting
+    var text: ToolMemorySetting
+
+    static func migratingLegacySizes(
+        penWidth: Double?,
+        highlighterWidth: Double?,
+        textFontSize: Double?
+    ) -> PerToolMemorySettings {
+        var result = Self.default
+        if let penWidth {
+            result.pen.size = penWidth
+            result.arrow.size = penWidth
+            result.rectangle.size = penWidth
+            result.ellipse.size = penWidth
+        }
+        if let highlighterWidth {
+            result.highlighter.size = highlighterWidth
+        }
+        if let textFontSize {
+            result.text.size = textFontSize
+        }
+        return result
+    }
+
+    mutating func clampColorIndices(presetCount: Int) {
+        guard presetCount > 0 else { return }
+        let validRange = 0...(presetCount - 1)
+        for keyPath in [
+            \PerToolMemorySettings.pen,
+            \PerToolMemorySettings.highlighter,
+            \PerToolMemorySettings.arrow,
+            \PerToolMemorySettings.rectangle,
+            \PerToolMemorySettings.ellipse,
+            \PerToolMemorySettings.text,
+        ] {
+            self[keyPath: keyPath].colorIndex = min(
+                max(self[keyPath: keyPath].colorIndex, validRange.lowerBound),
+                validRange.upperBound
+            )
+        }
+    }
+}
+
 struct ToolSettings: Codable, Equatable {
-    var colors: [SettingsColor]
-    var penWidth: Double
-    var highlighterWidth: Double
+    var colors: [SettingsColor] {
+        didSet {
+            perToolMemory.clampColorIndices(presetCount: colors.count)
+        }
+    }
     var highlighterOpacity: Double
     var laserColor: SettingsColor
     var laserSize: Double
     var laserTrailDuration: Double
-    var textFontSize: Double
+    var perToolMemory: PerToolMemorySettings
     var shapeRecognitionEnabled: Bool
     var paletteStyle: PaletteStyle
 
     init(
         colors: [SettingsColor],
-        penWidth: Double,
-        highlighterWidth: Double,
         highlighterOpacity: Double,
         laserColor: SettingsColor,
         laserSize: Double,
         laserTrailDuration: Double,
-        textFontSize: Double,
+        perToolMemory: PerToolMemorySettings = .default,
         shapeRecognitionEnabled: Bool,
         paletteStyle: PaletteStyle = .radial
     ) {
         self.colors = colors
-        self.penWidth = penWidth
-        self.highlighterWidth = highlighterWidth
         self.highlighterOpacity = highlighterOpacity
         self.laserColor = laserColor
         self.laserSize = laserSize
         self.laserTrailDuration = laserTrailDuration
-        self.textFontSize = textFontSize
+        self.perToolMemory = perToolMemory
         self.shapeRecognitionEnabled = shapeRecognitionEnabled
         self.paletteStyle = paletteStyle
     }
 
     private enum CodingKeys: String, CodingKey {
         case colors
-        case penWidth
-        case highlighterWidth
         case highlighterOpacity
         case laserColor
         case laserSize
         case laserTrailDuration
-        case textFontSize
+        case perToolMemory
         case shapeRecognitionEnabled
         case paletteStyle
+    }
+
+    private enum LegacySizeCodingKeys: String, CodingKey {
+        case penWidth
+        case highlighterWidth
+        case textFontSize
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         colors = try container.decode([SettingsColor].self, forKey: .colors)
-        penWidth = try container.decode(Double.self, forKey: .penWidth)
-        highlighterWidth = try container.decode(Double.self, forKey: .highlighterWidth)
         highlighterOpacity = try container.decode(Double.self, forKey: .highlighterOpacity)
         laserColor = try container.decode(SettingsColor.self, forKey: .laserColor)
         laserSize = try container.decode(Double.self, forKey: .laserSize)
         laserTrailDuration = try container.decode(Double.self, forKey: .laserTrailDuration)
-        textFontSize = try container.decode(Double.self, forKey: .textFontSize)
+        if let decodedMemory = try container.decodeIfPresent(
+            PerToolMemorySettings.self,
+            forKey: .perToolMemory
+        ) {
+            perToolMemory = decodedMemory
+        } else {
+            let legacyContainer = try decoder.container(keyedBy: LegacySizeCodingKeys.self)
+            perToolMemory = .migratingLegacySizes(
+                penWidth: try legacyContainer.decodeIfPresent(Double.self, forKey: .penWidth),
+                highlighterWidth: try legacyContainer.decodeIfPresent(
+                    Double.self,
+                    forKey: .highlighterWidth
+                ),
+                textFontSize: try legacyContainer.decodeIfPresent(
+                    Double.self,
+                    forKey: .textFontSize
+                )
+            )
+        }
         shapeRecognitionEnabled = try container.decode(Bool.self, forKey: .shapeRecognitionEnabled)
         paletteStyle = try container.decodeIfPresent(PaletteStyle.self, forKey: .paletteStyle)
             ?? .radial
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(colors, forKey: .colors)
+        try container.encode(highlighterOpacity, forKey: .highlighterOpacity)
+        try container.encode(laserColor, forKey: .laserColor)
+        try container.encode(laserSize, forKey: .laserSize)
+        try container.encode(laserTrailDuration, forKey: .laserTrailDuration)
+        try container.encode(perToolMemory, forKey: .perToolMemory)
+        try container.encode(shapeRecognitionEnabled, forKey: .shapeRecognitionEnabled)
+        try container.encode(paletteStyle, forKey: .paletteStyle)
     }
 }
 
@@ -272,13 +369,10 @@ struct AppSettings: Codable, Equatable {
                 SettingsColor(red: 0, green: 0.478, blue: 1),
                 SettingsColor(red: 1, green: 1, blue: 1),
             ],
-            penWidth: 3,
-            highlighterWidth: 18,
             highlighterOpacity: 0.4,
             laserColor: SettingsColor(red: 1, green: 0.231, blue: 0.188),
             laserSize: 8,
             laserTrailDuration: 1,
-            textFontSize: 24,
             shapeRecognitionEnabled: true
         ),
         eraser: EraserGroupSettings(
@@ -356,14 +450,20 @@ enum SettingsValidator {
         }
         try settings.tools.colors.forEach(validateColor)
         try validateColor(settings.tools.laserColor)
-        guard (1...30).contains(settings.tools.penWidth),
-              (1...30).contains(settings.tools.highlighterWidth),
-              (0.05...1).contains(settings.tools.highlighterOpacity),
+        guard (0.05...1).contains(settings.tools.highlighterOpacity),
               (2...50).contains(settings.tools.laserSize),
-              (0.1...10).contains(settings.tools.laserTrailDuration),
-              (8...96).contains(settings.tools.textFontSize)
+              (0.1...10).contains(settings.tools.laserTrailDuration)
         else {
             throw SettingsValidationError.invalidValue("도구 범위")
+        }
+        for tool in InkTool.allCases {
+            guard let slot = tool.memorySlot else { continue }
+            let memory = settings.tools.perToolMemory[keyPath: slot.keyPath]
+            guard settings.tools.colors.indices.contains(memory.colorIndex),
+                  slot.sizeRange.contains(memory.size)
+            else {
+                throw SettingsValidationError.invalidValue("\(tool.displayName) 마지막 설정")
+            }
         }
 
         guard ["partial", "stroke", "area"].contains(settings.eraser.mode),

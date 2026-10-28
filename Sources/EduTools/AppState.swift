@@ -51,6 +51,7 @@ final class AppState {
     private let settingsStore: SettingsStore
     private var settingsObserverIdentifier: UUID?
     private var zoomPreviewOrigin: (center: CGPoint, magnification: CGFloat)?
+    private var lastColorTool = InkTool.pen
 
     var archiveBeforeRemoval: ((Set<String>) -> Bool)?
 
@@ -114,6 +115,9 @@ final class AppState {
     private(set) var currentTool = InkTool.pen {
         didSet {
             guard oldValue != currentTool else { return }
+            if currentTool.memorySlot != nil {
+                lastColorTool = currentTool
+            }
             for observer in toolObservers.values {
                 observer(currentTool)
             }
@@ -121,33 +125,30 @@ final class AppState {
         }
     }
 
-    private(set) var selectedColorIndex = InkDefaults.initialColorIndex {
-        didSet {
-            guard oldValue != selectedColorIndex else { return }
-            notifyToolSettingsObservers()
-        }
+    var selectedColorIndex: Int {
+        selectedColorIndex(for: currentTool)
+            ?? selectedColorIndex(for: lastColorTool)
+            ?? PerToolMemorySettings.initialColorIndex
     }
-    private(set) var penWidth = InkDefaults.penWidth {
-        didSet {
-            guard oldValue != penWidth else { return }
-            notifyToolSettingsObservers()
-        }
+
+    var currentWidth: CGFloat {
+        requiredWidth(for: currentTool)
     }
-    private(set) var highlighterWidth = InkDefaults.highlighterWidth {
-        didSet {
-            guard oldValue != highlighterWidth else { return }
-            notifyToolSettingsObservers()
-        }
+
+    var penWidth: CGFloat {
+        requiredWidth(for: .pen)
     }
+
+    var highlighterWidth: CGFloat {
+        requiredWidth(for: .highlighter)
+    }
+
     private(set) var highlighterOpacity = CGFloat(AppSettings.default.tools.highlighterOpacity)
     private(set) var laserColor = AppSettings.default.tools.laserColor.nsColor
     private(set) var laserSize = CGFloat(AppSettings.default.tools.laserSize)
     private(set) var laserTrailDuration = AppSettings.default.tools.laserTrailDuration
-    private(set) var textFontSize = InkDefaults.textFontSize {
-        didSet {
-            guard oldValue != textFontSize else { return }
-            notifyToolSettingsObservers()
-        }
+    var textFontSize: CGFloat {
+        requiredWidth(for: .text)
     }
     private(set) var arrowStyle = ArrowStyle.single {
         didSet {
@@ -221,6 +222,23 @@ final class AppState {
         let colors = settingsStore.settings.tools.colors
         guard colors.indices.contains(selectedColorIndex) else { return .systemRed }
         return colors[selectedColorIndex].nsColor
+    }
+
+    func selectedColorIndex(for tool: InkTool) -> Int? {
+        guard let slot = tool.memorySlot else { return nil }
+        return settingsStore.settings.tools.perToolMemory[keyPath: slot.keyPath].colorIndex
+    }
+
+    func width(for tool: InkTool) -> CGFloat? {
+        guard let slot = tool.memorySlot else { return nil }
+        return CGFloat(settingsStore.settings.tools.perToolMemory[keyPath: slot.keyPath].size)
+    }
+
+    private func requiredWidth(for tool: InkTool) -> CGFloat {
+        guard let width = width(for: tool) else {
+            preconditionFailure("Tool does not have a remembered size: \(tool.rawValue)")
+        }
+        return width
     }
 
     var colorPresets: [NSColor] {
@@ -398,13 +416,11 @@ final class AppState {
     }
 
     func setPenWidth(_ width: CGFloat) {
-        let clamped = min(max(width, InkDefaults.minimumWidth), InkDefaults.maximumWidth)
-        settingsStore.update { $0.tools.penWidth = Double(clamped) }
+        setWidth(width, for: .pen)
     }
 
     func setHighlighterWidth(_ width: CGFloat) {
-        let clamped = min(max(width, InkDefaults.minimumWidth), InkDefaults.maximumWidth)
-        settingsStore.update { $0.tools.highlighterWidth = Double(clamped) }
+        setWidth(width, for: .highlighter)
     }
 
     func setHighlighterOpacity(_ opacity: CGFloat) {
@@ -416,11 +432,15 @@ final class AppState {
     }
 
     func setTextFontSize(_ size: CGFloat) {
-        let clamped = min(
-            max(size, InkDefaults.minimumTextFontSize),
-            InkDefaults.maximumTextFontSize
-        )
-        settingsStore.update { $0.tools.textFontSize = Double(clamped) }
+        setWidth(size, for: .text)
+    }
+
+    func setWidth(_ width: CGFloat, for tool: InkTool) {
+        guard let slot = tool.memorySlot else { return }
+        let clamped = min(max(Double(width), slot.sizeRange.lowerBound), slot.sizeRange.upperBound)
+        settingsStore.update {
+            $0.tools.perToolMemory[keyPath: slot.keyPath].size = clamped
+        }
     }
 
     func setLaserColor(_ color: NSColor) {
@@ -513,25 +533,27 @@ final class AppState {
     }
 
     func selectColor(at index: Int) {
-        guard settingsStore.settings.tools.colors.indices.contains(index) else { return }
-        selectedColorIndex = index
+        let colors = settingsStore.settings.tools.colors
+        guard colors.indices.contains(index) else { return }
+        if currentTool == .laser {
+            setLaserColor(colors[index].nsColor)
+        } else if let slot = currentTool.memorySlot {
+            settingsStore.update {
+                $0.tools.perToolMemory[keyPath: slot.keyPath].colorIndex = index
+            }
+        }
     }
 
     func adjustCurrentToolWidth(by delta: CGFloat) {
+        if let width = width(for: currentTool) {
+            setWidth(width + delta, for: currentTool)
+            return
+        }
         switch currentTool {
-        case .pen:
-            setPenWidth(penWidth + delta)
-        case .highlighter:
-            setHighlighterWidth(highlighterWidth + delta)
-        case .laser:
-            break
         case .eraser:
             setEraserDiameter(eraserDiameter + delta * EraserDefaults.diameterAdjustmentStep)
-        case .arrow, .rectangle, .ellipse:
-            setPenWidth(penWidth + delta)
-        case .text:
-            setTextFontSize(textFontSize + delta)
-        case .select, .cover:
+        case .pen, .highlighter, .arrow, .rectangle, .ellipse, .text,
+             .laser, .select, .cover:
             break
         }
     }
@@ -1106,14 +1128,10 @@ final class AppState {
         automaticallyRestoresDisconnectedDisplays = settings.general.automaticallyRestoresDisconnectedDisplays
         showsHelpInSharing = settings.help.showsHelpInSharing
 
-        selectedColorIndex = min(selectedColorIndex, settings.tools.colors.count - 1)
-        penWidth = CGFloat(settings.tools.penWidth)
-        highlighterWidth = CGFloat(settings.tools.highlighterWidth)
         highlighterOpacity = CGFloat(settings.tools.highlighterOpacity)
         laserColor = settings.tools.laserColor.nsColor
         laserSize = CGFloat(settings.tools.laserSize)
         laserTrailDuration = settings.tools.laserTrailDuration
-        textFontSize = CGFloat(settings.tools.textFontSize)
         isShapeRecognitionEnabled = settings.tools.shapeRecognitionEnabled
 
         switch settings.eraser.mode {

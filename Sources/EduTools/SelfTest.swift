@@ -812,6 +812,14 @@ func runSelfTests() -> Int32 {
             zoom.removeValue(forKey: "previewDimming")
             object["zoom"] = zoom
         }
+        if var tools = object["tools"] as? [String: Any] {
+            let memory = AppSettings.default.tools.perToolMemory
+            tools["penWidth"] = memory.pen.size
+            tools["highlighterWidth"] = memory.highlighter.size
+            tools["textFontSize"] = memory.text.size
+            tools.removeValue(forKey: "perToolMemory")
+            object["tools"] = tools
+        }
         if let data = try? JSONSerialization.data(withJSONObject: object),
            let decoded = try? JSONDecoder().decode(AppSettings.self, from: data)
         {
@@ -820,7 +828,7 @@ func runSelfTests() -> Int32 {
     }
     runner.expect(
         compatibleSettingsDecoded,
-        "settings decoding should ignore unknown keys and default a missing preview dimming value"
+        "settings decoding should ignore unknown keys and default missing compatible values"
     )
 
     var computerSpecificSettings = AppSettings.default

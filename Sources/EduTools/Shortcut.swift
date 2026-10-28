@@ -231,6 +231,7 @@ enum AppCommand: Hashable {
     case saveCurrentContent
     case copyCurrentImage
     case togglePalette
+    case toggleRadialPalette
     case stepBack
     case showHelp
     case adjustZoom(Int)
@@ -739,6 +740,15 @@ enum ShortcutCatalog {
                 modes: [.annotation],
                 command: .togglePalette,
                 bindings: [.annotation(keyCode: kVK_Tab, keyEquivalent: "\t", keyCap: "Tab")]
+            ),
+            ShortcutDefinition(
+                id: "palette.radial.toggle",
+                name: "원형 팔레트 열기/접기",
+                iconName: "circle.grid.cross",
+                group: .screenBoardZoom,
+                modes: [.annotation],
+                command: .toggleRadialPalette,
+                bindings: [.annotation(keyCode: kVK_ANSI_M, keyEquivalent: "m", keyCap: "M")]
             ),
             ShortcutDefinition(
                 id: "annotation.step-back",
