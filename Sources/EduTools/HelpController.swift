@@ -68,12 +68,15 @@ private final class HelpItemButton: NSButton {
         setAccessibilityLabel("\(displayName), \(definition.displayKeys)")
 
         let iconView = NSImageView(
-            image: NSImage(
-                systemSymbolName: definition.iconName,
+            image: AppIcon.image(
+                key: definition.id,
+                fallbackSystemName: definition.iconName,
+                selected: isHighlighted,
                 accessibilityDescription: displayName
             ) ?? NSImage()
         )
         iconView.contentTintColor = isHighlighted ? .controlAccentColor : .labelColor
+        iconView.imageScaling = .scaleProportionallyUpOrDown
         iconView.translatesAutoresizingMaskIntoConstraints = false
 
         let nameLabel = NSTextField(labelWithString: displayName)
