@@ -209,12 +209,12 @@ macOS 쪽 선행 작업은 §5.4.
 
 | # | 결정 | 권장 |
 | --- | --- | --- |
-| 1 | 최소 Windows: 11 만 / 10 22H2 포함 | **11 만.** Win10 은 2025-10-14 지원 종료, WGC 테두리 끄기가 Win11(20348+) 부터. Win10 포함 시 줌을 DDA 로 별도 구현 |
+| 1 | 최소 Windows: 11 만 / 10 22H2 포함 | ✅ **결정(2026-10-28): Windows 11 부터.** 매니페스트 `supportedOS` 와 설치기에서 Win11 미만 거부 |
 | 2 | CPU: x64 만 / x64+ARM64 | 둘 다(CI 행렬 한 줄, Snapdragon·VM 대응) |
 | 3 | 실기 장비: 펜 기종·모니터 2대·프로젝터 | 펜 없으면 W1 ③ 불가 |
 | 4 | Windows 쪽 개발 주체(사람 / AI 도구)와 PR 검수자 | macOS 쪽 검수 연결 여부 |
 | 5 | 서명 인증서: OV/EV·보관 방식(토큰/클라우드 HSM)·명의 | 확보 전엔 무서명 시험 배포(SmartScreen 경고 감수) |
-| 6 | 배포 형식: MSIX(+자동 업데이트·테두리 capability) / exe 설치기(+WinSparkle) | W1 ⑥ 결과 보고 결정 |
+| 6 | 배포 형식: MSIX(+자동 업데이트·테두리 capability) / exe 설치기(+WinSparkle) | ✅ **결정(2026-10-28): 일반 설치 파일(exe).** 자동 실행 = `HKCU\…\Run`, 파일 연결 = `HKCU\Software\Classes`, 자동 업데이트 = WinSparkle(또는 자체 확인). 비패키지라 `graphicsCaptureWithoutBorder` capability 를 선언할 수 없을 수 있다 → W1 ⑥ 에서 WGC 테두리를 못 끄면 줌은 DDA 로 |
 | 7 | 음악 종료: Chrome 새 창 닫기 / SMTC 일시정지 / 확장 프로그램 | 새 창 닫기 + SMTC 대체 |
 | 8 | 볼륨 페이드 범위: 시스템 전체 / Chrome 만 | Chrome 만(덜 침습적) — macOS 와 달라짐 |
 | 9 | 줌 중 화상회의 공유에서 판서 숨김 허용 | 허용(아니면 Magnification API 경로 추가) |
