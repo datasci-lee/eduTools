@@ -4,16 +4,29 @@ import QuartzCore
 
 private final class LaserRenderer {
     let layer = CALayer()
-    var color = NSColor.systemRed
-    var radius: CGFloat = 8
+    var color = NSColor.systemRed {
+        didSet { layer.shadowColor = color.cgColor }
+    }
+    var radius: CGFloat = 8 {
+        didSet { layer.shadowRadius = radius }
+    }
     var trailDuration: TimeInterval = 1
+
+    init() {
+        // One glow on the container: per-segment shadows overlap at the joints and read as beads.
+        layer.shadowColor = color.cgColor
+        layer.shadowOpacity = 0.9
+        layer.shadowRadius = radius
+        layer.shadowOffset = .zero
+    }
 
     private var currentDot: CAShapeLayer?
     private var previousLocation: CGPoint?
 
-    func move(to location: CGPoint) {
-        if let previousLocation {
-            addFadingDot(at: previousLocation)
+    /// Hovering shows only the dot; a trail is left only while pressed (mouse button or pen contact).
+    func move(to location: CGPoint, leavesTrail: Bool) {
+        if leavesTrail, let previousLocation {
+            addFadingTrail(from: previousLocation, to: location)
         }
 
         let dot = currentDot ?? makeDot(radius: radius, opacity: 1)
@@ -26,7 +39,7 @@ private final class LaserRenderer {
         dot.position = location
         dot.opacity = 1
         CATransaction.commit()
-        previousLocation = location
+        previousLocation = leavesTrail ? location : nil
     }
 
     func hideCurrent() {
@@ -41,18 +54,33 @@ private final class LaserRenderer {
         previousLocation = nil
     }
 
-    private func addFadingDot(at location: CGPoint) {
-        let dot = makeDot(radius: max(2, radius * 0.625), opacity: 0.7)
-        dot.position = location
-        layer.addSublayer(dot)
+    // A segment per move keeps the trail continuous however far the pointer jumps between events.
+    private func addFadingTrail(from start: CGPoint, to end: CGPoint) {
+        let segment = CAShapeLayer()
+        let path = CGMutablePath()
+        path.move(to: start)
+        path.addLine(to: end)
+        segment.path = path
+        segment.strokeColor = color.cgColor
+        segment.fillColor = nil
+        segment.lineWidth = max(4, radius * 1.25)
+        // Butt caps: adjacent translucent segments must not overlap, or each joint darkens into a dot.
+        segment.lineCap = .butt
+        // An implicit opacity change on a layer that has never been rendered jumps straight to the
+        // final value, so the fade must be an explicit animation.
+        segment.opacity = 0
+        layer.addSublayer(segment)
 
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 0.7
+        fade.toValue = 0
+        fade.duration = trailDuration
+        fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
         CATransaction.begin()
-        CATransaction.setAnimationDuration(trailDuration)
-        CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
-        CATransaction.setCompletionBlock { [weak dot] in
-            dot?.removeFromSuperlayer()
+        CATransaction.setCompletionBlock { [weak segment] in
+            segment?.removeFromSuperlayer()
         }
-        dot.opacity = 0
+        segment.add(fade, forKey: "fade")
         CATransaction.commit()
     }
 
@@ -62,10 +90,6 @@ private final class LaserRenderer {
         dot.bounds = CGRect(x: 0, y: 0, width: diameter, height: diameter)
         dot.path = CGPath(ellipseIn: dot.bounds, transform: nil)
         dot.fillColor = color.cgColor
-        dot.shadowColor = color.cgColor
-        dot.shadowOpacity = 0.9
-        dot.shadowRadius = radius
-        dot.shadowOffset = .zero
         dot.opacity = opacity
         return dot
     }
@@ -385,13 +409,22 @@ final class InkView: NSView {
         if usesEraser(for: event) {
             showEraserCursor(at: location)
         } else if state.currentTool == .laser {
-            laserRenderer.move(to: location)
+            laserRenderer.move(to: location, leavesTrail: false)
         }
     }
 
     override func mouseExited(with event: NSEvent) {
         laserRenderer.hideCurrent()
         eraserCursorLayer.isHidden = true
+    }
+
+    // A pen lifted out of range comes back wherever it lands; ending the trail here keeps the jump
+    // from drawing a streak across the screen.
+    override func tabletProximity(with event: NSEvent) {
+        if !event.isEnteringProximity {
+            laserRenderer.hideCurrent()
+        }
+        super.tabletProximity(with: event)
     }
 
     override func mouseMoved(with event: NSEvent) {
@@ -405,7 +438,7 @@ final class InkView: NSView {
         } else {
             eraserCursorLayer.isHidden = true
             if state.currentTool == .laser {
-                laserRenderer.move(to: location)
+                laserRenderer.move(to: location, leavesTrail: false)
             }
         }
     }
@@ -456,6 +489,7 @@ final class InkView: NSView {
             strokeTool = .highlighter
             width = state.highlighterWidth
         case .laser:
+            laserRenderer.move(to: location, leavesTrail: true)
             return
         case .eraser:
             return
@@ -497,10 +531,19 @@ final class InkView: NSView {
             updateSelectionInteraction(at: location)
             return
         }
+        if state.isAnnotationModeEnabled, state.currentTool == .laser {
+            laserRenderer.move(to: location, leavesTrail: true)
+            return
+        }
         appendActivePoint(from: event)
     }
 
     override func mouseUp(with event: NSEvent) {
+        // The pen's eraser tip erases even while the laser is selected; that path finishes below.
+        if activeEraser == nil, state.isAnnotationModeEnabled, state.currentTool == .laser {
+            laserRenderer.move(to: localLocation(for: event), leavesTrail: false)
+            return
+        }
         if activeEraser != nil {
             let location = localLocation(for: event)
             lastPointerLocation = location
