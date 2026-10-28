@@ -251,8 +251,57 @@ struct AppSettings: Codable, Equatable {
     var zoom: ZoomGroupSettings
     var board: BoardGroupSettings
     var timer: TimerGroupSettings
+    var display: DisplaySettings
     var shortcuts: ShortcutGroupSettings
     var help: HelpGroupSettings
+
+    init(
+        general: GeneralSettings,
+        tools: ToolSettings,
+        eraser: EraserGroupSettings,
+        zoom: ZoomGroupSettings,
+        board: BoardGroupSettings,
+        timer: TimerGroupSettings,
+        display: DisplaySettings = .default,
+        shortcuts: ShortcutGroupSettings,
+        help: HelpGroupSettings
+    ) {
+        self.general = general
+        self.tools = tools
+        self.eraser = eraser
+        self.zoom = zoom
+        self.board = board
+        self.timer = timer
+        self.display = display
+        self.shortcuts = shortcuts
+        self.help = help
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case general
+        case tools
+        case eraser
+        case zoom
+        case board
+        case timer
+        case display
+        case shortcuts
+        case help
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        general = try container.decode(GeneralSettings.self, forKey: .general)
+        tools = try container.decode(ToolSettings.self, forKey: .tools)
+        eraser = try container.decode(EraserGroupSettings.self, forKey: .eraser)
+        zoom = try container.decode(ZoomGroupSettings.self, forKey: .zoom)
+        board = try container.decode(BoardGroupSettings.self, forKey: .board)
+        timer = try container.decode(TimerGroupSettings.self, forKey: .timer)
+        display = try container.decodeIfPresent(DisplaySettings.self, forKey: .display)
+            ?? .default
+        shortcuts = try container.decode(ShortcutGroupSettings.self, forKey: .shortcuts)
+        help = try container.decode(HelpGroupSettings.self, forKey: .help)
+    }
 
     static let `default` = AppSettings(
         general: GeneralSettings(
@@ -321,6 +370,7 @@ struct AppSettings: Codable, Equatable {
             lessonBadgeOpacity: 0.9,
             lessonDisplayMode: "remaining"
         ),
+        display: .default,
         shortcuts: ShortcutGroupSettings(appModifier: .controlOption, overrides: [:]),
         help: HelpGroupSettings(showsHelpInSharing: false)
     )
@@ -429,6 +479,12 @@ enum SettingsValidator {
             guard !identifier.isEmpty, PortableShortcut(serialized: portable) != nil else {
                 throw SettingsValidationError.invalidValue("단축키 \(identifier)")
             }
+        }
+
+        do {
+            try DisplayPresetValidator.validate(settings.display)
+        } catch {
+            throw SettingsValidationError.invalidValue(error.localizedDescription)
         }
     }
 
@@ -595,6 +651,7 @@ enum SettingsBundle: String, Codable, CaseIterable, Hashable {
     case zoom
     case board
     case timer
+    case display
     case shortcuts
     case help
 
@@ -606,10 +663,15 @@ enum SettingsBundle: String, Codable, CaseIterable, Hashable {
         case .zoom: return "줌"
         case .board: return "보드"
         case .timer: return "타이머"
+        case .display: return "화면 구성"
         case .shortcuts: return "단축키"
         case .help: return "도움말"
         }
     }
+}
+
+struct DisplayPresetBundle: Codable, Equatable {
+    var presets: [DisplayPreset]
 }
 
 struct SettingsPayload: Codable, Equatable {
@@ -619,6 +681,7 @@ struct SettingsPayload: Codable, Equatable {
     var zoom: ZoomGroupSettings?
     var board: BoardGroupSettings?
     var timer: TimerGroupSettings?
+    var display: DisplayPresetBundle?
     var shortcuts: ShortcutGroupSettings?
     var help: HelpGroupSettings?
 }
@@ -671,6 +734,9 @@ enum SettingsTransfer {
                 zoom: bundles.contains(.zoom) ? settings.zoom : nil,
                 board: bundles.contains(.board) ? settings.board : nil,
                 timer: bundles.contains(.timer) ? settings.timer : nil,
+                display: bundles.contains(.display)
+                    ? DisplayPresetBundle(presets: settings.display.presets)
+                    : nil,
                 shortcuts: bundles.contains(.shortcuts) ? settings.shortcuts : nil,
                 help: bundles.contains(.help) ? settings.help : nil
             )
@@ -724,6 +790,11 @@ enum SettingsTransfer {
         if selectedBundles.contains(.zoom), let value = payload.zoom { result.zoom = value }
         if selectedBundles.contains(.board), let value = payload.board { result.board = value }
         if selectedBundles.contains(.timer), let value = payload.timer { result.timer = value }
+        if selectedBundles.contains(.display),
+           let value = payload.display
+        {
+            result.display.presets = value.presets
+        }
         if selectedBundles.contains(.shortcuts), let value = payload.shortcuts {
             result.shortcuts = value
         }
@@ -744,7 +815,7 @@ enum SettingsTransfer {
         )
         let currentValues = try flattenedValues(current)
         let importedValues = try flattenedValues(imported)
-        return importedValues.keys.sorted().compactMap { key in
+        var result: [SettingsChange] = importedValues.keys.sorted().compactMap { key in
             guard currentValues[key] != importedValues[key] else { return nil }
             return SettingsChange(
                 id: key,
@@ -752,6 +823,20 @@ enum SettingsTransfer {
                 importedValue: importedValues[key] ?? "—"
             )
         }
+        if selectedBundles.contains(.display),
+           let display = document.payload.display,
+           current.display.presets != display.presets
+        {
+            result.removeAll { $0.id.hasPrefix("display.presets") }
+            result.append(
+                SettingsChange(
+                    id: "화면 구성",
+                    currentValue: "프리셋 \(current.display.presets.count)개",
+                    importedValue: "프리셋 \(display.presets.count)개 추가/교체"
+                )
+            )
+        }
+        return result.sorted { $0.id < $1.id }
     }
 
     private static func flattenedValues<T: Encodable>(_ value: T) throws -> [String: String] {

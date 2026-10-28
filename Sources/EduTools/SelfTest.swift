@@ -808,6 +808,7 @@ func runSelfTests() -> Int32 {
        var object = try? JSONSerialization.jsonObject(with: settingsJSON) as? [String: Any]
     {
         object["futureSetting"] = ["enabled": true]
+        object.removeValue(forKey: "display")
         if var zoom = object["zoom"] as? [String: Any] {
             zoom.removeValue(forKey: "previewDimming")
             object["zoom"] = zoom
@@ -820,16 +821,57 @@ func runSelfTests() -> Int32 {
     }
     runner.expect(
         compatibleSettingsDecoded,
-        "settings decoding should ignore unknown keys and default a missing preview dimming value"
+        "settings decoding should ignore unknown keys and default missing display and preview dimming values"
     )
 
     var computerSpecificSettings = AppSettings.default
     computerSpecificSettings.general.archiveFolderPath = "/Volumes/Classroom/Archive"
+    computerSpecificSettings.display = DisplaySettings(
+        autoSwitchEnabled: true,
+        presets: [
+            DisplayPreset(
+                name: "교실",
+                main: PresetScreen(
+                    monitors: [
+                        PresetMonitor(
+                            identity: DisplayIdentity(
+                                uuid: "display-test-uuid",
+                                vendor: 1,
+                                model: 2,
+                                serial: 3,
+                                name: "교실 모니터",
+                                kind: .external
+                            ),
+                            autoMatch: true
+                        )
+                    ]
+                )
+            ),
+        ]
+    )
     let defaultExport = try? SettingsTransfer.exportDocument(settings: computerSpecificSettings)
+    let defaultExportData = defaultExport.flatMap { try? SettingsTransfer.encode($0) }
+    let exportedSettingsObject = defaultExportData.flatMap {
+        try? JSONSerialization.jsonObject(with: $0) as? [String: Any]
+    }
+    let exportedPayloadObject = exportedSettingsObject?["payload"] as? [String: Any]
+    let exportedDisplayObject = exportedPayloadObject?["display"] as? [String: Any]
+    let importedDefaultExport = defaultExport.flatMap {
+        try? SettingsTransfer.appliedSettings(
+            current: .default,
+            document: $0,
+            selectedBundles: Set($0.includedBundles)
+        )
+    }
     runner.expect(
         defaultExport?.includesComputerSpecific == false
-            && defaultExport?.payload.general?.archiveFolderPath == nil,
-        "settings export should exclude computer-specific values by default"
+            && defaultExport?.payload.general?.archiveFolderPath == nil
+            && defaultExport?.payload.display?.presets == computerSpecificSettings.display.presets
+            && defaultExport?.includedBundles.contains(.display) == true
+            && exportedDisplayObject?["autoSwitchEnabled"] == nil
+            && importedDefaultExport?.display.presets == computerSpecificSettings.display.presets
+            && importedDefaultExport?.display.autoSwitchEnabled == false,
+        "settings export should include display presets but exclude computer-specific switches and paths"
     )
 
     runner.expect(
