@@ -1475,10 +1475,10 @@ final class RadialPaletteController: NSObject {
             let recognitionDefinition = requiredDefinition(for: .toggleShapeRecognition)
             return [colorOptions(), widthOptions(
                 values: RadialPaletteMetrics.writingWidths,
-                selected: state.penWidth,
+                selected: rememberedWidth(for: tool),
                 propertyName: "굵기",
                 idPrefix: "pen.width",
-                apply: { [weak state = self.state] in state?.setPenWidth($0) }
+                apply: { [weak state = self.state] in state?.setWidth($0, for: tool) }
             ), booleanOptions(
                 name: recognitionDefinition.name,
                 propertyName: "보정",
@@ -1489,34 +1489,34 @@ final class RadialPaletteController: NSObject {
         case .highlighter:
             return [colorOptions(), widthOptions(
                 values: RadialPaletteMetrics.highlighterWidths,
-                selected: state.highlighterWidth,
+                selected: rememberedWidth(for: tool),
                 propertyName: "굵기",
                 idPrefix: "highlighter.width",
-                apply: { [weak state = self.state] in state?.setHighlighterWidth($0) }
+                apply: { [weak state = self.state] in state?.setWidth($0, for: tool) }
             ), opacityOptions()]
         case .text:
             return [colorOptions(), widthOptions(
                 values: RadialPaletteMetrics.textSizes,
-                selected: state.textFontSize,
+                selected: rememberedWidth(for: tool),
                 propertyName: "크기",
                 idPrefix: "text.size",
-                apply: { [weak state = self.state] in state?.setTextFontSize($0) }
+                apply: { [weak state = self.state] in state?.setWidth($0, for: tool) }
             )]
         case .arrow:
             return [colorOptions(), widthOptions(
                 values: RadialPaletteMetrics.writingWidths,
-                selected: state.penWidth,
+                selected: rememberedWidth(for: tool),
                 propertyName: "굵기",
                 idPrefix: "arrow.width",
-                apply: { [weak state = self.state] in state?.setPenWidth($0) }
+                apply: { [weak state = self.state] in state?.setWidth($0, for: tool) }
             ), arrowStyleOptions()]
         case .rectangle, .ellipse:
             return [colorOptions(), widthOptions(
                 values: RadialPaletteMetrics.writingWidths,
-                selected: state.penWidth,
+                selected: rememberedWidth(for: tool),
                 propertyName: "굵기",
                 idPrefix: "shape.width",
-                apply: { [weak state = self.state] in state?.setPenWidth($0) }
+                apply: { [weak state = self.state] in state?.setWidth($0, for: tool) }
             )]
         case .eraser:
             return eraserOptions()
@@ -1525,6 +1525,13 @@ final class RadialPaletteController: NSObject {
         case .select, .cover:
             return []
         }
+    }
+
+    private func rememberedWidth(for tool: InkTool) -> CGFloat {
+        guard let width = state.width(for: tool) else {
+            preconditionFailure("Tool does not have a remembered size: \(tool.rawValue)")
+        }
+        return width
     }
 
     private func colorOptions() -> RadialPaletteOptionGroup {
@@ -2059,11 +2066,10 @@ final class RadialPaletteController: NSObject {
     private func centerStrokeWidth() -> CGFloat {
         let value: CGFloat
         switch state.currentTool {
-        case .pen, .arrow, .rectangle, .ellipse: value = state.penWidth
-        case .highlighter: value = state.highlighterWidth
+        case .pen, .highlighter, .arrow, .rectangle, .ellipse: value = state.currentWidth
         case .laser: value = state.laserSize
         case .eraser: value = state.eraserDiameter / 3
-        case .text: value = state.textFontSize / 3
+        case .text: value = state.currentWidth / 3
         case .select, .cover: value = 2
         }
         return min(max(value / 3, 2), 6)

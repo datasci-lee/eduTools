@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-enum InkTool: String, Hashable, Codable {
+enum InkTool: String, Hashable, Codable, CaseIterable {
     case pen
     case highlighter
     case laser
@@ -29,6 +29,59 @@ enum InkTool: String, Hashable, Codable {
     }
 }
 
+struct ToolMemorySlot {
+    let keyPath: WritableKeyPath<PerToolMemorySettings, ToolMemorySetting>
+    let sizeRange: ClosedRange<Double>
+    let legacySizeKeyPath: WritableKeyPath<ToolSettings, Double>?
+}
+
+extension InkTool {
+    var memorySlot: ToolMemorySlot? {
+        switch self {
+        case .pen:
+            return ToolMemorySlot(
+                keyPath: \PerToolMemorySettings.pen,
+                sizeRange: Double(InkDefaults.minimumWidth)...Double(InkDefaults.maximumWidth),
+                legacySizeKeyPath: \ToolSettings.penWidth
+            )
+        case .highlighter:
+            return ToolMemorySlot(
+                keyPath: \PerToolMemorySettings.highlighter,
+                sizeRange: Double(InkDefaults.minimumWidth)...Double(InkDefaults.maximumWidth),
+                legacySizeKeyPath: \ToolSettings.highlighterWidth
+            )
+        case .arrow:
+            return ToolMemorySlot(
+                keyPath: \PerToolMemorySettings.arrow,
+                sizeRange: Double(InkDefaults.minimumWidth)...Double(InkDefaults.maximumWidth),
+                legacySizeKeyPath: nil
+            )
+        case .rectangle:
+            return ToolMemorySlot(
+                keyPath: \PerToolMemorySettings.rectangle,
+                sizeRange: Double(InkDefaults.minimumWidth)...Double(InkDefaults.maximumWidth),
+                legacySizeKeyPath: nil
+            )
+        case .ellipse:
+            return ToolMemorySlot(
+                keyPath: \PerToolMemorySettings.ellipse,
+                sizeRange: Double(InkDefaults.minimumWidth)...Double(InkDefaults.maximumWidth),
+                legacySizeKeyPath: nil
+            )
+        case .text:
+            return ToolMemorySlot(
+                keyPath: \PerToolMemorySettings.text,
+                sizeRange: Double(InkDefaults.minimumTextFontSize)...Double(
+                    InkDefaults.maximumTextFontSize
+                ),
+                legacySizeKeyPath: \ToolSettings.textFontSize
+            )
+        case .laser, .eraser, .select, .cover:
+            return nil
+        }
+    }
+}
+
 enum InkStrokeTool: String, Equatable, Codable {
     case pen
     case highlighter
@@ -39,7 +92,6 @@ enum InkStrokeTool: String, Equatable, Codable {
 
 enum InkDefaults {
     static var colors: [NSColor] { AppSettings.default.tools.colors.map(\.nsColor) }
-    static let initialColorIndex = 0
     static var penWidth: CGFloat { CGFloat(AppSettings.default.tools.penWidth) }
     static var highlighterWidth: CGFloat { CGFloat(AppSettings.default.tools.highlighterWidth) }
     static var highlighterOpacity: CGFloat { CGFloat(AppSettings.default.tools.highlighterOpacity) }

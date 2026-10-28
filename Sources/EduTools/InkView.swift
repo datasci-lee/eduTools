@@ -529,10 +529,10 @@ final class InkView: NSView {
         switch state.currentTool {
         case .pen:
             strokeTool = .pen
-            width = state.penWidth
+            width = state.currentWidth
         case .highlighter:
             strokeTool = .highlighter
-            width = state.highlighterWidth
+            width = state.currentWidth
         case .laser:
             laserRenderer.move(to: location, leavesTrail: true)
             return
@@ -728,7 +728,7 @@ final class InkView: NSView {
         activeShape = ActiveShape(
             kind: kind,
             color: state.selectedColor,
-            width: state.penWidth,
+            width: state.currentWidth,
             start: point,
             isConstrained: event.modifierFlags.contains(.shift),
             end: point

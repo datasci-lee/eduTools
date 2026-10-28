@@ -334,18 +334,12 @@ final class PaletteController: NSObject {
         eraserAreaShapeButton?.imagePosition = .noImage
         eraserAreaShapeButton?.toolTip = "영역 지우개: \(state.eraserAreaShape.displayName)"
         switch state.currentTool {
-        case .pen:
-            widthLabel.stringValue = formattedSize(state.penWidth)
-        case .highlighter:
-            widthLabel.stringValue = formattedSize(state.highlighterWidth)
+        case .pen, .highlighter, .arrow, .rectangle, .ellipse, .text:
+            widthLabel.stringValue = formattedSize(state.currentWidth)
         case .laser:
             widthLabel.stringValue = "—"
         case .eraser:
             widthLabel.stringValue = formattedSize(state.eraserDiameter)
-        case .arrow, .rectangle, .ellipse:
-            widthLabel.stringValue = formattedSize(state.penWidth)
-        case .text:
-            widthLabel.stringValue = formattedSize(state.textFontSize)
         case .select, .cover:
             widthLabel.stringValue = "—"
         }

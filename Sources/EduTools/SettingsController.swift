@@ -449,6 +449,25 @@ private struct SettingsRootView: View {
         )
     }
 
+    private func toolSizeBinding(_ tool: InkTool) -> Binding<Double> {
+        guard let slot = tool.memorySlot else {
+            preconditionFailure("Tool does not have a remembered size: \(tool.rawValue)")
+        }
+        return Binding(
+            get: {
+                store.settings.tools.perToolMemory[keyPath: slot.keyPath].size
+            },
+            set: { value in
+                store.update {
+                    $0.tools.perToolMemory[keyPath: slot.keyPath].size = value
+                    if let legacySizeKeyPath = slot.legacySizeKeyPath {
+                        $0.tools[keyPath: legacySizeKeyPath] = value
+                    }
+                }
+            }
+        )
+    }
+
     private var generalTab: some View {
         Form {
             Toggle(
@@ -507,8 +526,13 @@ private struct SettingsRootView: View {
                     }
                 }
             }
-            slider("펜 기본 굵기", keyPath: \.tools.penWidth, range: 1...30, step: 1)
-            slider("형광펜 기본 굵기", keyPath: \.tools.highlighterWidth, range: 1...30, step: 1)
+            slider("펜 기본 굵기", binding: toolSizeBinding(.pen), range: 1...30, step: 1)
+            slider(
+                "형광펜 기본 굵기",
+                binding: toolSizeBinding(.highlighter),
+                range: 1...30,
+                step: 1
+            )
             slider("형광펜 투명도", keyPath: \.tools.highlighterOpacity, range: 0.05...1, step: 0.05)
             ColorPicker("레이저 색", selection: colorBinding(\.tools.laserColor), supportsOpacity: false)
             slider("레이저 크기", keyPath: \.tools.laserSize, range: 2...50, step: 1)
