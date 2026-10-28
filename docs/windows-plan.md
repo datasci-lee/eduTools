@@ -211,12 +211,12 @@ macOS 쪽 선행 작업은 §5.4.
 | --- | --- | --- |
 | 1 | 최소 Windows: 11 만 / 10 22H2 포함 | ✅ **결정(2026-10-28): Windows 11 부터.** 매니페스트 `supportedOS` 와 설치기에서 Win11 미만 거부 |
 | 2 | CPU: x64 만 / x64+ARM64 | 둘 다(CI 행렬 한 줄, Snapdragon·VM 대응) |
-| 3 | 실기 장비: 펜 기종·모니터 2대·프로젝터 | 펜 없으면 W1 ③ 불가 |
+| 3 | 실기 장비: 펜 기종·모니터 2대·프로젝터 | ✅ **결정(2026-10-28): 펜 + 노트북 내장 화면·외부 모니터·빔 프로젝터(배율이 서로 다름).** 펜 기종은 확인 필요 |
 | 4 | Windows 쪽 개발 주체(사람 / AI 도구)와 PR 검수자 | macOS 쪽 검수 연결 여부 |
 | 5 | 서명 인증서: OV/EV·보관 방식(토큰/클라우드 HSM)·명의 | 확보 전엔 무서명 시험 배포(SmartScreen 경고 감수) |
 | 6 | 배포 형식: MSIX(+자동 업데이트·테두리 capability) / exe 설치기(+WinSparkle) | ✅ **결정(2026-10-28): 일반 설치 파일(exe).** 자동 실행 = `HKCU\…\Run`, 파일 연결 = `HKCU\Software\Classes`, 자동 업데이트 = WinSparkle(또는 자체 확인). 비패키지라 `graphicsCaptureWithoutBorder` capability 를 선언할 수 없을 수 있다 → W1 ⑥ 에서 WGC 테두리를 못 끄면 줌은 DDA 로 |
 | 7 | 음악 종료: Chrome 새 창 닫기 / SMTC 일시정지 / 확장 프로그램 | 새 창 닫기 + SMTC 대체 |
-| 8 | 볼륨 페이드 범위: 시스템 전체 / Chrome 만 | Chrome 만(덜 침습적) — macOS 와 달라짐 |
+| 8 | 볼륨 페이드 범위: 시스템 전체 / Chrome 만 | ✅ **결정(2026-10-28): 시스템 전체**(macOS 와 같음, `IAudioEndpointVolume`) |
 | 9 | 줌 중 화상회의 공유에서 판서 숨김 허용 | 허용(아니면 Magnification API 경로 추가) |
 | 10 | 계획서를 저장소 `docs/windows-plan.md` 로 올릴지 | 올림(2026-10-28, 이 파일) |
 | 11 | iPad 동반 앱(설계서 언급) 범위 | 이번 범위 밖 |
