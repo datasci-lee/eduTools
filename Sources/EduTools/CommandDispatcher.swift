@@ -4,6 +4,7 @@ import Foundation
 final class AppCommandDispatcher {
     private let state: AppState
     weak var paletteController: PaletteController?
+    weak var radialPaletteController: RadialPaletteController?
     weak var helpController: HelpController?
     weak var overlayController: OverlayController?
     weak var timerCoordinator: TimerCoordinator?
@@ -163,7 +164,9 @@ final class AppCommandDispatcher {
         case .togglePalette:
             state.togglePaletteVisibility()
         case .stepBack:
-            if helpController?.isVisible == true {
+            if radialPaletteController?.collapseIfExpanded() == true {
+                return
+            } else if helpController?.isVisible == true {
                 helpController?.close()
             } else if let targetDisplayUUID = displayUUID ?? state.activeDisplayUUID,
                       state.clearSelection(on: targetDisplayUUID)

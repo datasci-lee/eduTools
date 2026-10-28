@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusMenu: StatusMenu?
     private var overlayController: OverlayController?
     private var paletteController: PaletteController?
+    private var radialPaletteController: RadialPaletteController?
     private var helpController: HelpController?
     private var timerCoordinator: TimerCoordinator?
     private var zoomController: ZoomController?
@@ -42,16 +43,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.helpController = helpController
         dispatcher.helpController = helpController
 
-        let paletteController = PaletteController(state: appState, dispatcher: dispatcher)
+        let settingsController = SettingsController(settingsStore: settingsStore)
+        self.settingsController = settingsController
+
+        let paletteController = PaletteController(
+            state: appState,
+            dispatcher: dispatcher,
+            settingsStore: settingsStore
+        )
         self.paletteController = paletteController
         dispatcher.paletteController = paletteController
+
+        let radialPaletteController = RadialPaletteController(
+            state: appState,
+            dispatcher: dispatcher,
+            settingsStore: settingsStore,
+            openSettings: { [weak settingsController] in
+                settingsController?.showSettings()
+            }
+        )
+        self.radialPaletteController = radialPaletteController
+        dispatcher.radialPaletteController = radialPaletteController
 
         let timerCoordinator = TimerCoordinator(settingsStore: settingsStore)
         self.timerCoordinator = timerCoordinator
         dispatcher.timerCoordinator = timerCoordinator
 
-        let settingsController = SettingsController(settingsStore: settingsStore)
-        self.settingsController = settingsController
         let statusMenu = StatusMenu(
             state: appState,
             dispatcher: dispatcher,

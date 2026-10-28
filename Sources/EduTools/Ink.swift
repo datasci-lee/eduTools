@@ -43,12 +43,16 @@ enum InkDefaults {
     static var penWidth: CGFloat { CGFloat(AppSettings.default.tools.penWidth) }
     static var highlighterWidth: CGFloat { CGFloat(AppSettings.default.tools.highlighterWidth) }
     static var highlighterOpacity: CGFloat { CGFloat(AppSettings.default.tools.highlighterOpacity) }
+    static let minimumHighlighterOpacity: CGFloat = 0.05
+    static let maximumHighlighterOpacity: CGFloat = 1
     static let minimumWidth: CGFloat = 1
     static let maximumWidth: CGFloat = 30
     static var textFontSize: CGFloat { CGFloat(AppSettings.default.tools.textFontSize) }
     static let minimumTextFontSize: CGFloat = 8
     static let maximumTextFontSize: CGFloat = 96
     static var laserTrailDuration: TimeInterval { AppSettings.default.tools.laserTrailDuration }
+    static let minimumLaserTrailDuration: TimeInterval = 0.1
+    static let maximumLaserTrailDuration: TimeInterval = 10
     static let undoLimit = 100
 }
 

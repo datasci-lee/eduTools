@@ -31,6 +31,8 @@ private final class PaletteDragHandle: NSView {
 }
 
 final class PaletteController: NSObject {
+    static let windowLevel = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 2)
+
     private enum Orientation: String {
         case horizontal
         case vertical
@@ -44,6 +46,7 @@ final class PaletteController: NSObject {
 
     private let state: AppState
     private let dispatcher: AppCommandDispatcher
+    private let settingsStore: SettingsStore
     private let defaults: UserDefaults
     private let panel: PalettePanel
     private let rootView = NSVisualEffectView()
@@ -60,6 +63,7 @@ final class PaletteController: NSObject {
     private var settingsObserverIdentifier: UUID?
     private var visibilityObserverIdentifier: UUID?
     private var boardObserverIdentifier: UUID?
+    private var paletteStyleObserverIdentifier: UUID?
     private var notificationObservers: [NSObjectProtocol] = []
     private var orientation: Orientation
     private var isApplyingFrame = false
@@ -68,10 +72,12 @@ final class PaletteController: NSObject {
     init(
         state: AppState,
         dispatcher: AppCommandDispatcher,
+        settingsStore: SettingsStore,
         defaults: UserDefaults = .standard
     ) {
         self.state = state
         self.dispatcher = dispatcher
+        self.settingsStore = settingsStore
         self.defaults = defaults
         orientation = Orientation(rawValue: defaults.string(forKey: DefaultsKey.orientation) ?? "")
             ?? .horizontal
@@ -99,7 +105,7 @@ final class PaletteController: NSObject {
         panel.isMovableByWindowBackground = false
         panel.isReleasedWhenClosed = false
         panel.animationBehavior = .none
-        panel.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 2)
+        panel.level = Self.windowLevel
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.sharingType = .none
 
@@ -252,6 +258,9 @@ final class PaletteController: NSObject {
         boardObserverIdentifier = state.addBoardObserver { [weak self] in
             self?.updateBoardSelection()
         }
+        paletteStyleObserverIdentifier = settingsStore.addObserver { [weak self] _ in
+            self?.updateVisibility()
+        }
 
         notificationObservers.append(
             NotificationCenter.default.addObserver(
@@ -274,7 +283,10 @@ final class PaletteController: NSObject {
     }
 
     private func updateVisibility() {
-        if state.isAnnotationModeEnabled, state.isPaletteVisible {
+        if state.isAnnotationModeEnabled,
+           state.isPaletteVisible,
+           settingsStore.settings.tools.paletteStyle == .linear
+        {
             ensureCurrentScreenExists()
             panel.orderFrontRegardless()
         } else {
@@ -497,6 +509,9 @@ final class PaletteController: NSObject {
         }
         if let boardObserverIdentifier {
             state.removeBoardObserver(boardObserverIdentifier)
+        }
+        if let paletteStyleObserverIdentifier {
+            settingsStore.removeObserver(paletteStyleObserverIdentifier)
         }
         for observer in notificationObservers {
             NotificationCenter.default.removeObserver(observer)

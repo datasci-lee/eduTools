@@ -443,6 +443,12 @@ private struct SettingsRootView: View {
 
     private var toolsTab: some View {
         Form {
+            Picker("팔레트 모양", selection: binding(\.tools.paletteStyle)) {
+                ForEach(PaletteStyle.allCases, id: \.self) { style in
+                    Label(style.displayName, systemImage: style.iconName).tag(style)
+                }
+            }
+            .pickerStyle(.segmented)
             Section("색상 프리셋") {
                 HStack {
                     ForEach(store.settings.tools.colors.indices, id: \.self) { index in
