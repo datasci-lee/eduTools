@@ -209,6 +209,7 @@ private final class ZoomView: NSView {
     var scrollInput: ((NSEvent) -> Bool)?
     var magnifyInput: ((NSEvent) -> Bool)?
 
+    private let state: AppState
     private let dispatcher: AppCommandDispatcher
     private let displayUUID: String
     private let imageLayer = CALayer()
@@ -229,10 +230,27 @@ private final class ZoomView: NSView {
     override var acceptsFirstResponder: Bool { true }
 
     var preferredFirstResponder: NSResponder {
-        if renderedState?.isFrozen == true, renderedState?.isPreviewing == false {
+        if renderedState?.isPreviewing == false,
+           (renderedState?.isFrozen == true || state.isAnnotationModeEnabled)
+        {
             return inkView
         }
         return self
+    }
+
+    func shouldPreserveFirstResponder(_ responder: NSResponder?) -> Bool {
+        let preferredResponder = preferredFirstResponder
+        if responder === preferredResponder { return true }
+        guard preferredResponder === inkView,
+              let responderView = responder as? NSView
+        else {
+            return false
+        }
+        return responderView.isDescendant(of: inkView)
+    }
+
+    var isInkGestureInProgress: Bool {
+        inkView.isGestureInProgress
     }
 
     init(
@@ -242,6 +260,7 @@ private final class ZoomView: NSView {
         displayUUID: String,
         requestKeyFocus: @escaping () -> Void
     ) {
+        self.state = state
         self.dispatcher = dispatcher
         self.displayUUID = displayUUID
         inkView = InkView(
@@ -320,7 +339,7 @@ private final class ZoomView: NSView {
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard bounds.contains(point) else { return nil }
-        if renderedState?.isFrozen == true, renderedState?.isPreviewing == false {
+        if renderedState?.isPreviewing == false {
             let inkPoint = inkView.convert(point, from: self)
             return inkView.hitTest(inkPoint) ?? inkView
         }
@@ -363,7 +382,8 @@ private final class ZoomView: NSView {
     func render(_ state: ZoomSessionState) {
         let previewChanged = renderedState?.isPreviewing != state.isPreviewing
         renderedState = state
-        inkView.isHidden = !state.isFrozen
+        inkView.isHidden = false
+        inkView.inputMappingMode = state.isFrozen ? .throughPresentation : .identity
         applyGeometry(state, animated: previewChanged)
     }
 
@@ -618,6 +638,7 @@ final class ZoomController {
     private var zoomView: ZoomView?
     private var captureSession: ZoomCaptureSession?
     private var zoomObserverIdentifier: UUID?
+    private var annotationModeObserverIdentifier: UUID?
     private var screenObserver: NSObjectProtocol?
     private var targetScreenFrame: CGRect?
     private var targetDisplayUUID: String?
@@ -698,6 +719,9 @@ final class ZoomController {
         panel.orderFrontRegardless()
         NSApp.activate()
         focusZoomPanel()
+        annotationModeObserverIdentifier = state.addAnnotationModeObserver { [weak self] _ in
+            self?.focusZoomPanel()
+        }
 
         let scale = screen.backingScaleFactor
         let captureSession = ZoomCaptureSession(
@@ -720,7 +744,13 @@ final class ZoomController {
     }
 
     func stopZoom() {
-        guard state.isZoomEnabled || panel != nil else { return }
+        guard state.isZoomEnabled || panel != nil || annotationModeObserverIdentifier != nil else {
+            return
+        }
+        if let annotationModeObserverIdentifier {
+            state.removeAnnotationModeObserver(annotationModeObserverIdentifier)
+            self.annotationModeObserverIdentifier = nil
+        }
         if let session = state.zoomSession,
            session.isFrozen,
            !session.isPreviewing,
@@ -762,23 +792,29 @@ final class ZoomController {
     }
 
     func adjustMagnification(by steps: Int) {
-        guard steps != 0, let magnification = state.adjustZoomMagnification(by: steps) else {
+        guard !isInkGestureActive(),
+              steps != 0,
+              let magnification = state.adjustZoomMagnification(by: steps)
+        else {
             return
         }
         zoomView?.showMessage(magnificationLabel(magnification))
     }
 
     func resetMagnification() {
+        guard !isInkGestureActive() else { return }
         guard let magnification = state.resetZoomMagnification() else { return }
         zoomView?.showMessage(magnificationLabel(magnification))
     }
 
     func cycleFollowMode() {
+        guard !isInkGestureActive() else { return }
         guard let mode = state.cycleZoomFollowMode() else { return }
         zoomView?.showMessage("따라가기: \(mode.displayName)")
     }
 
     func toggleFreeze() {
+        guard !isInkGestureActive() else { return }
         guard let session = state.zoomSession else { return }
         if !session.isFrozen, latestFrame == nil {
             NSLog("EduTools: freeze zoom ignored until the first capture frame arrives")
@@ -820,6 +856,7 @@ final class ZoomController {
     }
 
     func beginPreview() {
+        guard !isInkGestureActive() else { return }
         guard let session = state.zoomSession, !session.isPreviewing else { return }
         previewOriginalFrame = latestFrame
         state.beginZoomPreview()
@@ -902,6 +939,7 @@ final class ZoomController {
         zoomView?.setFrameImage(frame)
 
         guard !session.isPreviewing,
+              !isInkGestureActive(),
               let screenFrame = targetScreenFrame
         else {
             return
@@ -917,6 +955,7 @@ final class ZoomController {
 
     private func pointerMoved(to point: CGPoint) {
         guard let session = state.zoomSession else { return }
+        guard !isInkGestureActive() else { return }
         if session.isPreviewing {
             state.setZoomCenter(point)
         } else if !session.isFrozen {
@@ -981,6 +1020,10 @@ final class ZoomController {
         else {
             return false
         }
+        guard !isInkGestureActive() else {
+            scrollAccumulator = 0
+            return true
+        }
         if event.phase == .began {
             scrollAccumulator = 0
         }
@@ -999,6 +1042,10 @@ final class ZoomController {
 
     private func handleMagnify(_ event: NSEvent) -> Bool {
         guard state.isZoomEnabled else { return false }
+        guard !isInkGestureActive() else {
+            magnifyAccumulator = 0
+            return true
+        }
         if event.phase == .began {
             magnifyAccumulator = 0
         }
@@ -1015,8 +1062,17 @@ final class ZoomController {
         return true
     }
 
+    private func isInkGestureActive() -> Bool {
+        zoomView?.isInkGestureInProgress == true
+    }
+
     private func focusZoomPanel() {
         guard let panel, let zoomView else { return }
+        guard !panel.isKeyWindow
+                || !zoomView.shouldPreserveFirstResponder(panel.firstResponder)
+        else {
+            return
+        }
         panel.makeKeyAndOrderFront(nil)
         panel.makeFirstResponder(zoomView.preferredFirstResponder)
     }
@@ -1060,6 +1116,9 @@ final class ZoomController {
 
     deinit {
         captureSession?.stop()
+        if let annotationModeObserverIdentifier {
+            state.removeAnnotationModeObserver(annotationModeObserverIdentifier)
+        }
         if let zoomObserverIdentifier {
             state.removeZoomObserver(zoomObserverIdentifier)
         }
