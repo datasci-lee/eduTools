@@ -102,7 +102,7 @@ serde 세부(Swift Codable 과 맞출 것):
 | 펜 압력·지우개 끝 | `WM_POINTER*` + `GetPointerPenInfo(History)`, 압력 0~1024, `PEN_FLAG_ERASER`/`PEN_FLAG_INVERTED` | Wacom 은 드라이버 "Windows Ink 사용" 이 꺼져 있으면 WM_POINTER 가 안 온다 → 첫 실행 안내. 합쳐진 점은 History 로 받아야 스무딩이 안 끊긴다 |
 | 실시간 줌 | Win11: **WGC**(`CreateForMonitor`, `CreateFreeThreaded` 프레임 풀) → D3D11 → D2D. 대안 Desktop Duplication | macOS 는 스트림별 자기 앱 제외(`SCContentFilter`). Windows 의 스트림별 창 제외는 Magnification API(`MagSetWindowFilterList` EXCLUDE)뿐. 기본안: 줌 창 `WDA_EXCLUDEFROMCAPTURE`(macOS 줌 패널 `sharingType=.none` 과 같음) + 줌 중 그 모니터 오버레이 숨김(라이브 줌엔 macOS 도 판서를 안 그린다 — `ZoomController.swift:302` 는 정지 줌에서만 inkView 표시). 차이: 줌 중 화상회의 공유에도 판서가 안 보인다. **WGC 노란 테두리 끄기(`IsBorderRequired`)는 10.0.20348+ 이고 사용자 동의 + 패키지 capability `graphicsCaptureWithoutBorder` 필요** → Win10 은 테두리 불가. DDA 는 테두리 없음 대신 하이브리드 GPU·`ACCESS_LOST`(모드 변경·UAC) 처리, 커서 직접 합성 |
 | 공유에서 창 숨기기 | `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` — 팔레트·수업 배지·도움말(설정에 따라) | Win10 2004+, top-level·자기 프로세스 창만, DWM 합성 중에만. 2004 미만은 `WDA_MONITOR`(검은 사각형)로 동작. 런타임 토글 가능 |
-| 쉬는 시간 음악 | 열기: `chrome.exe --new-window <URL>`(없으면 `ShellExecuteW`). 종료: 그 **창**을 `EnumWindows`(`Chrome_WidgetWin_1`+제목)로 찾아 `WM_CLOSE`, 실패 시 SMTC(`GlobalSystemMediaTransportControlsSessionManager`)로 Chrome 세션만 일시정지, 최후 `VK_MEDIA_PLAY_PAUSE` | **CDP 불가**: Chrome 136+ 는 기본 프로필에서 `--remote-debugging-port` 를 무시하는데 Premium 로그인은 기본 프로필이다. UI Automation 탭 조작은 Chrome 업데이트마다 깨짐. "우리 탭만" 정확히 닫는 길은 Native Messaging 확장뿐(설치 요소 +1) |
+| 쉬는 시간 음악 | 열기: `chrome.exe <URL>`(없으면 `ShellExecuteW`). 종료: SMTC 로 Chrome 세션만 `TryPauseAsync`(§7 #7 결정) | **CDP 불가**: Chrome 136+ 는 기본 프로필에서 `--remote-debugging-port` 를 무시한다. 탭은 남는다(사용자 결정). SMTC 에 Chrome 세션이 안 잡히는 경우 [확인 필요: W6 실기] |
 | 볼륨 페이드 | `IAudioEndpointVolume::SetMasterVolumeLevelScalar`(CoreAudio 와 1:1). 선택: `ISimpleAudioVolume` 로 **Chrome 세션만** 페이드 | 페이드 중 사용자가 볼륨을 바꾸면 복원값 규칙 필요(macOS 와 동일 규칙으로) |
 | 로그인 자동 실행 | 비패키지: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. MSIX: `StartupTask` | MSIX StartupTask 는 사용자가 설정 앱에서 끌 수 있고 앱이 다시 못 켠다 |
 | 고 DPI·혼합 DPI | PerMonitorV2, `WM_DPICHANGED`, 오버레이·스왑체인을 물리 픽셀로 | 비율 좌표 저장이라 판서는 안전. 모니터 경계를 넘는 드래그(배지)는 DPI 가 다른 두 좌표계 — 물리 좌표로 계산 |
@@ -211,11 +211,11 @@ macOS 쪽 선행 작업은 §5.4.
 | --- | --- | --- |
 | 1 | 최소 Windows: 11 만 / 10 22H2 포함 | ✅ **결정(2026-10-28): Windows 11 부터.** 매니페스트 `supportedOS` 와 설치기에서 Win11 미만 거부 |
 | 2 | CPU: x64 만 / x64+ARM64 | 둘 다(CI 행렬 한 줄, Snapdragon·VM 대응) |
-| 3 | 실기 장비: 펜 기종·모니터 2대·프로젝터 | ✅ **결정(2026-10-28): 펜 + 노트북 내장 화면·외부 모니터·빔 프로젝터(배율이 서로 다름).** 펜 기종은 확인 필요 |
+| 3 | 실기 장비: 펜 기종·모니터 2대·프로젝터 | ✅ **결정(2026-10-28): 펜 + 노트북 내장 화면·외부 모니터·빔 프로젝터(배율이 서로 다름).** 펜은 삼성 갤럭시 탭(S펜) 검토 중 — Android 기기라 Windows 펜 입력이 되려면 화면 확장 앱(예: Samsung Second Screen, SuperDisplay)이 Windows Ink 펜으로 압력을 넘겨야 한다 [확인 필요: W1 ③ 에서 `WM_POINTER` 펜 타입·압력 수신 여부] |
 | 4 | Windows 쪽 개발 주체(사람 / AI 도구)와 PR 검수자 | macOS 쪽 검수 연결 여부 |
-| 5 | 서명 인증서: OV/EV·보관 방식(토큰/클라우드 HSM)·명의 | 확보 전엔 무서명 시험 배포(SmartScreen 경고 감수) |
+| 5 | 서명 인증서: OV/EV·보관 방식(토큰/클라우드 HSM)·명의 | ✅ **결정(2026-10-28): 셀프 서명으로 시작**, 실제 배포 시점에 공인 인증서로 교체. 셀프 서명은 인증서를 설치한 PC 에서만 경고가 사라진다(신뢰 루트·신뢰 게시자에 설치). 교체는 서명 단계만 바꾼다 |
 | 6 | 배포 형식: MSIX(+자동 업데이트·테두리 capability) / exe 설치기(+WinSparkle) | ✅ **결정(2026-10-28): 일반 설치 파일(exe).** 자동 실행 = `HKCU\…\Run`, 파일 연결 = `HKCU\Software\Classes`, 자동 업데이트 = WinSparkle(또는 자체 확인). 비패키지라 `graphicsCaptureWithoutBorder` capability 를 선언할 수 없을 수 있다 → W1 ⑥ 에서 WGC 테두리를 못 끄면 줌은 DDA 로 |
-| 7 | 음악 종료: Chrome 새 창 닫기 / SMTC 일시정지 / 확장 프로그램 | 새 창 닫기 + SMTC 대체 |
+| 7 | 음악 종료: Chrome 새 창 닫기 / SMTC 일시정지 / 확장 프로그램 | ✅ **결정(2026-10-28): SMTC 일시정지만.** 열기는 `chrome.exe <URL>`, 종료는 `GlobalSystemMediaTransportControlsSessionManager` 에서 Chrome 세션을 찾아 `TryPauseAsync`(토글이 아닌 명시적 일시정지). 탭·창은 닫지 않는다. Chrome 세션이 없으면 로그 + 알림(토글 미디어 키로 대체 금지 — 이미 멈춘 음악을 다시 튼다) |
 | 8 | 볼륨 페이드 범위: 시스템 전체 / Chrome 만 | ✅ **결정(2026-10-28): 시스템 전체**(macOS 와 같음, `IAudioEndpointVolume`) |
 | 9 | 줌 중 화상회의 공유에서 판서 숨김 허용 | 허용(아니면 Magnification API 경로 추가) |
 | 10 | 계획서를 저장소 `docs/windows-plan.md` 로 올릴지 | 올림(2026-10-28, 이 파일) |
