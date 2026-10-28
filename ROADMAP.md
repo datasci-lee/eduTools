@@ -24,3 +24,4 @@
 | Developer ID 서명·공증 | 인증서 확보 후 `EDUTOOLS_SIGN_IDENTITY`·`EDUTOOLS_NOTARY_PROFILE` 로 `./build.sh dmg` |
 | 자동 업데이트(Sparkle) | 배포 주소 확정 후 |
 | 펜 태블릿·iPad(Sidecar) 기종 실기 | 설계서 미결 항목 |
+| Windows 버전 | Rust 로 별도 구현(macOS 는 Swift 유지), Windows PC 에서 개발 — 계획·인계서 [`docs/windows-plan.md`](docs/windows-plan.md) |
