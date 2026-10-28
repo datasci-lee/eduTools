@@ -205,8 +205,9 @@ final class PaletteController: NSObject {
         }
         let button = NSButton(title: "", target: self, action: #selector(performDefinition(_:)))
         button.identifier = NSUserInterfaceItemIdentifier(definition.id)
-        button.image = NSImage(
-            systemSymbolName: definition.iconName,
+        button.image = AppIcon.image(
+            key: definition.id,
+            fallbackSystemName: definition.iconName,
             accessibilityDescription: definition.name
         )
         button.imagePosition = .imageOnly
@@ -312,6 +313,7 @@ final class PaletteController: NSObject {
             let isSelected = tool == state.currentTool
             button.state = isSelected ? .on : .off
             button.contentTintColor = isSelected ? .controlAccentColor : .labelColor
+            updateIcon(for: button, selected: isSelected)
         }
         for (index, button) in colorButtons.enumerated() {
             if state.colorPresets.indices.contains(index) {
@@ -328,10 +330,26 @@ final class PaletteController: NSObject {
         recognitionButton?.contentTintColor = state.isShapeRecognitionEnabled
             ? .controlAccentColor
             : .labelColor
+        if let recognitionButton {
+            updateIcon(for: recognitionButton, selected: state.isShapeRecognitionEnabled)
+        }
         recognitionButton?.toolTip = "손그림 도형 자동 보정: \(state.isShapeRecognitionEnabled ? "켬" : "끔")"
-        eraserAreaShapeButton?.title = state.eraserAreaShape == .rectangle ? "□" : "⌁"
-        eraserAreaShapeButton?.image = nil
-        eraserAreaShapeButton?.imagePosition = .noImage
+        if let eraserAreaShapeButton,
+           let definition = definition(for: eraserAreaShapeButton),
+           AppIcon.hasCustomAsset(key: definition.id)
+        {
+            eraserAreaShapeButton.title = ""
+            eraserAreaShapeButton.image = AppIcon.image(
+                key: definition.id,
+                fallbackSystemName: definition.iconName,
+                accessibilityDescription: definition.name
+            )
+            eraserAreaShapeButton.imagePosition = .imageOnly
+        } else {
+            eraserAreaShapeButton?.title = state.eraserAreaShape == .rectangle ? "□" : "⌁"
+            eraserAreaShapeButton?.image = nil
+            eraserAreaShapeButton?.imagePosition = .noImage
+        }
         eraserAreaShapeButton?.toolTip = "영역 지우개: \(state.eraserAreaShape.displayName)"
         switch state.currentTool {
         case .pen, .highlighter, .arrow, .rectangle, .ellipse, .text:
@@ -350,7 +368,23 @@ final class PaletteController: NSObject {
             let isSelected = state.presentedBoard?.kind == kind
             button.state = isSelected ? .on : .off
             button.contentTintColor = isSelected ? .controlAccentColor : .labelColor
+            updateIcon(for: button, selected: isSelected)
         }
+    }
+
+    private func definition(for button: NSButton) -> ShortcutDefinition? {
+        guard let identifier = button.identifier?.rawValue else { return nil }
+        return definitionByButtonIdentifier[identifier]
+    }
+
+    private func updateIcon(for button: NSButton, selected: Bool) {
+        guard let definition = definition(for: button) else { return }
+        button.image = AppIcon.image(
+            key: definition.id,
+            fallbackSystemName: definition.iconName,
+            selected: selected,
+            accessibilityDescription: definition.name
+        )
     }
 
     private func formattedSize(_ value: CGFloat) -> String {

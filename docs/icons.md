@@ -1,6 +1,6 @@
 # 아이콘 목록
 
-현재는 전부 **macOS 기본 아이콘(SF Symbols)** 입니다(2026-10-28 기준). 새 아이콘 파일은 [`assets/icons/`](../assets/icons/README.md) 에 둡니다. 이름은 SF Symbols 이름입니다. "키" 는 새 아이콘을 연결할 때 쓸 이름(단축키 정의의 id, 없으면 제안)입니다.
+기본 모양은 **macOS 기본 아이콘(SF Symbols)** 이며, 같은 키의 파일이 [`assets/icons/`](../assets/icons/README.md) 에 있으면 그 파일을 대신 씁니다. "현재" 열은 에셋이 없을 때의 SF Symbol 폴백이고, "키" 는 실제 코드가 조회하는 이름입니다. 단축키 기능은 `ShortcutDefinition.id`, 원형 그룹은 원형 팔레트 정의의 키를 그대로 사용합니다.
 
 ## 표시 크기 (아이콘이 실제로 그려지는 크기)
 | 위치 | 크기(pt) | 비고 |
@@ -16,7 +16,7 @@
 → 10~14pt(@2x 로 20~28px)에서 읽혀야 하므로 단순한 형태, 한 가지 색(윤곽)으로 보내 주시면 됩니다. 색·선택·호버는 앱이 입힙니다.
 
 ## 1. 원형 1링 — 역할 그룹 (6)
-| 키(제안) | 뜻 | 현재 | 그룹에 들어 있는 것 |
+| 키 | 뜻 | 현재 | 그룹에 들어 있는 것 |
 | --- | --- | --- | --- |
 | group.writing | 작성 | `pencil.and.outline` | 펜·형광펜·텍스트 |
 | group.shapes | 도형 | `square.on.circle` | 화살표·사각형·원 |
@@ -55,7 +55,7 @@
 | cursor-highlight.toggle | 커서 강조 | `cursorarrow.rays` |
 
 ## 3. 원형 3링 — 설정값에 쓰이는 아이콘 (나머지 칸은 글자·색)
-| 키(제안) | 뜻 | 현재 |
+| 키 | 뜻 | 현재 |
 | --- | --- | --- |
 | option.on | 켬(손그림 도형 보정) | `checkmark` |
 | option.off | 끔 | `xmark` |
@@ -80,7 +80,6 @@
 | palette.toggle | 도구 팔레트 숨기기/보이기 | `rectangle.on.rectangle` |
 | palette.radial.toggle | 원형 팔레트 열기/접기(M) | `circle.grid.cross` |
 | annotation.step-back | 한 단계 나가기(Esc) | `escape` |
-| annotation.pass-through | 아래 화면 클릭(통과 모드, U) — 036 구현 중, 심볼은 구현 때 확정 | `cursorarrow.click` (예정) |
 | zoom.increase / decrease / reset | 줌 배율 올리기 / 내리기 / 시작 배율 | `plus.magnifyingglass` / `minus.magnifyingglass` / `1.magnifyingglass` |
 | zoom.freeze | 화면 멈추고 판서 | `pause.circle` |
 | zoom.preview | 확대 위치 미리보기 | `rectangle.dashed` |
@@ -91,7 +90,7 @@
 | timer.break.open | 쉬는 시간 타이머 | `cup.and.saucer` |
 
 ## 6. 메뉴바
-| 키(제안) | 뜻 | 현재 |
+| 키 | 뜻 | 현재 |
 | --- | --- | --- |
 | status.annotation.off | 판서 모드 꺼짐 | `pencil` |
 | status.annotation.on | 판서 모드 켜짐 | `pencil.circle.fill` |
@@ -107,8 +106,10 @@
 | `arrow.right` | 화살표 도구 ↔ 화살표 한쪽 모양 |
 | `pencil` / `pencil.tip` / `pencil.and.outline` | 판서 모드 / 펜 / 작성 그룹 — 세 가지가 비슷해 보임 |
 
-## 8. 아이콘 연결 방식 (제안)
+## 8. 아이콘 연결 방식
 - 파일: **SVG**(한 색, 윤곽 또는 채움, `viewBox` 24×24 권장) 또는 PDF 벡터. 파일 이름 = 위 "키" (예: `tool.pen.svg`).
+- `./build.sh` 가 파일을 앱 번들의 `Contents/Resources/Icons/` 로 복사합니다.
 - 앱은 **키별로 새 아이콘이 있으면 쓰고, 없으면 지금 SF Symbols 를 그대로** 씁니다. 일부만 먼저 바꿔도 됩니다.
 - 색·선택·호버·비활성 표현은 앱이 입히므로 **단색 모양만** 주시면 됩니다(템플릿 이미지로 사용).
 - 선택 상태에서 모양이 바뀌는 아이콘(예: 속이 빈/찬 모양)이 필요하면 `<키>.selected.svg` 로 따로 주세요.
+- 앱 시작 때 키 목록에 없거나 일반 파일 짝이 없는 `.selected` 파일은 `NSLog` 로 한 번 알립니다. 파일이 있으나 디코딩할 수 없을 때도 경고 후 SF Symbol로 폴백합니다.
