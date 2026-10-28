@@ -113,3 +113,9 @@
 - 색·선택·호버·비활성 표현은 앱이 입히므로 **단색 모양만** 주시면 됩니다(템플릿 이미지로 사용).
 - 선택 상태에서 모양이 바뀌는 아이콘(예: 속이 빈/찬 모양)이 필요하면 `<키>.selected.svg` 로 따로 주세요.
 - 앱 시작 때 키 목록에 없거나 일반 파일 짝이 없는 `.selected` 파일은 `NSLog` 로 한 번 알립니다. 파일이 있으나 디코딩할 수 없을 때도 경고 후 SF Symbol로 폴백합니다.
+
+## 9. 디자인 적용 현황 (2026-10-28)
+- 디자인 세트(`eduTools-symbols`)로 **57개 키**가 `assets/icons/<키>.svg` 로 연결됩니다(대응표 `assets/symbol-map.tsv`).
+- **디자인이 아직 없는 키**(SF Symbols 유지): `annotation.pass-through`(`U` 통과 모드, 2026-10-28 신설), `eraser.area-shape`(가로 팔레트의 영역 모양 전환), `palette.radial.toggle`(`M`), `color.1`~`color.6`(앱이 색 원을 직접 그림). 앞의 세 키는 기존 아이콘을 재사용하려면 `symbol-map.tsv` 에 한 줄(예: 디자인 `palette.radial` 을 두 키에 연결)만 더하면 됩니다.
+- **쓰이지 않는 디자인**은 `assets/symbols/` 에 보관: 수업 운영 아이콘 50개(`class.` `attn.` `act.` `aid.` `stamp.` `bg.` `dev.`), 속성 레이어 `attr/`(도구 아이콘이 지금 설정을 보여주는 방식 — 별도 작업), Windows 용 PNG·트레이 ICO.
+
