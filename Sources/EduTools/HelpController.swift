@@ -307,6 +307,7 @@ final class HelpController: NSObject {
         searchField.sendsWholeSearchString = false
         searchField.target = self
         searchField.action = #selector(searchDidChange(_:))
+        searchField.delegate = self
         searchField.keyDownHandler = { [weak self] event in
             self?.handleKeyDown(event) ?? false
         }
@@ -714,5 +715,14 @@ final class HelpController: NSObject {
             NotificationCenter.default.removeObserver(screenObserver)
         }
         panel.close()
+    }
+}
+
+extension HelpController: NSSearchFieldDelegate {
+    // While the search field edits, Esc reaches the field editor as cancelOperation, not keyDown.
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        guard commandSelector == #selector(NSResponder.cancelOperation(_:)) else { return false }
+        close()
+        return true
     }
 }
