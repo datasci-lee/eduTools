@@ -132,7 +132,7 @@ final class OverlayController {
         panel.isMovableByWindowBackground = false
         panel.isReleasedWhenClosed = false
         panel.animationBehavior = .none
-        panel.level = .screenSaver
+        panel.level = AppWindowLevel.overlay
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.sharingType = .readOnly
         panel.ignoresMouseEvents = !state.isAnnotationModeEnabled

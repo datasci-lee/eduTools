@@ -77,7 +77,7 @@ final class ArchiveController {
             alert.informativeText = "다시 연결된 화면의 판서와 실행 취소 기록을 복원합니다."
             alert.addButton(withTitle: "복원")
             alert.addButton(withTitle: "나중에")
-            shouldRestore = alert.runModal() == .alertFirstButtonReturn
+            shouldRestore = alert.runAboveOverlay() == .alertFirstButtonReturn
         }
         guard shouldRestore else { return }
 
@@ -258,7 +258,7 @@ final class ArchiveController {
             alert.messageText = title
             alert.informativeText = message
             alert.addButton(withTitle: "확인")
-            alert.runModal()
+            alert.runAboveOverlay()
         }
         if Thread.isMainThread {
             showAlert()

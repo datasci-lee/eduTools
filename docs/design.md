@@ -358,13 +358,21 @@ iPad는 macOS **Sidecar**로 연결해 하나의 모니터처럼 다루고, Appl
 
 | 모듈 | 핵심 구현 |
 | --- | --- |
-| 오버레이 창 | 모니터마다 테두리 없는 투명 `NSPanel`. 레벨 `.screenSaver`, `canJoinAllSpaces` + `fullScreenAuxiliary`로 전체화면 앱 위에도 표시. 일반 모드에서 `ignoresMouseEvents = true` |
+| 오버레이 창 | 모니터마다 테두리 없는 투명 `NSPanel`. `AppWindowLevel`의 계층을 사용하고, `canJoinAllSpaces` + `fullScreenAuxiliary`로 전체화면 앱 위에도 표시. 일반 모드에서 `ignoresMouseEvents = true` |
 | 판서 엔진 | 획 = 점 배열(위치·압력·시간). 완성된 획은 비트맵에 굽고 그리는 중인 획만 `CAShapeLayer`로 그려 지연 최소화. Undo는 명령 스택 |
 | 지우개 엔진 | 획마다 경계 사각형을 보관해 지우개 원과 빠르게 교차 판정. 부분 지우기는 원 안의 점을 잘라 획을 나눔, 획 단위는 획 전체 삭제, 영역은 다각형 포함 검사 |
 | 줌 엔진 | `SCStream`으로 현재 모니터를 60fps 캡처, 오버레이 창은 캡처에서 제외. 확대 중심은 마우스 위치를 보간(lerp)해 부드럽게 이동. 정지 줌은 한 프레임만 사용 |
 | 타이머 엔진 | 종료 시각(`Date`)을 저장하고 남은 시간 = 종료 시각 − 현재 시각으로 매번 계산. 잠자기 복귀 알림에서 다시 계산 |
 | 단축키 | 전역: Carbon `RegisterEventHotKey` 직접 사용. 판서 모드 단축키는 오버레이 창의 `keyDown` |
 | 설정 저장 | `UserDefaults`(설정), 판서·보드는 JSON 파일로 자동 보관 |
+
+| 창 계층 | `AppWindowLevel` | `NSWindow.Level` | 대상 |
+| --- | --- | --- | --- |
+| 오버레이 | `overlay` | `.screenSaver` | 판서 오버레이 |
+| 효과 | `effect` | `.screenSaver + 1` | 줌·스포트라이트 |
+| 도구 | `tool` | `.screenSaver + 2` | 팔레트·수업 배지 |
+| 안내 | `guidance` | `.screenSaver + 3` | 도움말·쉬는 시간 화면 |
+| 대화 | `dialog` | `.screenSaver + 4` | 설정·경고·확인·저장·열기 대화상자 |
 
 ## 설정·권한·배포
 
