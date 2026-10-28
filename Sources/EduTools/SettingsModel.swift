@@ -107,11 +107,11 @@ enum RadialPaletteGlassStyle {
             )
     }
 
-    // Pure-alpha composition model on black: a white tint at alpha a has encoded
-    // sRGB value a and relative luminance L = ((a + 0.055) / 1.055)^2.4.
-    // At a = 0.55, near-black 0.10 content yields about 5.22:1 contrast. Whether
-    // glassEffect applies the tint as pure alpha composition needs visual verification.
-    static func surfaceTintColor(opacity: Double) -> NSColor {
+    // The white face is alpha-composited above the glass, so even if the material
+    // renders black its encoded sRGB value is at least a: a * 1 + (1 - a) * glass >= a.
+    // On black, L = ((a + 0.055) / 1.055)^2.4; near-black 0.10 content therefore has
+    // 5.22:1 contrast at a = 0.55 and 6.54:1 at the default a = 0.62.
+    static func surfaceFaceColor(opacity: Double) -> NSColor {
         NSColor(calibratedWhite: 1, alpha: CGFloat(opacity))
     }
 }

@@ -386,9 +386,12 @@ private func nextRadialPaletteFocus(
 }
 
 private final class RadialPaletteTooltip {
+    private static let cornerRadius: CGFloat = 7
+
     private let panel: RadialPaletteTooltipPanel
     private let label = NSTextField(labelWithString: "")
     private let glassView = NSGlassEffectView(frame: .zero)
+    private let glassContentView = NSView(frame: .zero)
 
     init(glassOpacity: Double) {
         panel = RadialPaletteTooltipPanel(
@@ -408,27 +411,31 @@ private final class RadialPaletteTooltip {
         panel.sharingType = .none
 
         glassView.style = .regular
-        glassView.cornerRadius = 7
-        glassView.tintColor = RadialPaletteGlassStyle.surfaceTintColor(
+        glassView.cornerRadius = Self.cornerRadius
+        glassContentView.wantsLayer = true
+        glassContentView.layer?.backgroundColor = RadialPaletteGlassStyle.surfaceFaceColor(
             opacity: glassOpacity
-        )
-        let root = NSView(frame: .zero)
+        ).cgColor
+        glassContentView.layer?.cornerRadius = Self.cornerRadius
+        glassContentView.layer?.masksToBounds = true
         label.font = .systemFont(ofSize: 12, weight: .medium)
         label.textColor = RadialPaletteGlassStyle.primaryContentColor
         label.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(label)
+        glassContentView.addSubview(label)
         NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 9),
-            label.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -9),
-            label.topAnchor.constraint(equalTo: root.topAnchor, constant: 6),
-            label.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -6),
+            label.leadingAnchor.constraint(equalTo: glassContentView.leadingAnchor, constant: 9),
+            label.trailingAnchor.constraint(equalTo: glassContentView.trailingAnchor, constant: -9),
+            label.topAnchor.constraint(equalTo: glassContentView.topAnchor, constant: 6),
+            label.bottomAnchor.constraint(equalTo: glassContentView.bottomAnchor, constant: -6),
         ])
-        glassView.contentView = root
+        glassView.contentView = glassContentView
         panel.contentView = glassView
     }
 
     func updateGlassOpacity(_ opacity: Double) {
-        glassView.tintColor = RadialPaletteGlassStyle.surfaceTintColor(opacity: opacity)
+        glassContentView.layer?.backgroundColor = RadialPaletteGlassStyle.surfaceFaceColor(
+            opacity: opacity
+        ).cgColor
     }
 
     func show(
