@@ -96,6 +96,7 @@ struct RadialPaletteRenderState {
     let centerShortcut: String
     let centerColor: NSColor
     let centerStrokeWidth: CGFloat
+    let centerIsPassThroughEnabled: Bool
     let centerIsHovered: Bool
     let centerIsFocused: Bool
 
@@ -110,6 +111,7 @@ struct RadialPaletteRenderState {
         centerShortcut: "",
         centerColor: .clear,
         centerStrokeWidth: 2,
+        centerIsPassThroughEnabled: false,
         centerIsHovered: false,
         centerIsFocused: false
     )
@@ -335,16 +337,20 @@ struct RadialPaletteGlassView: View {
     private func centerView(in bounds: CGRect) -> some View {
         let state = model.state
         let circle = Circle()
+        var glass = Glass.regular
+        if state.centerIsPassThroughEnabled {
+            glass = glass.tint(Color.accentColor.opacity(0.72))
+        }
+        if state.centerIsHovered {
+            glass = glass.interactive()
+        }
         return ZStack {
             Color.clear
                 .frame(
                     width: RadialPaletteMetrics.collapsedDiameter,
                     height: RadialPaletteMetrics.collapsedDiameter
                 )
-                .glassEffect(
-                    state.centerIsHovered ? Glass.regular.interactive() : .regular,
-                    in: circle
-                )
+                .glassEffect(glass, in: circle)
 
             if state.centerIsFocused {
                 circle.stroke(
@@ -374,7 +380,7 @@ struct RadialPaletteGlassView: View {
                     .resizable()
                     .scaledToFit()
                     .frame(width: 18, height: 18)
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(state.centerIsPassThroughEnabled ? .white : .primary)
                     .accessibilityLabel(Text(state.centerAccessibilityLabel ?? iconKey))
             }
         }

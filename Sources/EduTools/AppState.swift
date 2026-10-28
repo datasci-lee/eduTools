@@ -1,5 +1,33 @@
 import AppKit
+import ApplicationServices
+import CoreGraphics
 import Foundation
+
+enum PassThroughDefaults {
+    static let initialClickTimeout: TimeInterval = 10
+    static let interactionIdleTimeout: TimeInterval = 3
+    static let keyStatePollingInterval: TimeInterval = 1.0 / 60.0
+    static let keyStatePollingTrustWindow: TimeInterval = 0.150
+    static let keyMaximumHoldDuration: TimeInterval = 30
+}
+
+enum PassThroughModeSource: Equatable {
+    case timed
+    case key(CGKeyCode)
+}
+
+private func passThroughKeyEventTapCallback(
+    proxy _: CGEventTapProxy,
+    type: CGEventType,
+    event: CGEvent,
+    userInfo: UnsafeMutableRawPointer?
+) -> Unmanaged<CGEvent>? {
+    guard let userInfo else { return Unmanaged.passUnretained(event) }
+    let state = Unmanaged<AppState>.fromOpaque(userInfo).takeUnretainedValue()
+    return state.handlePassThroughKeyEvent(type: type, event: event)
+        ? nil
+        : Unmanaged.passUnretained(event)
+}
 
 enum DisplayDisconnectPolicy: String, CaseIterable {
     case archive
@@ -17,6 +45,7 @@ enum DisplayDisconnectPolicy: String, CaseIterable {
 
 final class AppState {
     typealias AnnotationModeObserver = (Bool) -> Void
+    typealias PassThroughModeObserver = (Bool) -> Void
     typealias ToolObserver = (InkTool) -> Void
     typealias ToolSettingsObserver = () -> Void
     typealias PaletteVisibilityObserver = (Bool) -> Void
@@ -32,6 +61,7 @@ final class AppState {
     }
 
     private var annotationModeObservers: [UUID: AnnotationModeObserver] = [:]
+    private var passThroughModeObservers: [UUID: PassThroughModeObserver] = [:]
     private var toolObservers: [UUID: ToolObserver] = [:]
     private var toolSettingsObservers: [UUID: ToolSettingsObserver] = [:]
     private var paletteVisibilityObservers: [UUID: PaletteVisibilityObserver] = [:]
@@ -52,6 +82,30 @@ final class AppState {
     private var settingsObserverIdentifier: UUID?
     private var zoomPreviewOrigin: (center: CGPoint, magnification: CGFloat)?
     private var lastColorTool = InkTool.pen
+    private var passThroughGlobalMonitor: Any?
+    private var passThroughTimeoutWorkItem: DispatchWorkItem?
+    private var passThroughMaximumHoldWorkItem: DispatchWorkItem?
+    private var passThroughKeyPollingTimer: Timer?
+    private var passThroughKeyStartedAt: TimeInterval?
+    private var passThroughKeyEventTap: CFMachPort?
+    private var passThroughKeyEventTapSource: CFRunLoopSource?
+    private var didLogPassThroughEventTapUnavailable = false
+
+    private static let passThroughEventMask: NSEvent.EventTypeMask = [
+        .leftMouseDown,
+        .leftMouseUp,
+        .rightMouseDown,
+        .rightMouseUp,
+        .otherMouseDown,
+        .otherMouseUp,
+        .scrollWheel,
+    ]
+    private static let passThroughKeyModifierFlags: CGEventFlags = [
+        .maskCommand,
+        .maskControl,
+        .maskAlternate,
+        .maskShift,
+    ]
 
     var archiveBeforeRemoval: ((Set<String>) -> Bool)?
 
@@ -103,6 +157,7 @@ final class AppState {
         didSet {
             guard oldValue != isAnnotationModeEnabled else { return }
             if !isAnnotationModeEnabled {
+                setPassThroughModeEnabled(false)
                 clearAllSelections()
                 dismissBoard()
             }
@@ -110,6 +165,21 @@ final class AppState {
                 observer(isAnnotationModeEnabled)
             }
         }
+    }
+
+    private(set) var passThroughModeSource: PassThroughModeSource? {
+        didSet {
+            let wasEnabled = oldValue != nil
+            let isEnabled = passThroughModeSource != nil
+            guard wasEnabled != isEnabled else { return }
+            for observer in passThroughModeObservers.values {
+                observer(isEnabled)
+            }
+        }
+    }
+
+    var isPassThroughModeEnabled: Bool {
+        passThroughModeSource != nil
     }
 
     private(set) var currentTool = InkTool.pen {
@@ -267,6 +337,245 @@ final class AppState {
         isAnnotationModeEnabled = isEnabled
     }
 
+    func togglePassThroughMode() {
+        switch passThroughModeSource {
+        case nil:
+            setPassThroughModeEnabled(true)
+        case .timed:
+            setPassThroughModeEnabled(false)
+        case .key:
+            break
+        }
+    }
+
+    func setPassThroughModeEnabled(_ isEnabled: Bool) {
+        if isEnabled {
+            guard passThroughModeSource == nil else { return }
+            guard isAnnotationModeEnabled, presentedBoard == nil else { return }
+            guard installPassThroughGlobalMonitor() else {
+                NSLog("EduTools: pass-through mode was not enabled because its global mouse monitor failed")
+                return
+            }
+            passThroughModeSource = .timed
+            schedulePassThroughTimeout(after: PassThroughDefaults.initialClickTimeout)
+        } else {
+            endPassThroughMode()
+        }
+    }
+
+    func beginKeyPassThrough(keyCode: CGKeyCode) {
+        guard isAnnotationModeEnabled, presentedBoard == nil else { return }
+        if passThroughModeSource == .key(keyCode) { return }
+
+        removePassThroughRuntimeResources()
+        passThroughModeSource = .key(keyCode)
+
+        if !installPassThroughGlobalMonitor() {
+            NSLog("EduTools: pass-through key safety mouse monitor could not be installed")
+        }
+        installPassThroughKeyEventTap()
+        startPassThroughKeyStatePolling()
+        schedulePassThroughMaximumHoldTimeout()
+    }
+
+    func endKeyPassThrough(keyCode: CGKeyCode) {
+        guard passThroughModeSource == .key(keyCode) else { return }
+        endPassThroughMode()
+    }
+
+    private func endPassThroughMode() {
+        guard passThroughModeSource != nil else { return }
+        passThroughModeSource = nil
+        removePassThroughRuntimeResources()
+    }
+
+    private func installPassThroughGlobalMonitor() -> Bool {
+        guard passThroughGlobalMonitor == nil else { return true }
+        guard let monitor = NSEvent.addGlobalMonitorForEvents(
+            matching: Self.passThroughEventMask,
+            handler: { [weak self] _ in
+                self?.passThroughInteractionDidOccur()
+            }
+        ) else {
+            return false
+        }
+        passThroughGlobalMonitor = monitor
+        return true
+    }
+
+    private func removePassThroughGlobalMonitor() {
+        guard let passThroughGlobalMonitor else { return }
+        NSEvent.removeMonitor(passThroughGlobalMonitor)
+        self.passThroughGlobalMonitor = nil
+    }
+
+    private func passThroughInteractionDidOccur() {
+        switch passThroughModeSource {
+        case .timed, .key:
+            schedulePassThroughTimeout(after: PassThroughDefaults.interactionIdleTimeout)
+        case nil:
+            break
+        }
+    }
+
+    private func schedulePassThroughTimeout(after interval: TimeInterval) {
+        passThroughTimeoutWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.passThroughTimeoutDidFire()
+        }
+        passThroughTimeoutWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + interval, execute: workItem)
+    }
+
+    private func passThroughTimeoutDidFire() {
+        passThroughTimeoutWorkItem = nil
+        guard passThroughModeSource != nil else { return }
+        if NSEvent.pressedMouseButtons != 0 {
+            schedulePassThroughTimeout(after: PassThroughDefaults.interactionIdleTimeout)
+            return
+        }
+        endPassThroughMode()
+    }
+
+    private func schedulePassThroughMaximumHoldTimeout() {
+        passThroughMaximumHoldWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard case .key = self?.passThroughModeSource else { return }
+            self?.endPassThroughMode()
+        }
+        passThroughMaximumHoldWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + PassThroughDefaults.keyMaximumHoldDuration,
+            execute: workItem
+        )
+    }
+
+    private func startPassThroughKeyStatePolling() {
+        passThroughKeyPollingTimer?.invalidate()
+        passThroughKeyStartedAt = ProcessInfo.processInfo.systemUptime
+        let timer = Timer(
+            timeInterval: PassThroughDefaults.keyStatePollingInterval,
+            repeats: true
+        ) { [weak self] _ in
+            self?.pollPassThroughKeyState()
+        }
+        passThroughKeyPollingTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func pollPassThroughKeyState() {
+        guard case let .key(keyCode) = passThroughModeSource,
+              let passThroughKeyStartedAt
+        else {
+            stopPassThroughKeyStatePolling()
+            return
+        }
+        guard !CGEventSource.keyState(.combinedSessionState, key: keyCode) else { return }
+
+        let elapsed = ProcessInfo.processInfo.systemUptime - passThroughKeyStartedAt
+        if elapsed <= PassThroughDefaults.keyStatePollingTrustWindow {
+            let trustWindowMilliseconds = Int(
+                PassThroughDefaults.keyStatePollingTrustWindow * 1_000
+            )
+            NSLog(
+                "EduTools: pass-through key-state polling was disabled because the held key appeared released within %d ms",
+                trustWindowMilliseconds
+            )
+            stopPassThroughKeyStatePolling()
+            return
+        }
+        endKeyPassThrough(keyCode: keyCode)
+    }
+
+    private func stopPassThroughKeyStatePolling() {
+        passThroughKeyPollingTimer?.invalidate()
+        passThroughKeyPollingTimer = nil
+        passThroughKeyStartedAt = nil
+    }
+
+    private func installPassThroughKeyEventTap() {
+        guard passThroughKeyEventTap == nil else { return }
+        guard AXIsProcessTrusted() else {
+            logPassThroughEventTapUnavailableOnce(
+                "Accessibility permission is not granted"
+            )
+            return
+        }
+
+        let eventMask = (CGEventMask(1) << CGEventType.keyDown.rawValue)
+            | (CGEventMask(1) << CGEventType.keyUp.rawValue)
+        guard let eventTap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,
+            eventsOfInterest: eventMask,
+            callback: passThroughKeyEventTapCallback,
+            userInfo: Unmanaged.passUnretained(self).toOpaque()
+        ) else {
+            logPassThroughEventTapUnavailableOnce("the active event tap could not be created")
+            return
+        }
+        guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0) else {
+            CFMachPortInvalidate(eventTap)
+            logPassThroughEventTapUnavailableOnce("the event tap run-loop source could not be created")
+            return
+        }
+
+        passThroughKeyEventTap = eventTap
+        passThroughKeyEventTapSource = source
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        CGEvent.tapEnable(tap: eventTap, enable: true)
+    }
+
+    fileprivate func handlePassThroughKeyEvent(type: CGEventType, event: CGEvent) -> Bool {
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            if case .key = passThroughModeSource, let passThroughKeyEventTap {
+                CGEvent.tapEnable(tap: passThroughKeyEventTap, enable: true)
+            }
+            return false
+        }
+        guard type == .keyDown || type == .keyUp,
+              case let .key(targetKeyCode) = passThroughModeSource
+        else {
+            return false
+        }
+
+        let eventKeyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
+        guard eventKeyCode == targetKeyCode else { return false }
+        let hasModifiers = !event.flags.intersection(Self.passThroughKeyModifierFlags).isEmpty
+        if type == .keyUp {
+            endKeyPassThrough(keyCode: targetKeyCode)
+        }
+        return !hasModifiers
+    }
+
+    private func removePassThroughKeyEventTap() {
+        if let passThroughKeyEventTapSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), passThroughKeyEventTapSource, .commonModes)
+            self.passThroughKeyEventTapSource = nil
+        }
+        if let passThroughKeyEventTap {
+            CFMachPortInvalidate(passThroughKeyEventTap)
+            self.passThroughKeyEventTap = nil
+        }
+    }
+
+    private func logPassThroughEventTapUnavailableOnce(_ reason: String) {
+        guard !didLogPassThroughEventTapUnavailable else { return }
+        didLogPassThroughEventTapUnavailable = true
+        NSLog("EduTools: pass-through key suppression is unavailable because \(reason)")
+    }
+
+    private func removePassThroughRuntimeResources() {
+        passThroughTimeoutWorkItem?.cancel()
+        passThroughTimeoutWorkItem = nil
+        passThroughMaximumHoldWorkItem?.cancel()
+        passThroughMaximumHoldWorkItem = nil
+        stopPassThroughKeyStatePolling()
+        removePassThroughKeyEventTap()
+        removePassThroughGlobalMonitor()
+    }
+
     func setAutoArchiveEnabled(_ isEnabled: Bool) {
         settingsStore.update { $0.general.autoArchiveEnabled = isEnabled }
     }
@@ -312,6 +621,7 @@ final class AppState {
         if presentedBoard?.kind == kind {
             presentedBoard = nil
         } else {
+            setPassThroughModeEnabled(false)
             presentedBoard = BoardPresentation(kind: kind, displayUUID: displayUUID)
         }
         notifyBoardObservers()
@@ -995,6 +1305,18 @@ final class AppState {
     }
 
     @discardableResult
+    func addPassThroughModeObserver(_ observer: @escaping PassThroughModeObserver) -> UUID {
+        let identifier = UUID()
+        passThroughModeObservers[identifier] = observer
+        observer(isPassThroughModeEnabled)
+        return identifier
+    }
+
+    func removePassThroughModeObserver(_ identifier: UUID) {
+        passThroughModeObservers.removeValue(forKey: identifier)
+    }
+
+    @discardableResult
     func addToolObserver(_ observer: @escaping ToolObserver) -> UUID {
         let identifier = UUID()
         toolObservers[identifier] = observer
@@ -1187,6 +1509,7 @@ final class AppState {
     }
 
     deinit {
+        removePassThroughRuntimeResources()
         if let settingsObserverIdentifier {
             settingsStore.removeObserver(settingsObserverIdentifier)
         }

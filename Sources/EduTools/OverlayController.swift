@@ -21,7 +21,8 @@ final class OverlayController {
     private let state: AppState
     private let dispatcher: AppCommandDispatcher
     private var panelsByDisplayUUID: [String: OverlayPanel] = [:]
-    private var observerIdentifier: UUID?
+    private var annotationObserverIdentifier: UUID?
+    private var passThroughObserverIdentifier: UUID?
     private var refreshWorkItem: DispatchWorkItem?
     private var callbackRegistered = false
     private var screenParametersObserver: NSObjectProtocol?
@@ -52,8 +53,11 @@ final class OverlayController {
         }
 
         synchronizePanels()
-        observerIdentifier = state.addAnnotationModeObserver { [weak self] isEnabled in
+        annotationObserverIdentifier = state.addAnnotationModeObserver { [weak self] isEnabled in
             self?.setAnnotationModeEnabled(isEnabled)
+        }
+        passThroughObserverIdentifier = state.addPassThroughModeObserver { [weak self] isEnabled in
+            self?.setPassThroughModeEnabled(isEnabled)
         }
     }
 
@@ -112,7 +116,7 @@ final class OverlayController {
             archiveController?.restoreDisconnectedDisplayIfNeeded(identifier)
         }
 
-        if state.isAnnotationModeEnabled {
+        if state.isAnnotationModeEnabled, !state.isPassThroughModeEnabled {
             focusPanelUnderMouse()
         }
     }
@@ -136,6 +140,7 @@ final class OverlayController {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.sharingType = .readOnly
         panel.ignoresMouseEvents = !state.isAnnotationModeEnabled
+            || state.isPassThroughModeEnabled
         panel.acceptsMouseMovedEvents = true
 
         let inkView = InkView(
@@ -163,7 +168,7 @@ final class OverlayController {
         }
 
         for panel in panelsByDisplayUUID.values {
-            panel.ignoresMouseEvents = !isEnabled
+            panel.ignoresMouseEvents = !isEnabled || state.isPassThroughModeEnabled
             panel.orderFrontRegardless()
         }
 
@@ -181,6 +186,12 @@ final class OverlayController {
                 )
             }
             self.previouslyFrontmostApplication = nil
+        }
+    }
+
+    private func setPassThroughModeEnabled(_ isEnabled: Bool) {
+        for panel in panelsByDisplayUUID.values {
+            panel.ignoresMouseEvents = !state.isAnnotationModeEnabled || isEnabled
         }
     }
 
@@ -267,6 +278,7 @@ final class OverlayController {
 
     private func focusPanel(displayUUID: String) {
         guard state.isAnnotationModeEnabled,
+              !state.isPassThroughModeEnabled,
               let panel = panelsByDisplayUUID[displayUUID]
         else {
             return
@@ -301,8 +313,11 @@ final class OverlayController {
         if let screenParametersObserver {
             NotificationCenter.default.removeObserver(screenParametersObserver)
         }
-        if let observerIdentifier {
-            state.removeAnnotationModeObserver(observerIdentifier)
+        if let annotationObserverIdentifier {
+            state.removeAnnotationModeObserver(annotationObserverIdentifier)
+        }
+        if let passThroughObserverIdentifier {
+            state.removePassThroughModeObserver(passThroughObserverIdentifier)
         }
         if callbackRegistered {
             let status = CGDisplayRemoveReconfigurationCallback(
