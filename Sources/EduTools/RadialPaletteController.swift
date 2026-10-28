@@ -681,7 +681,6 @@ final class RadialPaletteController: NSObject {
     private var boardObserverIdentifier: UUID?
     private var presenterObserverIdentifier: UUID?
     private var settingsObserverIdentifier: UUID?
-    private var appearanceObservation: NSKeyValueObservation?
     private var eventMonitors: [Any] = []
     private var notificationObservers: [NSObjectProtocol] = []
     private var commandHoldWorkItem: DispatchWorkItem?
@@ -771,11 +770,6 @@ final class RadialPaletteController: NSObject {
         settingsObserverIdentifier = settingsStore.addObserver { [weak self] settings in
             self?.tooltip.updateGlassOpacity(settings.tools.paletteGlassOpacity)
             self?.updateVisibility()
-            self?.paletteView.redraw()
-        }
-        appearanceObservation = NSApp.observe(\.effectiveAppearance, options: [.new]) {
-            [weak self] _, _ in
-            AppIcon.effectiveAppearanceDidChange()
             self?.paletteView.redraw()
         }
         notificationObservers.append(
@@ -1883,7 +1877,6 @@ final class RadialPaletteController: NSObject {
 
     deinit {
         commandHoldWorkItem?.cancel()
-        appearanceObservation?.invalidate()
         for monitor in eventMonitors {
             NSEvent.removeMonitor(monitor)
         }

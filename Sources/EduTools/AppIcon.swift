@@ -1,6 +1,11 @@
 import AppKit
 import Foundation
 
+enum AttrIconBackgroundEstimate {
+    static let lightSurfaceWhiteComponent: CGFloat = 0.93
+    static let darkSystemSurfaceWhiteComponent: CGFloat = 0.18
+}
+
 enum AppIcon {
     enum Key {
         static let optionOn = "option.on"
@@ -70,12 +75,10 @@ enum AppIcon {
         attributeConfiguration: AttrIconConfiguration,
         pointSize: CGFloat,
         uiColor: NSColor,
+        backgroundColor: NSColor,
         visualState: AttrIconVisualState,
         accessibilityDescription: String? = nil
     ) -> NSImage? {
-        let backgroundColor = estimatedAttributeBackgroundColor(
-            selected: visualState.isSelected
-        )
         if let image = AttrIcon.image(
             configuration: attributeConfiguration,
             pointSize: pointSize,
@@ -248,12 +251,15 @@ enum AppIcon {
         return image
     }
 
-    /// Liquid Glass reveals an unknown desktop color, so attribute contrast uses this approximation.
-    private static func estimatedAttributeBackgroundColor(selected: Bool) -> NSColor {
+    /// The linear palette uses a system surface, so its estimate follows effective appearance.
+    static func estimatedSystemSurfaceColor(selected: Bool) -> NSColor {
         if selected {
             return .controlAccentColor
         }
         let match = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua])
-        return NSColor(calibratedWhite: match == .darkAqua ? 0.18 : 0.93, alpha: 1)
+        let whiteComponent = match == .darkAqua
+            ? AttrIconBackgroundEstimate.darkSystemSurfaceWhiteComponent
+            : AttrIconBackgroundEstimate.lightSurfaceWhiteComponent
+        return NSColor(calibratedWhite: whiteComponent, alpha: 1)
     }
 }

@@ -90,6 +90,23 @@ enum RadialPaletteGlassStyle {
     )
     static let colorCellBorderColor = NSColor(calibratedWhite: 1, alpha: 1)
 
+    static func contentColor(isSelected: Bool, isEnabled: Bool) -> NSColor {
+        if !isEnabled {
+            return primaryContentColor.withAlphaComponent(CGFloat(disabledContentOpacity))
+        }
+        return isSelected ? selectedContentColor : primaryContentColor
+    }
+
+    /// 근사 — 실제 면은 뒤 배경과 0.55...0.90 알파로 혼합된다.
+    static func estimatedBackdropColor(selected: Bool) -> NSColor {
+        selected
+            ? .controlAccentColor
+            : NSColor(
+                calibratedWhite: AttrIconBackgroundEstimate.lightSurfaceWhiteComponent,
+                alpha: 1
+            )
+    }
+
     // Pure-alpha composition model on black: a white tint at alpha a has encoded
     // sRGB value a and relative luminance L = ((a + 0.055) / 1.055)^2.4.
     // At a = 0.55, near-black 0.10 content yields about 5.22:1 contrast. Whether

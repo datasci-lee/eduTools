@@ -410,6 +410,7 @@ final class PaletteController: NSObject {
             attributeConfiguration: configuration,
             pointSize: 18,
             uiColor: selected ? .controlAccentColor : .labelColor,
+            backgroundColor: AppIcon.estimatedSystemSurfaceColor(selected: selected),
             visualState: AttrIconVisualState(
                 isSelected: selected,
                 isEnabled: button.isEnabled,

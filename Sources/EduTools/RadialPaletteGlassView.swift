@@ -328,6 +328,9 @@ struct RadialPaletteGlassView: View {
                 attributeConfiguration: configuration,
                 pointSize: 14,
                 uiColor: contentNSColor(for: cell),
+                backgroundColor: RadialPaletteGlassStyle.estimatedBackdropColor(
+                    selected: cell.isSelected
+                ),
                 visualState: AttrIconVisualState(
                     isSelected: cell.isSelected,
                     isEnabled: cell.isEnabled,
@@ -411,9 +414,10 @@ struct RadialPaletteGlassView: View {
                     .scaledToFit()
                     .frame(width: 18, height: 18)
                     .foregroundStyle(
-                        Color(nsColor: state.centerIsPassThroughEnabled
-                            ? RadialPaletteGlassStyle.selectedContentColor
-                            : RadialPaletteGlassStyle.primaryContentColor)
+                        Color(nsColor: RadialPaletteGlassStyle.contentColor(
+                            isSelected: state.centerIsPassThroughEnabled,
+                            isEnabled: true
+                        ))
                     )
                     .accessibilityLabel(
                         Text(state.centerAccessibilityLabel ?? state.centerIconKey ?? "도구")
@@ -464,24 +468,14 @@ struct RadialPaletteGlassView: View {
     }
 
     private func contentColor(for cell: RadialPaletteRenderCell) -> Color {
-        if !cell.isEnabled {
-            return Color(nsColor: RadialPaletteGlassStyle.primaryContentColor)
-                .opacity(RadialPaletteGlassStyle.disabledContentOpacity)
-        }
-        if cell.isSelected, cell.color == nil {
-            return Color(nsColor: RadialPaletteGlassStyle.selectedContentColor)
-        }
-        return Color(nsColor: RadialPaletteGlassStyle.primaryContentColor)
+        Color(nsColor: contentNSColor(for: cell))
     }
 
     private func contentNSColor(for cell: RadialPaletteRenderCell) -> NSColor {
-        if !cell.isEnabled {
-            return NSColor.secondaryLabelColor.withAlphaComponent(0.7)
-        }
-        if cell.isSelected, cell.color == nil {
-            return .white
-        }
-        return .labelColor
+        RadialPaletteGlassStyle.contentColor(
+            isSelected: cell.isSelected && cell.color == nil,
+            isEnabled: cell.isEnabled
+        )
     }
 
     private func centerIconImage(for state: RadialPaletteRenderState) -> NSImage? {
@@ -495,7 +489,13 @@ struct RadialPaletteGlassView: View {
                 selected: true,
                 attributeConfiguration: configuration,
                 pointSize: 18,
-                uiColor: state.centerIsPassThroughEnabled ? .white : .labelColor,
+                uiColor: RadialPaletteGlassStyle.contentColor(
+                    isSelected: state.centerIsPassThroughEnabled,
+                    isEnabled: true
+                ),
+                backgroundColor: RadialPaletteGlassStyle.estimatedBackdropColor(
+                    selected: state.centerIsPassThroughEnabled
+                ),
                 visualState: AttrIconVisualState(
                     isSelected: state.centerIsPassThroughEnabled,
                     isEnabled: true,
