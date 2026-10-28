@@ -189,6 +189,40 @@ struct RadialSectorShape: Shape {
     }
 }
 
+private struct RadialPaletteGlassSurfaceModifier<Surface: Shape>: ViewModifier {
+    let glass: Glass
+    let surface: Surface
+    let faceOpacity: Double?
+
+    func body(content: Content) -> some View {
+        content
+            .glassEffect(glass, in: surface)
+            .overlay {
+                if let faceOpacity {
+                    surface.fill(
+                        Color(nsColor: RadialPaletteGlassStyle.surfaceFaceColor(
+                            opacity: faceOpacity
+                        ))
+                    )
+                }
+            }
+    }
+}
+
+private extension View {
+    func radialPaletteGlass<Surface: Shape>(
+        _ glass: Glass,
+        in surface: Surface,
+        faceOpacity: Double? = nil
+    ) -> some View {
+        modifier(RadialPaletteGlassSurfaceModifier(
+            glass: glass,
+            surface: surface,
+            faceOpacity: faceOpacity
+        ))
+    }
+}
+
 struct RadialPaletteGlassView: View {
     @ObservedObject var model: RadialPaletteRenderModel
 
@@ -222,7 +256,13 @@ struct RadialPaletteGlassView: View {
         return ZStack {
             Color.clear
                 .frame(width: bounds.width, height: bounds.height)
-                .glassEffect(glass(for: cell), in: shape)
+                .radialPaletteGlass(
+                    glass(for: cell),
+                    in: shape,
+                    faceOpacity: cell.color == nil && !cell.isSelected
+                        ? model.glassOpacity
+                        : nil
+                )
 
             shape.stroke(baseBorderColor(for: cell), lineWidth: baseBorderWidth(for: cell))
 
@@ -362,7 +402,11 @@ struct RadialPaletteGlassView: View {
             .foregroundStyle(Color(nsColor: RadialPaletteGlassStyle.primaryContentColor))
             .padding(.horizontal, 4)
             .padding(.vertical, 2)
-            .glassEffect(surfaceGlass, in: Capsule())
+            .radialPaletteGlass(
+                .regular,
+                in: Capsule(),
+                faceOpacity: model.glassOpacity
+            )
             .fixedSize()
             .position(position)
     }
@@ -370,7 +414,7 @@ struct RadialPaletteGlassView: View {
     private func centerView(in bounds: CGRect) -> some View {
         let state = model.state
         let circle = Circle()
-        var glass = surfaceGlass
+        var glass = Glass.regular
         if state.centerIsPassThroughEnabled {
             glass = Glass.regular.tint(
                 Color.accentColor.opacity(RadialPaletteGlassStyle.selectedTintOpacity)
@@ -385,7 +429,11 @@ struct RadialPaletteGlassView: View {
                     width: RadialPaletteMetrics.collapsedDiameter,
                     height: RadialPaletteMetrics.collapsedDiameter
                 )
-                .glassEffect(glass, in: circle)
+                .radialPaletteGlass(
+                    glass,
+                    in: circle,
+                    faceOpacity: state.centerIsPassThroughEnabled ? nil : model.glassOpacity
+                )
 
             if state.centerIsFocused {
                 circle.stroke(
@@ -438,20 +486,16 @@ struct RadialPaletteGlassView: View {
             .padding(.horizontal, 5)
             .padding(.vertical, 3)
             .frame(minWidth: 18, minHeight: 18)
-            .glassEffect(surfaceGlass, in: RoundedRectangle(cornerRadius: 5))
+            .radialPaletteGlass(
+                .regular,
+                in: RoundedRectangle(cornerRadius: 5),
+                faceOpacity: model.glassOpacity
+            )
             .fixedSize()
     }
 
-    private var surfaceGlass: Glass {
-        Glass.regular.tint(
-            Color(nsColor: RadialPaletteGlassStyle.surfaceTintColor(
-                opacity: model.glassOpacity
-            ))
-        )
-    }
-
     private func glass(for cell: RadialPaletteRenderCell) -> Glass {
-        var glass = surfaceGlass
+        var glass = Glass.regular
         if let color = cell.color {
             glass = Glass.regular.tint(
                 Color(nsColor: color).opacity(RadialPaletteGlassStyle.colorCellTintOpacity)
