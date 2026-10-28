@@ -1,0 +1,197 @@
+{
+ "grid": 24,
+ "widthLevels": {
+  "1": "가늘게",
+  "2": "보통",
+  "3": "굵게",
+  "4": "아주 굵게"
+ },
+ "contrast": {
+  "rule": "attr 색과 배경의 명암비가 1.8 미만이면 attr 레이어에 테두리(halo) 추가",
+  "haloDark": "rgba(0,0,0,0.55)",
+  "haloLight": "rgba(255,255,255,0.7)",
+  "haloWidth": "1pt"
+ },
+ "conditions": {
+  "fill": "채우기 켬일 때만",
+  "!trail": "잔상 끔일 때만",
+  "trail": "잔상 켬일 때만",
+  "mode=brush": "지우개 모드가 brush일 때만"
+ },
+ "tools": {
+  "tool.pen": {
+   "name": "펜",
+   "attrs": [
+    "color",
+    "width"
+   ],
+   "layers": [
+    [
+     "tool.pen.base",
+     "ui"
+    ],
+    [
+     "tool.pen.nib",
+     "attr"
+    ],
+    [
+     "tool.pen.stroke.w{width}",
+     "attr"
+    ]
+   ]
+  },
+  "tool.highlighter": {
+   "name": "형광펜",
+   "attrs": [
+    "color",
+    "width"
+   ],
+   "layers": [
+    [
+     "tool.highlighter.bar.w{width}",
+     "attr"
+    ],
+    [
+     "tool.highlighter.base",
+     "ui"
+    ],
+    [
+     "tool.highlighter.tip",
+     "attr"
+    ]
+   ]
+  },
+  "tool.text": {
+   "name": "텍스트",
+   "attrs": [
+    "color",
+    "width"
+   ],
+   "widthLabel": "글자 크기",
+   "layers": [
+    [
+     "tool.text.base",
+     "ui"
+    ],
+    [
+     "tool.text.glyph.w{width}",
+     "attr"
+    ]
+   ]
+  },
+  "tool.arrow": {
+   "name": "화살표",
+   "attrs": [
+    "color",
+    "width",
+    "heads"
+   ],
+   "layers": [
+    [
+     "tool.arrow.{heads}.w{width}",
+     "attr"
+    ]
+   ]
+  },
+  "tool.rect": {
+   "name": "사각형",
+   "attrs": [
+    "color",
+    "width",
+    "fill"
+   ],
+   "layers": [
+    [
+     "tool.rect.fill",
+     "attr",
+     "fill"
+    ],
+    [
+     "tool.rect.stroke.w{width}",
+     "attr"
+    ]
+   ]
+  },
+  "tool.circle": {
+   "name": "원",
+   "attrs": [
+    "color",
+    "width",
+    "fill"
+   ],
+   "layers": [
+    [
+     "tool.circle.fill",
+     "attr",
+     "fill"
+    ],
+    [
+     "tool.circle.stroke.w{width}",
+     "attr"
+    ]
+   ]
+  },
+  "tool.eraser": {
+   "name": "지우개",
+   "attrs": [
+    "width",
+    "mode"
+   ],
+   "widthLabel": "지우개 크기",
+   "layers": [
+    [
+     "tool.eraser.body.large",
+     "ui",
+     "mode=brush"
+    ],
+    [
+     "tool.eraser.size.w{width}",
+     "ui",
+     "mode=brush"
+    ],
+    [
+     "tool.eraser.area.rect",
+     "ui",
+     "mode=rect"
+    ],
+    [
+     "tool.eraser.area.lasso",
+     "ui",
+     "mode=lasso"
+    ],
+    [
+     "tool.eraser.body.small",
+     "ui",
+     "mode!=brush"
+    ]
+   ]
+  },
+  "tool.laser": {
+   "name": "레이저",
+   "attrs": [
+    "color",
+    "trail"
+   ],
+   "layers": [
+    [
+     "tool.laser.base",
+     "ui"
+    ],
+    [
+     "tool.laser.trail",
+     "attr",
+     "trail"
+    ],
+    [
+     "tool.laser.rays",
+     "attr",
+     "!trail"
+    ],
+    [
+     "tool.laser.dot",
+     "attr"
+    ]
+   ]
+  }
+ }
+}
