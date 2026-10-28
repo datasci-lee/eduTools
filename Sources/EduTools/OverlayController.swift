@@ -24,6 +24,7 @@ final class OverlayController {
     private var observerIdentifier: UUID?
     private var refreshWorkItem: DispatchWorkItem?
     private var callbackRegistered = false
+    private var screenParametersObserver: NSObjectProtocol?
     private var previouslyFrontmostApplication: NSRunningApplication?
     weak var archiveController: ArchiveController?
 
@@ -38,6 +39,16 @@ final class OverlayController {
         callbackRegistered = status == .success
         if status != .success {
             NSLog("EduTools: failed to register display callback (CGError %d)", status.rawValue)
+        }
+
+        // The CG callback can fire before `NSScreen.screens` reflects the change (Sidecar passes
+        // through intermediate sizes while connecting); AppKit's notification fires after it has.
+        screenParametersObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.displayConfigurationDidChange()
         }
 
         synchronizePanels()
@@ -111,8 +122,7 @@ final class OverlayController {
             contentRect: screen.frame,
             styleMask: [.borderless],
             backing: .buffered,
-            defer: false,
-            screen: screen
+            defer: false
         )
         panel.backgroundColor = .clear
         panel.isOpaque = false
@@ -182,8 +192,12 @@ final class OverlayController {
     }
 
     func displayUUIDUnderMouse() -> String? {
-        let mouseLocation = NSEvent.mouseLocation
-        return panelsByDisplayUUID.first(where: { $0.value.frame.contains(mouseLocation) })?.key
+        guard let identifier = displayUUID(at: NSEvent.mouseLocation),
+              panelsByDisplayUUID[identifier] != nil
+        else {
+            return nil
+        }
+        return identifier
     }
 
     var connectedDisplayUUIDs: [String] {
@@ -191,8 +205,7 @@ final class OverlayController {
     }
 
     func screen(for identifier: String) -> NSScreen? {
-        panelsByDisplayUUID[identifier]?.screen
-            ?? NSScreen.screens.first { displayUUID(for: $0) == identifier }
+        attachedScreen(forDisplayUUID: identifier)
     }
 
     func finishActiveInteraction(on displayUUID: String) {
@@ -285,6 +298,9 @@ final class OverlayController {
 
     deinit {
         refreshWorkItem?.cancel()
+        if let screenParametersObserver {
+            NotificationCenter.default.removeObserver(screenParametersObserver)
+        }
         if let observerIdentifier {
             state.removeAnnotationModeObserver(observerIdentifier)
         }
