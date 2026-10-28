@@ -524,6 +524,7 @@ private struct SettingsRootView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            .disabled(store.settings.tools.paletteStyle == .linear)
             Section("색상 프리셋") {
                 HStack {
                     ForEach(store.settings.tools.colors.indices, id: \.self) { index in

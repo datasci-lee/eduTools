@@ -332,7 +332,7 @@ struct RadialPaletteGlassView: View {
         )
         return Text(label.name)
             .font(.system(size: RadialPaletteMetrics.propertyLabelFontSize, weight: .semibold))
-            .foregroundStyle(Color(nsColor: RadialPaletteGlassStyle.secondaryContentColor))
+            .foregroundStyle(Color(nsColor: RadialPaletteGlassStyle.primaryContentColor))
             .padding(.horizontal, 4)
             .padding(.vertical, 2)
             .glassEffect(surfaceGlass, in: Capsule())
@@ -444,7 +444,8 @@ struct RadialPaletteGlassView: View {
 
     private func contentColor(for cell: RadialPaletteRenderCell) -> Color {
         if !cell.isEnabled {
-            return Color(nsColor: RadialPaletteGlassStyle.disabledContentColor)
+            return Color(nsColor: RadialPaletteGlassStyle.primaryContentColor)
+                .opacity(RadialPaletteGlassStyle.disabledContentOpacity)
         }
         if cell.isSelected, cell.color == nil {
             return Color(nsColor: RadialPaletteGlassStyle.selectedContentColor)

@@ -390,7 +390,7 @@ private final class RadialPaletteTooltip {
     private let label = NSTextField(labelWithString: "")
     private let glassView = NSGlassEffectView(frame: .zero)
 
-    init() {
+    init(glassOpacity: Double) {
         panel = RadialPaletteTooltipPanel(
             contentRect: .zero,
             styleMask: [.borderless, .nonactivatingPanel],
@@ -410,7 +410,7 @@ private final class RadialPaletteTooltip {
         glassView.style = .regular
         glassView.cornerRadius = 7
         glassView.tintColor = RadialPaletteGlassStyle.surfaceTintColor(
-            opacity: RadialPaletteGlassStyle.defaultOpacity
+            opacity: glassOpacity
         )
         let root = NSView(frame: .zero)
         label.font = .systemFont(ofSize: 12, weight: .medium)
@@ -663,7 +663,7 @@ final class RadialPaletteController: NSObject {
     private let openSettings: () -> Void
     private let panel: RadialPalettePanel
     private let paletteView = RadialPaletteView(frame: .zero)
-    private let tooltip = RadialPaletteTooltip()
+    private let tooltip: RadialPaletteTooltip
     private var selectedGroup = RadialPaletteGroupID.writing
     private var selectedEntryIdentifier: String?
     private var isExpanded = false
@@ -705,6 +705,9 @@ final class RadialPaletteController: NSObject {
         self.settingsStore = settingsStore
         self.defaults = defaults
         self.openSettings = openSettings
+        tooltip = RadialPaletteTooltip(
+            glassOpacity: settingsStore.settings.tools.paletteGlassOpacity
+        )
         panel = RadialPalettePanel(
             contentRect: .zero,
             styleMask: [.borderless, .nonactivatingPanel],

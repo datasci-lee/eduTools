@@ -63,12 +63,11 @@ enum PaletteStyle: String, Codable, CaseIterable, Hashable {
 
 enum RadialPaletteGlassStyle {
     static let defaultOpacity = 0.62
-    static let minimumOpacity = 0.50
+    static let minimumOpacity = 0.55
     static let maximumOpacity = 0.90
 
     static let primaryWhiteComponent: CGFloat = 0.10
-    static let secondaryWhiteComponent: CGFloat = 0.35
-    static let disabledWhiteComponent: CGFloat = 0.50
+    static let disabledContentOpacity = 0.55
     static let colorCellTintOpacity = 0.82
     static let selectedTintOpacity = 0.72
 
@@ -76,17 +75,9 @@ enum RadialPaletteGlassStyle {
         calibratedWhite: primaryWhiteComponent,
         alpha: 1
     )
-    static let secondaryContentColor = NSColor(
-        calibratedWhite: secondaryWhiteComponent,
-        alpha: 1
-    )
-    static let disabledContentColor = NSColor(
-        calibratedWhite: disabledWhiteComponent,
-        alpha: 1
-    )
     static let selectedContentColor = NSColor(calibratedWhite: 1, alpha: 1)
     static let regularBorderColor = NSColor(
-        calibratedWhite: secondaryWhiteComponent,
+        calibratedWhite: primaryWhiteComponent,
         alpha: 0.28
     )
     static let focusOuterColor = NSColor(
@@ -99,9 +90,10 @@ enum RadialPaletteGlassStyle {
     )
     static let colorCellBorderColor = NSColor(calibratedWhite: 1, alpha: 1)
 
-    // WCAG relative-luminance approximation: calibrated white 0.10 maps to
-    // L ~= 0.010. On a black backdrop, the white tint gives L_surface >= alpha,
-    // so the minimum is (0.50 + 0.05) / (0.010 + 0.05) ~= 9.16:1 (> 4.5:1).
+    // Pure-alpha composition model on black: a white tint at alpha a has encoded
+    // sRGB value a and relative luminance L = ((a + 0.055) / 1.055)^2.4.
+    // At a = 0.55, near-black 0.10 content yields about 5.22:1 contrast. Whether
+    // glassEffect applies the tint as pure alpha composition needs visual verification.
     static func surfaceTintColor(opacity: Double) -> NSColor {
         NSColor(calibratedWhite: 1, alpha: CGFloat(opacity))
     }
