@@ -82,6 +82,7 @@ final class AppState {
     private var settingsObserverIdentifier: UUID?
     private var zoomPreviewOrigin: (center: CGPoint, magnification: CGFloat)?
     private var lastColorTool = InkTool.pen
+    private var previousToolBeforeEraser = InkTool.pen
     private var passThroughGlobalMonitor: Any?
     private var passThroughTimeoutWorkItem: DispatchWorkItem?
     private var passThroughMaximumHoldWorkItem: DispatchWorkItem?
@@ -185,6 +186,9 @@ final class AppState {
     private(set) var currentTool = InkTool.pen {
         didSet {
             guard oldValue != currentTool else { return }
+            if oldValue != .eraser, currentTool == .eraser {
+                previousToolBeforeEraser = oldValue
+            }
             if currentTool.memorySlot != nil {
                 lastColorTool = currentTool
             }
@@ -789,6 +793,14 @@ final class AppState {
             selectTool(.eraser)
         }
         return eraserMode
+    }
+
+    func toggleEraserTool() {
+        if currentTool == .eraser {
+            selectTool(previousToolBeforeEraser)
+        } else {
+            selectTool(.eraser)
+        }
     }
 
     func setEraserMode(_ mode: EraserMode) {

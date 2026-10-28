@@ -221,6 +221,7 @@ enum AppCommand: Hashable {
     case selectTool(InkTool)
     case useLaser
     case selectOrCycleEraser
+    case toggleEraserTool
     case toggleEraserAreaShape
     case toggleShapeRecognition
     case selectColor(Int)
@@ -514,6 +515,15 @@ enum ShortcutCatalog {
                 modes: [.annotation],
                 command: .selectOrCycleEraser,
                 bindings: [.annotation(keyCode: kVK_ANSI_E, keyEquivalent: "e", keyCap: "E")]
+            ),
+            ShortcutDefinition(
+                id: "tool.eraser-toggle",
+                name: "지우개 ↔ 이전 도구",
+                iconName: "eraser",
+                group: .tools,
+                modes: [.annotation],
+                command: .toggleEraserTool,
+                bindings: []
             ),
             ShortcutDefinition(
                 id: "tool.arrow",
