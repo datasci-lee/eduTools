@@ -71,6 +71,7 @@ final class SettingsController: NSObject {
         )
         window.title = "EduTools 설정"
         window.contentViewController = hostingController
+        window.configureAsAppDialog()
         window.center()
         window.isReleasedWhenClosed = false
         window.setFrameAutosaveName("EduTools.SettingsWindow")
@@ -91,7 +92,7 @@ final class SettingsController: NSObject {
         alert.accessoryView = accessory
         alert.addButton(withTitle: "계속")
         alert.addButton(withTitle: "취소")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard alert.runAboveOverlay() == .alertFirstButtonReturn else { return }
 
         let bundles = accessory.selectedBundles
         guard !bundles.isEmpty else {
@@ -105,14 +106,14 @@ final class SettingsController: NSObject {
             playlistAlert.informativeText = "설정 파일을 공유하면 YouTube Music 재생목록 URL도 함께 전달됩니다."
             playlistAlert.addButton(withTitle: "포함하여 계속")
             playlistAlert.addButton(withTitle: "취소")
-            guard playlistAlert.runModal() == .alertFirstButtonReturn else { return }
+            guard playlistAlert.runAboveOverlay() == .alertFirstButtonReturn else { return }
         }
 
         let panel = NSSavePanel()
         panel.title = "설정 내보내기"
         panel.nameFieldStringValue = "EduTools-settings.pansetting"
         panel.allowedContentTypes = [UTType(exportedAs: SettingsDocument.format)]
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard panel.runAboveOverlay() == .OK, let url = panel.url else { return }
         do {
             let document = try SettingsTransfer.exportDocument(
                 settings: settingsStore.settings,
@@ -132,7 +133,7 @@ final class SettingsController: NSObject {
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         panel.allowedContentTypes = [UTType(exportedAs: SettingsDocument.format)]
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard panel.runAboveOverlay() == .OK, let url = panel.url else { return }
         openImportPreview(for: url)
     }
 
@@ -153,7 +154,7 @@ final class SettingsController: NSObject {
         alert.informativeText = "현재 설정은 되돌릴 수 있도록 자동 백업됩니다."
         alert.addButton(withTitle: "초기화")
         alert.addButton(withTitle: "취소")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard alert.runAboveOverlay() == .alertFirstButtonReturn else { return }
         do {
             try backupStore.append(settingsStore.settings)
             settingsStore.resetToDefaults()
@@ -182,7 +183,7 @@ final class SettingsController: NSObject {
         alert.informativeText = "VoiceOver가 ⌃⌥를 사용 중입니다. EduTools 앱 수정키를 ⌃⌥⇧로 바꾸는 것을 권장합니다."
         alert.addButton(withTitle: "⌃⌥⇧로 변경")
         alert.addButton(withTitle: "유지")
-        if alert.runModal() == .alertFirstButtonReturn {
+        if alert.runAboveOverlay() == .alertFirstButtonReturn {
             settingsStore.update { $0.shortcuts.appModifier = .controlOptionShift }
         }
     }
@@ -216,7 +217,7 @@ final class SettingsController: NSObject {
         panel.canChooseDirectories = true
         panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard panel.runAboveOverlay() == .OK, let url = panel.url else { return }
         settingsStore.update { $0.general.archiveFolderPath = url.path }
     }
 
@@ -232,7 +233,7 @@ final class SettingsController: NSObject {
         alert.accessoryView = scrollView
         alert.addButton(withTitle: "적용")
         alert.addButton(withTitle: "취소")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard alert.runAboveOverlay() == .alertFirstButtonReturn else { return }
         let values = textView.string.split(whereSeparator: \.isNewline).map {
             $0.trimmingCharacters(in: .whitespacesAndNewlines)
         }.filter { !$0.isEmpty }
@@ -281,6 +282,7 @@ final class SettingsController: NSObject {
         )
         window.title = "설정 가져오기 미리보기"
         window.contentViewController = NSHostingController(rootView: view)
+        window.configureAsAppDialog()
         window.center()
         window.isReleasedWhenClosed = false
         importWindow?.close()
@@ -324,6 +326,7 @@ final class SettingsController: NSObject {
         )
         window.title = "EduTools 권한 안내"
         window.contentViewController = NSHostingController(rootView: view)
+        window.configureAsAppDialog()
         window.center()
         window.isReleasedWhenClosed = false
         permissionWindow = window
@@ -350,7 +353,7 @@ final class SettingsController: NSObject {
         alert.messageText = "EduTools 설정"
         alert.informativeText = message
         alert.addButton(withTitle: "확인")
-        alert.runModal()
+        alert.runAboveOverlay()
     }
 
     private func presentSettingsIssue(_ issue: SettingsStoreIssue) {
@@ -366,7 +369,7 @@ final class SettingsController: NSObject {
         alert.informativeText = issue.detail
         alert.addButton(withTitle: "확인")
         NSApp.activate()
-        alert.runModal()
+        alert.runAboveOverlay()
         settingsStore.clearPendingIssue(id: issue.id)
     }
 }

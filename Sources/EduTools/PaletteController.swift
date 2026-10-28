@@ -31,7 +31,7 @@ private final class PaletteDragHandle: NSView {
 }
 
 final class PaletteController: NSObject {
-    static let windowLevel = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 2)
+    static let windowLevel = AppWindowLevel.tool
 
     private enum Orientation: String {
         case horizontal

@@ -153,7 +153,7 @@ final class BreakTimerController: NSObject {
         panel.isMovableByWindowBackground = false
         panel.isReleasedWhenClosed = false
         panel.animationBehavior = .none
-        panel.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 3)
+        panel.level = AppWindowLevel.guidance
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
 
         rootView.material = .underWindowBackground
@@ -241,7 +241,7 @@ final class BreakTimerController: NSObject {
     private func configureSetupPanel() {
         setupPanel.title = "쉬는 시간 타이머"
         setupPanel.isReleasedWhenClosed = false
-        setupPanel.level = .floating
+        setupPanel.configureAsAppDialog()
 
         let contentView = NSView()
         setupPanel.contentView = contentView

@@ -162,7 +162,7 @@ final class LessonTimerController: NSObject, NSMenuDelegate {
         panel.isMovableByWindowBackground = false
         panel.isReleasedWhenClosed = false
         panel.animationBehavior = .none
-        panel.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 2)
+        panel.level = AppWindowLevel.tool
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.sharingType = .none
         panel.contentMinSize = SizePreset.small.size

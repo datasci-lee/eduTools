@@ -691,7 +691,7 @@ final class ZoomController {
         panel.isMovableByWindowBackground = false
         panel.isReleasedWhenClosed = false
         panel.animationBehavior = .none
-        panel.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
+        panel.level = AppWindowLevel.effect
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.acceptsMouseMovedEvents = true
         panel.sharingType = .none
@@ -833,7 +833,7 @@ final class ZoomController {
         alert.messageText = title
         alert.informativeText = message
         alert.addButton(withTitle: "확인")
-        alert.runModal()
+        alert.runAboveOverlay()
     }
 
     deinit {
