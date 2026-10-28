@@ -164,10 +164,16 @@ private final class AnnotationTextView: NSTextView {
 }
 
 final class InkView: NSView {
+    enum InputMappingMode {
+        case throughPresentation
+        case identity
+    }
+
     var keyDownInterceptor: ((NSEvent) -> Bool)?
     var keyUpInterceptor: ((NSEvent) -> Bool)?
     var scrollWheelInterceptor: ((NSEvent) -> Bool)?
     var magnifyInterceptor: ((NSEvent) -> Bool)?
+    var inputMappingMode = InputMappingMode.throughPresentation
 
     private struct ActiveStroke {
         let identifier: UUID
@@ -259,6 +265,16 @@ final class InkView: NSView {
     private var pressedShortcutDefinitions: [UInt16: ShortcutDefinition] = [:]
 
     override var acceptsFirstResponder: Bool { true }
+
+    var isGestureInProgress: Bool {
+        activeStroke != nil
+            || activeShape != nil
+            || activeCover != nil
+            || activeEraser != nil
+            || selectionInteraction != nil
+            || textEntrySession != nil
+            || activeMouseGestureButton != nil
+    }
 
     init(
         frame frameRect: NSRect,
@@ -532,7 +548,7 @@ final class InkView: NSView {
         case .text:
             beginTextEntry(
                 at: location,
-                presentedPoint: convert(event.locationInWindow, from: nil)
+                presentedPoint: presentedPoint(forOriginal: location)
             )
             return
         case .arrow, .rectangle, .ellipse:
@@ -1947,11 +1963,26 @@ final class InkView: NSView {
 
     private func localLocation(for event: NSEvent) -> CGPoint {
         let presentedPoint = convert(event.locationInWindow, from: nil)
-        guard let sourceRect else { return presentedPoint }
-        return ZoomGeometry.originalPoint(
-            fromZoomed: presentedPoint,
-            in: bounds.size,
-            sourceRect: sourceRect
+        switch inputMappingMode {
+        case .identity:
+            return presentedPoint
+        case .throughPresentation:
+            guard let sourceRect else { return presentedPoint }
+            return ZoomGeometry.originalPoint(
+                fromZoomed: presentedPoint,
+                in: bounds.size,
+                sourceRect: sourceRect
+            )
+        }
+    }
+
+    private func presentedPoint(forOriginal point: CGPoint) -> CGPoint {
+        guard let sourceRect else { return point }
+        return point.applying(
+            ZoomGeometry.presentationTransform(
+                sourceRect: sourceRect,
+                destinationSize: bounds.size
+            )
         )
     }
 
