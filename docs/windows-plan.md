@@ -1,8 +1,8 @@
 # EduTools Windows 개발 인계서 (Rust, macOS Swift 유지)
 
-2026-10-28 · 기준 `main` 99548ce(통과 모드 #35·화면 프리셋 배치 #38 머지 후) · Windows PC 에서 이 문서 하나로 착수한다. 정본: `docs/design.md`(기능·단축키) · `Sources/EduTools/*.swift`(동작) · `docs/icons.md`(아이콘 키).
+2026-10-29 · 기준 `main` d2f3310(유리 면 채움 #44·속성 아이콘 시험 #45 머지 후) · Windows PC 에서 이 문서 하나로 착수한다. 정본: `docs/design.md`(기능·단축키) · `Sources/EduTools/*.swift`(동작) · `docs/icons.md`(아이콘 키).
 
-표식: `[확인 필요]` = §9 에서 실기로 판별. Swift 줄 번호는 `99548ce` 기준이고 심볼·상수 이름을 함께 적었다 — 어긋나면 이름으로 찾는다.
+표식: `[확인 필요]` = §9 에서 실기로 판별. Swift 줄 번호는 `d2f3310` 기준이고 심볼·상수 이름을 함께 적었다 — 어긋나면 이름으로 찾는다.
 
 ## 작업 규칙 (Windows 쪽 사람·AI 도구 공통)
 
@@ -13,7 +13,7 @@
 | 편집 범위 | `windows/` · `.github/workflows/windows.yml` · `fixtures/pansetting/windows-v1.pansetting`(§2.2, §7 #17) 만(모두 아직 없음 — W1 에서 생성). `Sources/` · `build.sh` · `docs/` · `assets/` · `README.md` · `ROADMAP.md` 와 나머지 `fixtures/` 는 읽기 전용(macOS 쪽 소유) — 고칠 곳이 보이면 이슈/PR 본문으로 알린다 |
 | 에셋 | 앱 아이콘 = `assets/icons/*.svg`(57키), 트레이 ICO = `assets/symbols/windows/tray/` — **읽어서 쓰고 사본을 만들지 않는다**(§3.2) |
 | 기본 브랜치 직접 push 금지 | `feature/win-<단계>` → PR → CI 초록 + 실기 체크리스트 후 머지 |
-| 시험 | 새 시험 체계를 만들지 않는다. `SelfTest.swift` 의 단언을 옮긴 것만(§2.2 목록 — 72개 중 71): A 61 은 같은 입력·기대값 그대로, B 10 은 §2.2 구분 열대로 OS 값만 Windows 값으로 치환, C 1 은 제외. 목록 밖 영역(팔레트 기하·탐색·도구별 기억 이행·`DisplayPresetCapture` 등)의 시험 추가는 §7 #14 승인 후 |
+| 시험 | 새 시험 체계를 만들지 않는다. `SelfTest.swift` 의 단언을 옮긴 것만(§2.2 목록 — 75개 중 74): A 64 는 같은 입력·기대값 그대로, B 10 은 §2.2 구분 열대로 OS 값만 Windows 값으로 치환, C 1 은 제외. 목록 밖 영역(팔레트 기하·탐색·도구별 기억 이행·`DisplayPresetCapture` 등)의 시험 추가는 §7 #14 승인 후 |
 | 의존성 | `windows`·`serde`·`serde_json` 외 추가는 사용자 승인 |
 
 ## 0. 선택지 판정 (사용자 결정: C — 앱 전체 Rust, 2026-10-28 확정)
@@ -49,7 +49,7 @@
 
 ### 2.1 Swift ↔ Rust 대응표
 
-크레이트 둘: `edutools-core`(OS 의존 0, 어느 OS 에서나 `cargo test`) · `edutools`(Windows 앱 바이너리). Swift 열의 `(N)` = 99548ce 줄 수. 순수부/나머지 분할은 "파일 전체 − UI·저장 매체 부분" 으로 가른 것.
+크레이트 둘: `edutools-core`(OS 의존 0, 어느 OS 에서나 `cargo test`) · `edutools`(Windows 앱 바이너리). Swift 열의 `(N)` = d2f3310 줄 수. 순수부/나머지 분할은 "파일 전체 − UI·저장 매체 부분" 으로 가른 것.
 
 | Swift | Rust | 크레이트 | 비고 |
 | --- | --- | --- | --- |
@@ -60,27 +60,27 @@
 | Zoom.swift (209) | `zoom.rs` | core | 배율·따라가기 3방식·가장자리 고정 |
 | TimerEngine.swift (233) · TimerCoordinator.swift (37) | `timer.rs` | core | 종료 시각 기반 계산, 자동 연결, `TimerGeometry`(배지 스냅 16px) |
 | Board.swift (167) | `board.rs` | core | 페이지·패턴·블랙보드 색 치환 |
-| SettingsModel.swift (1001) 순수부 | `settings.rs` | core | 스키마(`tools.perToolMemory`·`tools.paletteStyle`·`display` 포함)·`SettingsValidator`·`SettingsDocument`/`SettingsTransfer`·옛 키 이행(:189-204)·**`SettingsStore` 의 로드·갱신·손상 보존 규칙**(§2.2 검증기·저장소)·백업 5개 회전(저장 매체는 trait). 영속 매체(`SettingsStore`:620 UserDefaults·`SettingsBackupStore`:965 → `settings.json`)만 app |
+| SettingsModel.swift (1068) 순수부 | `settings.rs` | core | 스키마(`tools.perToolMemory`·`tools.paletteStyle`·`tools.paletteGlassOpacity`·`display` 포함)·`SettingsValidator`·`SettingsDocument`/`SettingsTransfer`·옛 키 이행(:146-165,241-273)·유리 스타일 상수(:64-117)·**`SettingsStore` 의 로드·갱신·손상 보존 규칙**(§2.2 검증기·저장소)·백업 5개 회전(저장 매체는 trait). 영속 매체(`SettingsStore`:687, `SettingsBackupStore`:1032 → `settings.json`)만 app |
 | DisplayPreset.swift (1006) | `display_preset.rs` | core | **OS 타입 0**(`import Foundation` 뿐, :1). 모델·`DisplayPresetValidator`·3×3 격자(`GridCell`·`DisplayGrid` 검증·`isConnected`, :1~290)는 `display` 묶음 왕복에 **필수**라 W2. `DisplayMatcher`·`DisplayPlanner.plan`·`DisplayGridLayout`·`DisplayPresetCapture`·`DisplayPlan.summary()` 는 W10(§3.1.6). 입력 `OnlineDisplay` 값의 열거는 app(`monitor.rs`). 범위 §7 #12 |
-| Shortcut.swift (1039) | `shortcut.rs` | core | `PortableShortcut` 토큰 문법(:4)·`ShortcutCatalog`(정의 49개 = 리터럴 43 + 색 6, `annotation.pass-through` 포함, :396)·`filtered`·`ShortcutConflictDetector`(알려진 충돌 목록은 OS 별)·`matches`. 카탈로그는 상수 배열이 아니라 `Vec` 데이터. kVK/Carbon 표는 `keymap.rs` |
-| AppState.swift (1518) · CommandDispatcher.swift (245) | `state.rs` · `dispatch.rs` | core | 모드 전이·명령 라우팅(부작용은 콜백)·도구별 기억 적용(§3)·`DisplayDisconnectPolicy`. 설정과 닿는 규칙(`should_consume`·keyUp 기억·한 단계 나가기 순서·숫자키 색)은 §2.2 단축키. `NSColor`→`[f64;4]`, `NSEvent`(전달 키)는 콜백. 통과 모드 상태 `PassThroughModeSource{key(키코드), timed}`·기한(`now` 주입)·`PassThroughDefaults`(`AppState.swift:6-12` — 시간제 첫 클릭 10초·마지막 입력 3초, 키 모드 안전망 최대 30초. 폴링 간격·신뢰창 2개는 macOS 전용이라 이식 안 함, §3 통과 모드) |
-| RadialPaletteController.swift (1876) 순수부 · RadialPaletteGlassView.swift (455) 순수부 | `radial.rs` | core | 경계 표 §2.3: 그룹 정의 표(`RadialPaletteCatalog` :100)·`layoutCells`(:1317)·`hitTarget`(:1301)·`nextRadialPaletteFocus`(:292)·`RadialPaletteSectorGeometry`(RG:5)·`RadialPaletteMetrics`(RG:33)·렌더 상태 값(RG:65). 지금 Swift 는 `NSColor`·클로저를 가진 private 셀에 묶여 **분리돼 있지 않다** → Rust 에선 색=`[f64;4]`·동작=enum 으로 나눠 재구성 |
+| Shortcut.swift (1049) | `shortcut.rs` | core | `PortableShortcut` 토큰 문법(:4)·`ShortcutCatalog`(정의 50개 = 리터럴 44 + 색 6, `annotation.pass-through`·기본 키 없는 `tool.eraser-toggle` 포함, :397-906)·`filtered`·`ShortcutConflictDetector`(알려진 충돌 목록은 OS 별)·`matches`. 카탈로그는 상수 배열이 아니라 `Vec` 데이터. kVK/Carbon 표는 `keymap.rs` |
+| AppState.swift (1530) · CommandDispatcher.swift (248) | `state.rs` · `dispatch.rs` | core | 모드 전이·명령 라우팅(부작용은 콜백)·도구별 기억 적용(§3)·`DisplayDisconnectPolicy`. `currentTool` didSet 한 곳에서 비지우개→지우개 전환의 `oldValue`를 비영속 `previousToolBeforeEraser`에 저장하고 `toggleEraserTool`이 복귀(`AS:84-85,186-200,798-804`; `AS`=`AppState.swift`). 명령 enum·라우팅은 `SC:208-239`, `CD:172-175`. 설정과 닿는 규칙(`should_consume`·keyUp 기억·한 단계 나가기 순서·숫자키 색)은 §2.2 단축키. `NSColor`→`[f64;4]`, `NSEvent`(전달 키)는 콜백. 통과 모드 상태 `PassThroughModeSource{key(키코드), timed}`·기한(`now` 주입)·`PassThroughDefaults`(`AppState.swift:6-12` — 시간제 첫 클릭 10초·마지막 입력 3초, 키 모드 안전망 최대 30초. 폴링 간격·신뢰창 2개는 macOS 전용이라 이식 안 함, §3 통과 모드) |
+| RadialPaletteController.swift (1919) 순수부 · RadialPaletteGlassView.swift (585) 순수부 | `radial.rs` | core | 경계 표 §2.3: 그룹 정의 표(`RadialPaletteCatalog` :100)·`layoutCells`(:1335)·`hitTarget`(:1319)·`nextRadialPaletteFocus`(:292)·`RadialPaletteSectorGeometry`(RG:5)·`RadialPaletteMetrics`(RG:33)·렌더 상태 값(RG:65-125). 지금 Swift 는 `NSColor`·클로저를 가진 private 셀에 묶여 **분리돼 있지 않다** → Rust 에선 색=`[f64;4]`·동작=enum 으로 나눠 재구성 |
 | BreakMusic.swift (588) 순수부 | `music.rs` | core | `BreakMusicURL`·`BreakMusicFade`(:11-44). `AppleScriptString`(:45)은 **이식 안 함**(§7 #7) |
 | PresenterEffects.swift:5-71 `KeystrokeDisplayFilter` | `keystroke.rs` | core | 수정키 있는 입력만 표시. 입력 표현은 OS 별 |
-| (macOS 미구현) 속성 아이콘 | `attr_icon.rs` | core | manifest 해석·두께 단계·조건·명암(halo) → 레이어 목록(§3.2.6) |
-| SelfTest.swift (1280) | `selftest.rs` | core | §2.2 |
-| main.swift (214) | `main.rs` | app | 메시지 루프·단일 인스턴스(명명 뮤텍스)·`EnableMouseInPointer`·시작 시 설정 오류 알림 |
+| AttrIcon.swift (760) | `attr_icon.rs` | core | manifest 해석·두께 단계·조건·명암(halo) → 레이어 목록(§3.2.6). 순수 함수 `AttrIconPure`(:26-121), 도구 입력 구성(:211-350), manifest 평가·halo 판정(:382-519) |
+| SelfTest.swift (1351) | `selftest.rs` | core | §2.2 |
+| main.swift (215) | `main.rs` | app | 메시지 루프·단일 인스턴스(명명 뮤텍스)·`EnableMouseInPointer`·시작 시 설정 오류 알림·속성 에셋 감사(:25-36) |
 | StatusMenu.swift (484) | `tray.rs` | app | `Shell_NotifyIconW`·`TrackPopupMenu`·트레이 ICO 4종 선택·교체(§3.2.5). 메뉴 항목의 단축키 문구는 카탈로그에서 **메뉴를 열 때마다** 생성(캐시 금지 — 설정 변경이 반영돼야 한다, `StatusMenu.swift:300-330`) |
-| HotkeyCenter.swift (134) | `hotkey.rs` · `kbhook.rs` · `mousehook.rs` | app | 전역 7개 `RegisterHotKey` / 모드 안 키 `WH_KEYBOARD_LL`. `RegisterHotKey` 에는 눌림(`WM_HOTKEY`)만 있고 해제 통지가 없다 → 전역 도움말(`⌃⌥/` 누르고 있으면 잠깐 표시·짧게 누르면 고정, `HelpController.shortcutDidRelease`)은 `GetAsyncKeyState` 짧은 폴링으로 해제 감지 [확인 필요: §9]. 단축키 설정이 바뀌면 전역 키 전부 재등록 + 등록 실패 경고 갱신(`main.swift:114-122,131-186`). 통과 모드 시간제 복귀·키 모드 안전망용 마우스 관찰 → `mousehook.rs`(§3 통과 모드 — 전역 클릭 감시) |
+| HotkeyCenter.swift (134) | `hotkey.rs` · `kbhook.rs` · `mousehook.rs` | app | 전역 7개 `RegisterHotKey` / 모드 안 키 `WH_KEYBOARD_LL`. `RegisterHotKey` 에는 눌림(`WM_HOTKEY`)만 있고 해제 통지가 없다 → 전역 도움말(`⌃⌥/` 누르고 있으면 잠깐 표시·짧게 누르면 고정, `HelpController.shortcutDidRelease`)은 `GetAsyncKeyState` 짧은 폴링으로 해제 감지 [확인 필요: §9]. 단축키 설정이 바뀌면 전역 키 전부 재등록 + 등록 실패 경고 갱신(`main.swift:115-123,132-188`). 통과 모드 시간제 복귀·키 모드 안전망용 마우스 관찰 → `mousehook.rs`(§3 통과 모드 — 전역 클릭 감시) |
 | (Shortcut.swift 의 kVK 표 :11-53) | `keymap.rs` | app | 토큰 ↔ VK/스캔코드. Windows 보조 키 별칭 표(§7 #22) |
 | ScreenIdentity.swift (28) · OnlineDisplayProvider.swift (110) | `monitor.rs` | app | 식별(§3.1.1, **`monitorDevicePath` 는 UUID 의 1:1 대응이 아니다** — 포트·독에 묶임)·`OnlineDisplay` 열거(`QueryDisplayConfig` 읽기 전용, §3.1.2)·HMONITOR→키 변환·화면 판정(`monitor_by_key`·`monitor_at_point`)·비-0·음수 원점 배치(eduTools-032)를 **이 파일 한 곳**에. 보관용 키 함수도 여기(§3 화면 사라짐·복원) |
 | WindowLevels.swift (47) | `z_bands.rs` · `run_above_overlay` | app | 5단 계층 모델(오버레이<효과<도구<안내<대화)과 "대화상자가 오버레이 위에 뜨는" 헬퍼. Windows 엔 레벨 숫자가 없다 → §3 "창 높이 대역·z순서"·"모달 대화상자·소유 창" |
 | OverlayController.swift (336) | `overlay.rs` | app | 모니터별 DComp 창·클릭 통과 토글(판서 on/off 와 통과 모드가 같은 창 속성 `set_click_through`). `monitor.rs` 이벤트 구독, 좌표·화면 판정은 §3 "오버레이 창 좌표·화면 판정" |
-| InkView.swift (1920) | `ink_view.rs` · `render.rs` | app | `WM_POINTER*` → core 입력 이벤트(위치 0~1·압력·접촉·지우개 끝·범위)·D2D 그리기·레이저 꼬리(eduTools-028) |
-| PaletteController.swift (549) | `palette.rs` | app | **가로 팔레트만**. 원형과 같은 D2D 면 스타일(패널 모서리 12·버튼 9, `PaletteController.swift:112-116,238`). Win32 버튼 컨트롤 안 씀 |
+| InkView.swift (2004) | `ink_view.rs` · `render.rs` | app | `WM_POINTER*` → core 입력 이벤트(위치 0~1·압력·접촉·지우개 끝·범위)·D2D 그리기·레이저 꼬리(eduTools-028)·우클릭 임시 지우개와 버튼 소유권(§3 입력) |
+| PaletteController.swift (584) | `palette.rs` | app | **가로 팔레트만**. 원형과 같은 D2D 면 스타일(패널 모서리 12·버튼 9, `PaletteController.swift:113-117,239`). Win32 버튼 컨트롤 안 씀 |
 | RadialPaletteController.swift 나머지 | `radial_palette.rs` · `hint_window.rs` | app | 패널·이동·접기·펼침 위치·⌘ 키캡·키 입력 → `radial.rs` 호출. 창·포인터·훅·위치 파일·접근성 설정·힌트 창 |
-| RadialPaletteGlassView.swift:124~ (SwiftUI·`RadialSectorShape`) + 원형·가로 공통 그리기 | `palette_render.rs` | app | 렌더 모델(칸 목록+호버·포커스·키캡 플래그, `RG:65-118`) → D2D. 유리 효과는 1:1 대응 없음 — 수준 §7 #13 |
-| AppIcon.swift (206) | `app_icon.rs` | app | 키 → 임베드 SVG 문서(캐시)·D2D 그리기·폴백 글리프·상태색·고대비·이름 점검(§3.2.2~4). 팔레트·도움말·원형 그리기가 이것만 호출 |
+| RadialPaletteGlassView.swift:155~ (SwiftUI·`RadialSectorShape`) + 원형·가로 공통 그리기 | `palette_render.rs` | app | 렌더 모델(칸 목록+호버·포커스·키캡·속성 구성 플래그, `RG:65-125`) → D2D. 유리 효과는 1:1 대응 없음 — 수준 §7 #13 |
+| AppIcon.swift (265) | `app_icon.rs` | app | 키 → 임베드 SVG 문서(캐시)·D2D 그리기·폴백 글리프·상태색·고대비·이름 점검(§3.2.2~4). 속성 아이콘 경로·가로 팔레트 배경 추정은 :71-110,254-264. 팔레트·도움말·원형 그리기가 이것만 호출 |
 | build.sh 의 앱 아이콘 생성부 | `build.rs` + `app.rc` | app | 리소스 컴파일·에셋 임베드 표 생성·SVG 허용 요소 검사(§3.2.7) |
 | HelpController.swift (733) | `help.rs` | app | 카탈로그에서 생성. 닫기 키도 `matches`, 길게 누르기는 눌린 키를 기억(§2.2 단축키) |
 | LessonTimerController (712) · BreakTimerController (607) | `lesson_badge.rs` · `break_screen.rs` | app | |
@@ -88,7 +88,7 @@
 | ZoomController.swift (849) | `zoom_view.rs` · `capture.rs` | app | §3 |
 | PresenterEffects.swift 나머지 | `presenter.rs` | app | 스포트라이트·커서 강조·키 표시(`WH_*_LL`) |
 | ExportController (357) · ArchiveController (295) | `export.rs` · `archive.rs` | app | 보관 키는 `monitor.rs` 의 키 함수를 그대로 쓴다(§3 화면 사라짐·복원) |
-| SettingsController.swift (1088) | `settings_ui.rs` · `settings_store.rs` | app | `%APPDATA%\EduTools\settings.json`. 탭 8개(일반·도구·지우개·줌·보드·타이머·화면·단축키). `update` 가 Err 면 사유 표시, 로드 실패 시 원본 보존 + 알림(`SettingsStoreIssue` :598). 단축키 기록 버튼은 **커스텀**(§1) |
+| SettingsController.swift (1100) | `settings_ui.rs` · `settings_store.rs` | app | `%APPDATA%\EduTools\settings.json`. 탭 8개(일반·도구·지우개·줌·보드·타이머·화면·단축키), 도구 탭의 유리 불투명도 슬라이더(:508-527). `update` 가 Err 면 사유 표시, 로드 실패 시 원본 보존 + 알림(`SettingsStoreIssue` `S:665-674`). 단축키 기록 버튼은 **커스텀**(§1) |
 | DisplayPresetsSettingsView.swift (834) | `settings_ui_display.rs` | app | "화면" 탭(격자 편집기·현재 구성 캡처·계획 보기). SwiftUI → Win32. 적용 버튼 없음(macOS 1단계와 동일) |
 | (macOS 2·3단계 — **Swift 코드 없음**) | `display_apply.rs` | app | 프리셋 적용·복구·변경 감지·자동 전환(§3.1.3~4). W11 |
 
@@ -98,64 +98,65 @@
 | --- | --- | --- |
 | 순수 로직 | `SelfTest.swift` 의 단언을 **같은 입력·같은 기대값으로** `selftest.rs` 에 옮긴다. 기대값이 같으면 동치. 이산 결과(갈라진 획 수·도형 종류·적중 여부)는 정확히, 좌표는 `1e-9` 허용 | macOS 0, Rust 는 이식분만(`cargo test` 1개 + `edutools.exe --selftest`) |
 | 동치 추적 | Rust 함수마다 대응 Swift 심볼 한 줄 주석. 이후 Swift 로직 PR 은 Rust 대응 수정 또는 이슈(`windows-sync` 라벨, §7 #18)를 동반 | — |
-| .pansetting | 저장소 루트 `fixtures/pansetting/` 에 **macOS 가 내보낸 파일 1개 + Windows 가 내보낸 파일 1개**(둘 다 아직 없음 — §5.4). 양쪽 SelfTest 의 기존 점검(`SelfTest.swift:1148-1249`)이 두 파일을 `SettingsTransfer.decode` → `appliedSettings(current: .default, 전체 묶음)` 로 읽어 `.default` 와 같은지(`archiveFolderPath` 없음, `appVersion`·`createdOS` 무시) 본다. macOS 파일은 **현재 main 으로 재생성**(묶음 9개·`display:{"presets":[]}`·`perToolMemory`·`paletteStyle`·`previewDimming` 포함) | macOS: 기존 점검 입력만 추가. 새 함수 0 |
-| 기본 단축키 | `fixtures/shortcuts-default.json`(예정) = `{"formatVersion":1,"bindings":{"<정의 id>\|<scope>":"<토큰>",…},"unbound":["<id>",…]}`(키 형식 = override 키 `SC:392-394`; 기본 키 없는 정의 5개 `cursor-highlight.toggle`·`keystroke-display.toggle`·`tool.cover`·`tool.shape-recognition`·`eraser.area-shape` 는 `unbound`). 예: `palette.radial.toggle\|annotation`=`M`, `help.show\|annotation`=`Shift+/`, `edit.redo\|annotation`=`Shift+Primary+Z`. 정의 id 는 아이콘 키(§3.2.3)와 같다. `annotation.pass-through\|annotation`=`U` 도 포함(#35 머지됨 — 정의 49개). 양쪽 카탈로그 점검이 같은 파일과 대조 | 같음 |
+| .pansetting | 저장소 루트 `fixtures/pansetting/` 에 **macOS 가 내보낸 파일 1개 + Windows 가 내보낸 파일 1개**(둘 다 아직 없음 — §5.4). 양쪽 SelfTest 의 기존 설정 점검(`SelfTest.swift:1218-1318`)에 두 파일을 `SettingsTransfer.decode` → `appliedSettings(current: .default, 전체 묶음)` 로 읽어 `.default` 와 같은지(`archiveFolderPath` 없음, `appVersion`·`createdOS` 무시) 보는 입력을 추가한다. macOS 파일은 **현재 main 으로 재생성**(묶음 9개·`display:{"presets":[]}`·`perToolMemory`·`paletteStyle`·`paletteGlassOpacity`·`previewDimming` 포함) | macOS: 기존 점검 입력만 추가. 새 함수 0 |
+| 기본 단축키 | `fixtures/shortcuts-default.json`(예정) = `{"formatVersion":1,"bindings":{"<정의 id>\|<scope>":"<토큰>",…},"unbound":["<id>",…]}`(키 형식 = override 키 `SC:393-395`; 기본 키 없는 정의 6개 `cursor-highlight.toggle`·`keystroke-display.toggle`·`tool.eraser-toggle`·`tool.cover`·`tool.shape-recognition`·`eraser.area-shape` 는 `unbound`). 예: `palette.radial.toggle\|annotation`=`M`, `help.show\|annotation`=`Shift+/`, `edit.redo\|annotation`=`Shift+Primary+Z`. 정의 id 는 아이콘 키(§3.2.3)와 같다. `annotation.pass-through\|annotation`=`U` 도 포함(#35·#42 머지됨 — 정의 50개). 양쪽 카탈로그 점검이 같은 파일과 대조 | 같음 |
 | 기본값 | 위 픽스처가 "기본값 = 양 OS 동일" 을 강제. macOS 기본값을 바꾸면 픽스처가 빨개져 Windows 동기를 요구 | — |
 
-**이식 목록** — `SelfTest.swift` 실행 시 통과 수 = **72**(소스 계수: `expect` 호출 68개에서 대체 분기 2개(:45·:63 의 `expect(false …)`)를 빼고 :76 의 7개 입력 루프를 +6 하면 72. #38 이 화면 프리셋 계산 단언 6개를 더했다 — macOS 쪽에서 새로 빌드한 `EduTools --selftest` 로 재확인). A = 입력·기대값 그대로, B = 같은 구조·OS 값만 Windows 값으로, C = 이식 안 함.
+**이식 목록** — `SelfTest.swift` 실행 시 통과 수 = **75**(소스 계수: `expect` 호출 71개에서 대체 분기 2개(:45·:63 의 `expect(false …)`)를 빼고 :76 의 7개 입력 루프를 +6 하면 75. #38 이 화면 프리셋 계산 단언 6개를, #45 가 속성 아이콘 순수 함수 단언 3개를 더했다 — macOS 쪽에서 새로 빌드한 `EduTools --selftest` 로 재확인). A = 입력·기대값 그대로, B = 같은 구조·OS 값만 Windows 값으로, C = 이식 안 함.
 
 | 범주 | 개수 | `SelfTest.swift` | Rust | 구분 |
 | --- | --- | --- | --- | --- |
 | 단축키 토큰(`AppMod+P`·`AppMod+/` 파싱·직렬화, 거부 입력 7, 수정키 없는 `P` 거부) | 11 | :22-23, :49-50, :66-77 | `shortcut.rs` | A |
 | 단축키 OS 매핑(표시형 `⌃⌥P`·키코드 35/44·Carbon 플래그·왕복·AppMod 없음 거부) | 8 | :24-26, :30, :40, :51, :58, :78 | `shortcut.rs`+`keymap.rs` | B — `Ctrl+Alt+P`·VK·`MOD_*` 값으로. 물리 키코드 35·44·Carbon 왕복은 이식 불가 → 토큰↔VK 왕복(`P`↔0x50, `/`↔0xBF)로 치환 |
 | 카탈로그 중복 없음·판서 단축키 전부 디스패처 연결 | 2 | :85, :93 | `shortcut.rs`·`dispatch.rs` | A (+`fixtures/shortcuts-default.json` 대조). 중복 검사는 OS 매핑 후 키로. 연결 단언은 Rust `match` 완전성이 컴파일 시 보장하며 `M`(`palette.radial.toggle`)·`U`(`annotation.pass-through`) 도 카탈로그·디스패처에 있다 |
-| 도움말 필터(한글 이름 "형광펜" → `tool.highlighter`·표시 키 "[" → `tool.width.decrease`) | 2 | :122, :131 | `shortcut.rs` | A — 표시 문자열이 OS 별(`Ctrl+`)이므로 `[` 기대값만 동일 |
-| 키 입력 표시 필터 | 1 | :113 | `keystroke.rs` | B (수정키 입력 표현) |
-| 줌(배율 단계·가장자리 따라가기·정지 줌 역변환) | 4 | :148, :171, :176, :194 | `zoom.rs` | A |
-| 판서(좌표 왕복 1·Catmull-Rom 1·스냅 2·도형 인식 4·올가미/선택 변환/가리개 4·Undo·Redo 2) | 14 | :140, :214-416 | `ink.rs`·`shape.rs` | A |
-| 지우개(부분·대상 필터·영역) | 3 | :440, :472, :607 | `eraser.rs` | A |
-| 보관(JSON 왕복·해상도 복원·화면 이동 정책)·전체 지우기 | 4 | :515, :538, :551, :622 | `archive.rs`·`ink.rs` | A (형식은 Windows 고유 허용 — 불변식만 같게) |
-| 보드(전환·페이지 Undo·블랙보드 색) | 3 | :639, :658, :683 | `board.rs` | A |
-| 타이머(수업 잔여·일시정지·쉬는 시간 +10분·지정 시각·배지 스냅) | 5 | :691-742 | `timer.rs` | A |
-| 쉬는 시간 음악(URL 검증·페이드 곡선) / AppleScript 이스케이프 | 2 / 1 | :752, :771 / :777 | `music.rs` / — | A / **C** |
-| 화면 구성 프리셋 계산(격자 배치 4종·주 모니터 부재·겹침 적용 불가 / 미러·마스터 승계·누락·프리셋 밖 / 격자 검증 / 자동 집합 우선순위 / 식별 매칭 — #38) | 6 | :887, :958, :1016, :1060, :1083, :1138(헬퍼 :783-801) | `display_preset.rs` | A (입력·기대값 그대로. 규칙은 §3.1.6) |
-| 설정(왕복 :1148-1162 줌 최대 9 거부·범위 검증·호환 디코딩 :1169-1198·내보내기 규칙 :1200-1249·백업 회전 :1255-1265) | 5 | :1152, :1166, :1195, :1239, :1263 | `settings.rs` | A (백업은 매체만 다름). 입력은 아래 "설정 이식 입력" |
-| 알려진 충돌 단축키 | 1 | :1250 | `shortcut.rs` | B — 입력은 Windows 표의 값으로 교체(`AppMod+D` 는 macOS 목록) |
-| 합계 | 72 | | | A 61 · B 10 · C 1 |
+| 속성 아이콘 순수 함수(두께 단계·조건 문법·명암/halo 판정 — #45) | 3 | :98, :120, :152 | `attr_icon.rs` | A — `AttrIconPure`의 같은 입력·기대값으로 이식(§3.2.6) |
+| 도움말 필터(한글 이름 "형광펜" → `tool.highlighter`·표시 키 "[" → `tool.width.decrease`) | 2 | :192, :201 | `shortcut.rs` | A — 표시 문자열이 OS 별(`Ctrl+`)이므로 `[` 기대값만 동일 |
+| 키 입력 표시 필터 | 1 | :183 | `keystroke.rs` | B (수정키 입력 표현) |
+| 줌(배율 단계·가장자리 따라가기·정지 줌 역변환) | 4 | :218, :241, :246, :264 | `zoom.rs` | A |
+| 판서(좌표 왕복 1·Catmull-Rom 1·스냅 2·도형 인식 4·올가미/선택 변환/가리개 4·Undo·Redo 2) | 14 | :210, :284-486 | `ink.rs`·`shape.rs` | A |
+| 지우개(부분·대상 필터·영역) | 3 | :510, :542, :677 | `eraser.rs` | A |
+| 보관(JSON 왕복·해상도 복원·화면 이동 정책)·전체 지우기 | 4 | :585, :608, :621, :692 | `archive.rs`·`ink.rs` | A (형식은 Windows 고유 허용 — 불변식만 같게) |
+| 보드(전환·페이지 Undo·블랙보드 색) | 3 | :709, :728, :753 | `board.rs` | A |
+| 타이머(수업 잔여·일시정지·쉬는 시간 +10분·지정 시각·배지 스냅) | 5 | :761-812 | `timer.rs` | A |
+| 쉬는 시간 음악(URL 검증·페이드 곡선) / AppleScript 이스케이프 | 2 / 1 | :822, :841 / :847 | `music.rs` / — | A / **C** |
+| 화면 구성 프리셋 계산(격자 배치 4종·주 모니터 부재·겹침 적용 불가 / 미러·마스터 승계·누락·프리셋 밖 / 격자 검증 / 자동 집합 우선순위 / 식별 매칭 — #38) | 6 | :957, :1028, :1086, :1130, :1153, :1208(헬퍼 :853-871) | `display_preset.rs` | A (입력·기대값 그대로. 규칙은 §3.1.6) |
+| 설정(왕복 :1218-1225·줌 최대 9 거부·범위 검증 :1227-1239·호환 디코딩 :1241-1269·내보내기 규칙 :1271-1319·백업 회전 :1326-1336) | 5 | :1222, :1236, :1266, :1310, :1334 | `settings.rs` | A (백업은 매체만 다름). 입력은 아래 "설정 이식 입력" |
+| 알려진 충돌 단축키 | 1 | :1321 | `shortcut.rs` | B — 입력은 Windows 표의 값으로 교체(`AppMod+D` 는 macOS 목록) |
+| 합계 | 75 | | | A 64 · B 10 · C 1 |
 
-설정 이식 입력: 호환 디코딩 = `futureSetting` 삽입 + `display` 키 제거 + `zoom.previewDimming` 제거 + 옛 `tools` 키 삽입·`perToolMemory` 제거 → 결과 == `.default`. 내보내기·가져오기 = display 프리셋이 payload 에 포함·`payload.display` 에 `autoSwitchEnabled` 없음·가져온 뒤 `autoSwitchEnabled == false`·`includedBundles` 에 display 포함·`archiveFolderPath` 없음. 백업 = 6회 append 후 count 4·최신 = 6.
+설정 이식 입력: 호환 디코딩 = `futureSetting` 삽입 + `display` 키 제거 + `zoom.previewDimming` 제거 + 옛 `tools` 키 삽입·`perToolMemory` 제거 + `tools.paletteGlassOpacity` 제거 → 결과 == `.default`(`SelfTest.swift:1241-1269`). 내보내기·가져오기 = display 프리셋이 payload 에 포함·`payload.display` 에 `autoSwitchEnabled` 없음·가져온 뒤 `autoSwitchEnabled == false`·`includedBundles` 에 display 포함·`archiveFolderPath` 없음. 백업 = 6회 append 후 count 4·최신 = 6.
 
-**옛 `tools` 키 이행 점검**: 현 SelfTest(:1181-1188)는 옛 키에 기본값을 넣어 `== .default` 만 보므로 매핑을 틀려도 통과한다(검증 공백). macOS 는 손대지 않고(시험 순증 0), Windows `selftest.rs` 의 같은 단언 입력만 비기본값(pen 5·highlighter 20·text 30 → pen·arrow·rectangle·ellipse = 5)으로 둔다(W2).
+**옛 `tools` 키 이행 점검**: 현 SelfTest(:1251-1269)는 옛 키에 기본값을 넣고 `paletteGlassOpacity`도 제거해 구 설정의 기본값 0.62 디코딩까지 `== .default` 한 단언으로 본다. 옛 크기 매핑은 값을 틀려도 통과할 수 있으므로 macOS 는 손대지 않고(시험 순증 0), Windows `selftest.rs` 의 같은 단언 입력만 비기본값(pen 5·highlighter 20·text 30 → pen·arrow·rectangle·ellipse = 5)으로 둔다(W2).
 
-**단언이 없는 새 영역(동치 장치 0)**: 원형 팔레트 기하·탐색·히트·힌트 배치(`SelfTest.swift` 에 Radial 0건), `DisplayPresetCapture`·`DisplayPresetValidator`(개수·이름·중복 모니터)·`matchesCurrent`, 도구 → 기억 슬롯 선택(이행만 :1182-1187 에 한 줄), 통과 모드 상태·기한 규칙, 아이콘 키 점검(`NSLog` 뿐) → §7 #14. `DisplayPlanner`·`DisplayMatcher`·`DisplayGrid`·자동 집합은 #38 로 단언이 생겼다(위 표). 디스플레이 쪽 규칙 원본은 §3.1.6.
+**단언이 없는 새 영역(동치 장치 0)**: 원형 팔레트 기하·탐색·히트·힌트 배치(`SelfTest.swift` 에 Radial 0건), `DisplayPresetCapture`·`DisplayPresetValidator`(개수·이름·중복 모니터)·`matchesCurrent`, 도구 → 기억 슬롯 선택(이행만 :1252-1269의 호환 단언에 포함), 통과 모드 상태·기한 규칙, 아이콘 키 점검(`NSLog` 뿐) → §7 #14. 속성 아이콘 두께 단계·조건 문법·명암/halo 판정은 #45 로 A 단언 3개가 추가됐고, `DisplayPlanner`·`DisplayMatcher`·`DisplayGrid`·자동 집합은 #38 로 단언이 생겼다(위 표). 디스플레이 쪽 규칙 원본은 §3.1.6.
 
 serde 세부(Swift Codable 과 맞출 것):
-- 필드명 그대로(camelCase). 기본값 허용은 **정확히 4곳**: `tools.perToolMemory`(없으면 옛 키 이행, 아래), `tools.paletteStyle`(없으면 `radial`), `zoom.previewDimming`(없으면 `0.62`), 최상위 `display`(없으면 `{autoSwitchEnabled:false, presets:[]}`) — `S:182-211,274-284,389-401`(`S`=`SettingsModel.swift`). 나머지 비-Option 키 누락은 실패이므로 `#[serde(default)]` 는 쓰지 않는다(Swift 는 비-Optional 키 누락 시 실패). 4곳도 `Option<T>` 로 받아 풀 것: Swift `decodeIfPresent` 는 키 부재뿐 아니라 `null` 도 "없음" 으로 받아, `default` 만 걸면 `null` 에서 갈라진다. **값이 있는데 틀리면**(`paletteStyle:"x"`) 기본값으로 덮지 않고 실패(`#[serde(other)]`·`unwrap_or_default` 금지).
+- 필드명 그대로(camelCase). 기본값 허용은 **정확히 5곳**: `tools.perToolMemory`(없으면 옛 키 이행, 아래), `tools.paletteStyle`(없으면 `radial`), `tools.paletteGlassOpacity`(없으면 `0.62`), `zoom.previewDimming`(없으면 `0.62`), 최상위 `display`(없으면 `{autoSwitchEnabled:false, presets:[]}`) — `S:241-273,338-347,453-464`(`S`=`SettingsModel.swift`). 나머지 비-Option 키 누락은 실패이므로 `#[serde(default)]` 는 쓰지 않는다(Swift 는 비-Optional 키 누락 시 실패). 5곳도 `Option<T>` 로 받아 풀 것: Swift `decodeIfPresent` 는 키 부재뿐 아니라 `null` 도 "없음" 으로 받아, `default` 만 걸면 `null` 에서 갈라진다. **값이 있는데 틀리면**(`paletteStyle:"x"`) 기본값으로 덮지 않고 실패(`#[serde(other)]`·`unwrap_or_default` 금지).
 - `display` 가 있으면 `autoSwitchEnabled`·`presets` 둘 다 필수. `perToolMemory` 가 있으면 6개 슬롯(`pen`·`highlighter`·`arrow`·`rectangle`·`ellipse`·`text`)과 슬롯마다 `colorIndex`·`size` 필수 — 부분 채움 없음.
 - `Option` 은 `skip_serializing_if = "Option::is_none"` — Swift 는 nil 을 키 생략으로 쓴다. `Option` 필드(`archiveFolderPath`·`secondary1/2`·payload 각 묶음)는 serde 가 누락·null 을 None 으로 받으므로 `default` 불필요.
-- **옛 키 읽기 이행**(`perToolMemory` 가 없을 때만, `S:91-110,189-207`): `penWidth` → pen·arrow·rectangle·ellipse 의 `size`, `highlighterWidth` → highlighter, `textFontSize` → text, 모든 `colorIndex`=0, 옛 키도 없으면 기본(3·18·3·3·3·24). 둘 다 있으면 `perToolMemory` 승. 옛 키는 **쓰지 않는다**: 읽기용 Wire 구조체(`Option<f64>` 3개)를 `ToolSettings` 로 변환하고 직렬화는 옛 키 없는 구조체로. 이행 결과도 검증기를 통과해야 한다(범위 밖이면 전체가 손상).
+- **옛 키 읽기 이행**(`perToolMemory` 가 없을 때만, `S:146-165,241-273`): `penWidth` → pen·arrow·rectangle·ellipse 의 `size`, `highlighterWidth` → highlighter, `textFontSize` → text, 모든 `colorIndex`=0, 옛 키도 없으면 기본(3·18·3·3·3·24). 둘 다 있으면 `perToolMemory` 승. 옛 키는 **쓰지 않는다**: 읽기용 Wire 구조체(`Option<f64>` 3개)를 `ToolSettings` 로 변환하고 직렬화는 옛 키 없는 구조체로. `paletteGlassOpacity`는 이행값이 아니라 독립 선택 필드라 없으면 0.62. 이행 결과도 검증기를 통과해야 한다(범위 밖이면 전체가 손상).
 - 알 수 없는 키 무시(`deny_unknown_fields` 금지, 최상위·내부 모두). **알 수 없는 enum 문자열은 실패**: `paletteStyle`·`appModifier`·`DisplayKind`(`"builtIn"`/`"external"`/`"virtual"`)·`includedBundles` 원소. 문자열 필드(`mode`·`followMode` 등)는 검증기의 값 목록이 판정. 화면의 `cell` 은 필수.
 - 정수 필드는 **정수 리터럴로 쓴다**(`3`, `3.0` 아님): `i64`, **단 `vendor`·`model`·`serial` 은 `u32`**(Swift `UInt32`, 음수·초과는 디코딩 실패). 실수는 `f64`. 바이트 비교 금지, 구조 비교만.
 - OS 별 의미가 다른 값은 **원값 보존 + 표시만 매핑**: `appModifier: controlOption` → Ctrl+Alt, `notificationSound: "Glass"` → Windows 시스템음 별칭, `musicBrowser` 동일 토큰, `DisplayIdentity.uuid`(macOS CGDisplay UUID — Windows 에서 매칭만 안 될 뿐 보존·왕복). 검증기가 상대 OS 값을 거부하면 안 된다.
 - `DisplayPreset.id` = Swift `UUID`: 8-4-4-4-12 16진, 입력 대소문자 무관, 출력 대문자. Rust 는 `String` + 형식 검사(틀리면 디코딩 실패) + 중복 판정은 대문자 정규화 후. `uuid` 크레이트 추가 금지 — `CoCreateGuid` 결과를 대문자로 포맷.
-- `formatVersion` 은 새 **키**가 늘어도 1 로 유지한다(새 키는 전부 선택·기본값 경로, `S:866-873`). 1 이외 → `unsupportedVersion`, `format` 문자열이 다르면 `unsupportedFormat`. 판정 순서: 구조 디코딩 → `format` → 버전 → `.default` 에 전 묶음 적용·검증(`S:852-864`). `SettingsBundle` 값(묶음) 추가는 키 추가가 아니라 값 집합 확장이다 — 구 리더는 `includedBundles` 의 모르는 값에서 파일 전체를 거부한다(§7 #33).
+- `formatVersion` 은 새 **키**가 늘어도 1 로 유지한다(새 키는 전부 선택·기본값 경로, `S:856-866`). 1 이외 → `unsupportedVersion`, `format` 문자열이 다르면 `unsupportedFormat`. 판정 순서: 구조 디코딩 → `format` → 버전 → `.default` 에 전 묶음 적용·검증(`S:919-970`). `SettingsBundle` 값(묶음) 추가는 키 추가가 아니라 값 집합 확장이다 — 구 리더는 `includedBundles` 의 모르는 값에서 파일 전체를 거부한다(§7 #33).
 - `createdOS` 는 자유 문자열. `archiveFolderPath` 는 이 컴퓨터 전용(기본 제외) — 그대로. 보관(판서·보드) JSON 은 OS 간 교환 대상 아님 → Windows 고유 형식 허용. 단 파일에 `formatVersion` 을 처음부터 넣는다(macOS 보관 형식엔 없음).
 
 **검증기·저장소**(`settings.rs` core, `settings_store.rs` app)
 
 | 항목 | 규칙 |
 | --- | --- |
-| 갱신 | 모든 변경은 `update(\|s\| …) -> Result<(), SettingsValidationError>` 하나: 복사본에 적용 → **전체** 검증 → 통과 시에만 커밋·저장·관찰자 통지. 값이 같으면 저장·통지 생략(`S:626,677-697`). 설정 UI·`state.rs` 는 `Err` 를 버리지 않는다 — 사유를 사용자에게 보이고(macOS: "설정을 적용할 수 없습니다" 알림, `SettingsController.swift:429`) 컨트롤을 현재 값으로 되돌린다. 로그만 남기고 진행 금지 |
-| 로드 | 디코딩·검증 중 하나라도 실패 → 기본값으로 시작 + 원본 바이트를 별도 보존(macOS 키 `EduTools.settings.corrupt.v1`; Windows `settings.corrupt.v1.json`)하고 **다시 읽어 일치를 확인한 뒤에만** 원본 제거, 보존 실패 시 원본 유지. 1회 알림(원인·"기본값으로 시작"·보존 위치). 기본값은 첫 변경 때 저장(`S:640-670`) |
-| 저장 | 쓴 뒤 다시 읽어 일치 확인, 실패 → "설정을 저장하지 못했습니다" 알림(`S:728-744`). Windows: 임시 파일 → `MoveFileExW(REPLACE_EXISTING)` → 재읽기 비교 |
-| 백업 | 최근 5개 회전(`S:965-1001`) |
-| tools | `colors` 6개 필수. `perToolMemory` 슬롯마다 `colorIndex ∈ 0..5`, `size` 는 펜·형광펜·화살표·사각형·원 1~30, 텍스트 8~96(`Ink.swift:32-97`). `colors` didSet 클램프(`S:131-136`)는 이식 불요 — `colors.count == 6` 강제로 도달 불가 |
-| zoom | 시작·최대 1.25~8, 시작 ≤ 최대, 단계 0.25 또는 0.5, 부드러움 0~1, **`previewDimming` 0~1**(`S:530-552`). 항목별 사유 문구 |
+| 갱신 | 모든 변경은 `update(\|s\| …) -> Result<(), SettingsValidationError>` 하나: 복사본에 적용 → **전체** 검증 → 통과 시에만 커밋·저장·관찰자 통지. 값이 같으면 저장·통지 생략(`S:691-698,745-763`). 설정 UI·`state.rs` 는 `Err` 를 버리지 않는다 — 사유를 사용자에게 보이고(macOS: "설정을 적용할 수 없습니다" 알림, `SettingsController.swift:429`) 컨트롤을 현재 값으로 되돌린다. 로그만 남기고 진행 금지 |
+| 로드 | 디코딩·검증 중 하나라도 실패 → 기본값으로 시작 + 원본 바이트를 별도 보존(macOS 키 `EduTools.settings.corrupt.v1`; Windows `settings.corrupt.v1.json`)하고 **다시 읽어 일치를 확인한 뒤에만** 원본 제거, 보존 실패 시 원본 유지. 1회 알림(원인·"기본값으로 시작"·보존 위치). 기본값은 첫 변경 때 저장(`S:707-737`) |
+| 저장 | 쓴 뒤 다시 읽어 일치 확인, 실패 → "설정을 저장하지 못했습니다" 알림(`S:795-810`). Windows: 임시 파일 → `MoveFileExW(REPLACE_EXISTING)` → 재읽기 비교 |
+| 백업 | 최근 5개 회전(`S:1032-1068`) |
+| tools | `colors` 6개 필수. `perToolMemory` 슬롯마다 `colorIndex ∈ 0..5`, `size` 는 펜·형광펜·화살표·사각형·원 1~30, 텍스트 8~96(`Ink.swift:32-97`). `paletteGlassOpacity ∈ 0.55...0.90`, 기본 0.62(`S:64-67,562-584`). `colors` didSet 클램프(`S:186-190`)는 이식 불요 — `colors.count == 6` 강제로 도달 불가 |
+| zoom | 시작·최대 1.25~8, 시작 ≤ 최대, 단계 0.25 또는 0.5, 부드러움 0~1, **`previewDimming` 0~1**(`S:597-624`). 항목별 사유 문구 |
 | display | 프리셋 ≤ 8, `id` 중복 금지, 이름 trim 후 비어 있지 않음·≤ 40자(Swift `String.count` 자소 기준 — Rust `chars()` 는 결합 문자·ZWJ 이모지에서 더 엄격, §7 #32), 주 화면 모니터 ≥ 1, 보조2 ⇒ 보조1, 주 화면 칸 (0,0), 칸 `x,y ∈ -1..1`·서로 다름, 4방향 인접으로 주 화면에 이어짐(대각선만 닿으면 거부), 한 프리셋 안 같은 모니터 금지(`uuid` 대소문자 무시 / `serial≠0` 이면 vendor+model+serial / 가상은 vendor+model+name)(`DisplayPreset.swift:77-101,227-290`) |
 
-**.pansetting 묶음**(`S:747-940`)
+**.pansetting 묶음**(`S:814-1007`)
 - `SettingsBundle` 9개, 순서 고정: general·tools·eraser·zoom·board·timer·**display**·shortcuts·help. `display` 묶음 payload 는 `{"presets":[…]}` 뿐 — **`autoSwitchEnabled` 는 내보내지도 가져오지도 않는다**(이 컴퓨터의 스위치, design.md 결정 7). 이 컴퓨터 전용은 `general.archiveFolderPath` 하나뿐이고 `display` 는 기본 포함.
-- 가져오기는 프리셋 목록 **전체 교체**(병합 아님, 우선순위 = 배열 순서)이고 직후 전체 재검증(`S:893-897`). 미리보기는 바뀐 항목만, `display` 는 한 행 "화면 구성 — 프리셋 N개 추가/교체"(`S:926-938`).
+- `tools` 묶음은 `ToolSettings` 전체이므로 `paletteGlassOpacity`도 내보내고 가져온다(`S:844-909`). 가져오기는 프리셋 목록 **전체 교체**(병합 아님, 우선순위 = 배열 순서)이고 직후 전체 재검증(`S:942-970`). 미리보기는 바뀐 항목만, `display` 는 한 행 "화면 구성 — 프리셋 N개 추가/교체"(`S:993-1006`).
 - "모니터 다시 지정" = 한 행의 `identity` 만 교체하고 칸·순서·`autoMatch` 는 유지(`DisplayPresetsSettingsView.swift:666-672`). 가져온 프리셋의 모니터가 연결 안 된 상태가 정상 경로다.
 
 **단축키**(`shortcut.rs`·`dispatch.rs`·`kbhook.rs`; `SC`=`Shortcut.swift`, `CD`=`CommandDispatcher.swift`)
@@ -163,34 +164,36 @@ serde 세부(Swift Codable 과 맞출 것):
 | 항목 | 규칙 |
 | --- | --- |
 | 토큰 | `[수정키+…]키`. 수정키 ∈ AppMod·Primary·Shift·Control·Option, 중복 금지, `AppMod` 는 단독. 키 토큰 = A–Z 0–9 `/ [ ] = -` Left Right Up Down **Delete(= Backspace 키 ⌫)** Tab Escape Space Return. 읽기는 수정키 순서 무관·대소문자 구분(`AppMod+p` 거부), 쓰기는 Control·Option·Shift·Primary 순(`SC:59-96`) |
-| 범위 | global 은 `AppMod` 필수, annotation·zoom 은 금지(`SC:330-337`). 잘못된 override 는 경고 로그 후 **기본 바인딩 사용**(`SC:902-917`). 검증기는 토큰 파싱만 보고 **정의 id 존재는 안 본다**(`S:578-582`) → 모르는 id 의 override 도 거부·삭제 말고 왕복 보존 |
+| 범위 | global 은 `AppMod` 필수, annotation·zoom 은 금지(`SC:331-338`). 잘못된 override 는 경고 로그 후 **기본 바인딩 사용**(`SC:912-925`). 검증기는 토큰 파싱만 보고 **정의 id 존재는 안 본다**(`S:645-649`) → 모르는 id 의 override 도 거부·삭제 말고 왕복 보존 |
 | 판정 | (키, 수정키 집합 **정확 일치**) — `Shift+P` ≠ `P`. 키코드만 비교하는 코드 금지. 같은 범위 중복 = (scope, 키, 수정키) |
-| keyUp | 비반복 keyDown 에서 `pressed[키] = 정의` 기록, keyUp 은 그 기록을 꺼내 연결(수정키를 무시하고 키코드로만 정의를 다시 찾던 방식은 엉뚱한 정의를 골랐다). `InkView.swift:244,644,674`·`ZoomController.swift:182,396,408`. keyUp 을 정의에 연결하는 명령은 도움말·줌 미리보기·통과 모드(`InkView.swift:686-688`, `CD:98-105`). LL 훅 `KBDLLHOOKSTRUCT` 에는 반복 플래그가 없다(MS 문서) → 이 기록 집합이 반복 판정이다 |
-| 소비 | `should_consume(command)`: `toggleRadialPalette`(**M**)는 `tools.paletteStyle == radial` 일 때만 소비. 아니면 소비하지 않고 pressed 도 기록하지 않는다(`CD:110-117`, `InkView.swift:639-641`). macOS 는 `super.keyDown`(응답자 체인에서 사라짐, 아래 앱 전달 아님)이고 Windows 훅의 "소비 안 함" 은 전경 앱에 도달한다 — 바인딩 없는 키와 같은 취급(§3 "판서 모드 한 글자 키" 행)으로 두되 이 차이를 인지할 것. 전역 `AppMod+M`(수업 타이머)과는 범위가 달라 충돌 아님 |
-| 한 단계 나가기 | 통과 모드 끄기(`annotation.pass-through`, 키·시간제 모두) → 원형 팔레트 접기 → 도움말 닫기 → 선택 해제 → 펜으로 → 판서 종료. 앞 단계가 처리하면 나머지는 안 한다(`CD:206-223`). design.md 의 "선택 해제 → 펜 → 종료" 보다 앞 단계가 늘었다 |
+| keyUp | 비반복 keyDown 에서 `pressed[키] = 정의` 기록, keyUp 은 그 기록을 꺼내 연결(수정키를 무시하고 키코드로만 정의를 다시 찾던 방식은 엉뚱한 정의를 골랐다). `InkView.swift:259,695-707,734-741`·`ZoomController.swift:182,396,408`. keyUp 을 정의에 연결하는 명령은 도움말·줌 미리보기·통과 모드(`CD:93-105`). LL 훅 `KBDLLHOOKSTRUCT` 에는 반복 플래그가 없다(MS 문서) → 이 기록 집합이 반복 판정이다 |
+| 소비 | `should_consume(command)`: `toggleRadialPalette`(**M**)는 `tools.paletteStyle == radial` 일 때만 소비. 아니면 소비하지 않고 pressed 도 기록하지 않는다(`CD:111-117`, `InkView.swift:695-707`). macOS 는 `super.keyDown`(응답자 체인에서 사라짐, 아래 앱 전달 아님)이고 Windows 훅의 "소비 안 함" 은 전경 앱에 도달한다 — 바인딩 없는 키와 같은 취급(§3 "판서 모드 한 글자 키" 행)으로 두되 이 차이를 인지할 것. 전역 `AppMod+M`(수업 타이머)과는 범위가 달라 충돌 아님 |
+| 한 단계 나가기 | 통과 모드 끄기(`annotation.pass-through`, 키·시간제 모두) → 원형 팔레트 접기 → 도움말 닫기 → 선택 해제 → 펜으로 → 판서 종료. 앞 단계가 처리하면 나머지는 안 한다(`CD:209-226`). design.md 표도 같은 순서다 |
 | 도움말 | 닫기 키도 `matches`(`HelpController.swift:684`). 길게 누르기는 눌린 키를 기억(`activeShortcutKeyCode`, `:162,207,694`)해 같은 물리 키 keyUp 에만 반응 |
-| 숫자키 1~6 | `AppState.selectColor`(`AppState.swift:845-855`): 펜·형광펜·화살표·사각형·원·텍스트 → 그 슬롯 `colorIndex` 를 **설정에 쓴다**(저장·통지); 레이저 → `tools.laserColor = colors[i]`(프리셋 **값**, 인덱스 아님); 지우개·선택·가리개 → 상태 불변(키는 소비). 범위 밖 무시. 현재 색 = 현재 도구 슬롯, 슬롯 없는 도구는 마지막 슬롯 도구의 색(`lastColorTool`, `:54,116-131`). 도구 전환이 값을 복사하지 않는다 |
-| 기록 UI | Esc·Tab·Space·Return·Delete 도 **기록 가능**(기본값이 Esc·Tab·Space 를 쓴다), 취소 = 기록 버튼 재클릭(`SettingsController.swift:880-895`). `HOTKEY_CLASS` 는 이 키들을 `DefWindowProc` 로 넘겨 기록 못 함 → 커스텀 버튼(`WM_KEYDOWN`·`WM_SYSKEYDOWN` 직접). 전역 범위는 수정키 집합이 앱 수정키와 정확히 같을 때만 기록, 아니면 거부음. 기록 중에는 자기 `RegisterHotKey`·모드 키 훅이 가로채지 않게 풀어 둔다 [확인 필요: §9] |
+| 숫자키 1~6 | `AppState.selectColor`(`AppState.swift:857-867`): 펜·형광펜·화살표·사각형·원·텍스트 → 그 슬롯 `colorIndex` 를 **설정에 쓴다**(저장·통지); 레이저 → `tools.laserColor = colors[i]`(프리셋 **값**, 인덱스 아님); 지우개·선택·가리개 → 상태 불변(키는 소비). 범위 밖 무시. 현재 색 = 현재 도구 슬롯, 슬롯 없는 도구는 마지막 슬롯 도구의 색(`lastColorTool`, `AS:84,186-205`). 도구 전환이 값을 복사하지 않는다 |
+| 기록 UI | Esc·Tab·Space·Return·Delete 도 **기록 가능**(기본값이 Esc·Tab·Space 를 쓴다), 취소 = 기록 버튼 재클릭(`SettingsController.swift:892-899`). `HOTKEY_CLASS` 는 이 키들을 `DefWindowProc` 로 넘겨 기록 못 함 → 커스텀 버튼(`WM_KEYDOWN`·`WM_SYSKEYDOWN` 직접). 전역 범위는 수정키 집합이 앱 수정키와 정확히 같을 때만 기록, 아니면 거부음. 기록 중에는 자기 `RegisterHotKey`·모드 키 훅이 가로채지 않게 풀어 둔다 [확인 필요: §9] |
 | `Control`·`Primary` | design 원칙 6 은 ⌘↔Ctrl, ⌥↔Alt 이고 AppMod(⌃⌥)↔Ctrl+Alt 라서 **`Control` 과 `Primary` 가 Windows 에서 둘 다 Ctrl** — §7 #21. 잠정: 원값 보존, 중복 판정은 OS 매핑 후, Windows 기록기는 `Primary` 만 기록 |
 | Windows 보조 키 | design.md 의 `Ctrl+Y`(다시 실행)·`F1`(도움말)·`Delete`(선택 삭제)는 카탈로그에 없다 — §7 #22. 잠정: `keymap.rs` 별칭 표에만 두고 카탈로그·픽스처·설정에는 넣지 않는다(기본값 양 OS 동일). 대가: 도움말·설정 단축키 표에 이 키들이 안 보인다 |
-| 충돌 검사 | `avoidedAppModifierKeys`·`avoidedPortableShortcuts`(`SC:964-976`)는 **macOS 목록**(⌥⌘8·⇧⌘3~5·⌃Space…). Windows 는 design.md 「피한 단축키」 Windows 행으로 별도 표, 중복 검사·경고 구조만 공유 |
+| 충돌 검사 | `avoidedAppModifierKeys`·`avoidedPortableShortcuts`(`SC:973-985`)는 **macOS 목록**(⌥⌘8·⇧⌘3~5·⌃Space…). Windows 는 design.md 「피한 단축키」 Windows 행으로 별도 표, 중복 검사·경고 구조만 공유 |
 | 사용자 추가 키(설계 메모) | 화면 프리셋 전환 키는 기본값 없이 사용자가 추가(design.md 화면 구성 프리셋 결정 8, macOS 2단계 미구현). **지금 만들지 말 것.** 막지 않으려면: 카탈로그를 런타임 `Vec` 로, 명령 enum 에 값 실린 변종 여지(`selectColor(i)` 처럼), override 키 `<id>\|<scope>` 와 "id 존재 비검증" 규칙 유지 |
 
 ### 2.3 원형 팔레트 core/app 경계
 
-**칸 목록 `layoutCells()` 하나에서 그리기·히트·키보드 이동이 모두 도출된다 — 별도 칸 목록·좌표표를 만들지 않는다**(`RP:290-291,1310,1317`, `RP`=`RadialPaletteController.swift`, `RG`=`RadialPaletteGlassView.swift`). 각도 = 12시 기준 시계방향 라디안.
+**칸 목록 `layoutCells()` 하나에서 그리기·히트·키보드 이동이 모두 도출된다 — 별도 칸 목록·좌표표를 만들지 않는다**(`RP:290-291,1319-1335`, `RP`=`RadialPaletteController.swift`, `RG`=`RadialPaletteGlassView.swift`). 각도 = 12시 기준 시계방향 라디안.
+
+유리 면의 동치 상수는 `RadialPaletteGlassStyle` 한 곳이다(`S:64-117`). macOS 일반 칸·중심·키캡·속성 라벨은 `glassEffect` 위에 흰 면을 `tools.paletteGlassOpacity`(기본 0.62, 검증 0.55...0.90)로 채운 뒤 테두리와 고정 근흑색 0.10 내용을 그리며, 힌트는 유리 content view의 레이어 배경에 같은 흰 면을 채운다(`RG:192-224,249-303,391-511`; `RP:388-439`). Windows D2D 알파 면과 macOS 흰 면 채움은 모두 검정 배경을 최악으로 하는 같은 합성식 `L=((a+0.055)/1.055)^2.4`를 따르므로 하한 0.55의 대비 5.22:1은 근사가 아니라 보장이다. 비활성은 면이 아니라 내용에만 0.55를 적용한다. `tint`는 선택 칸(강조색 0.72)·색 견본(자기 색 0.82)·통과 중심(강조색 0.72)의 강조 경로에만 남는다(`RG:414-436,497-511`; #44, §3 팔레트 면 렌더링).
 
 | 요소 | 크레이트 | Swift 원본 |
 | --- | --- | --- |
 | 치수·시간 상수(지름 44/280, 링 반지름 28–58·64–96·102–138, 끌기 4, 키캡 0.5초, 칸 간격 2°·속성 간격 4°) | core | `RG:33-63` |
 | 부채꼴 `contains(r, θ)`·`inset` (θ 정규화로 시작각이 음수여도 동작) | core | `RG:5-31` |
 | 그룹 6개 카탈로그(고정 위치 12·2·4·6·8·10시)·즐겨찾기 비활성 | core | `RP:14-21,100-207` |
-| 칸 목록: 1링 슬라이스 2π/6, 2링 span=clamp(개수×24°, 72°, 200°)를 그룹 방향 중심 정렬, 3링은 한 바퀴−속성 간격을 균등 분할 | core | `RP:1317-1422` |
-| 3링 값 목록(굵기 [1,3,5,8,12]·형광펜 [6,12,18,24,30]·글자 [16,24,36,48,72]·투명도·꼬리 [0.3,0.7,1,2]) | core | `RP:1446-1503`, `RG:58-62` |
-| 히트 판정: r≤22 → 중심 / 링 안 → 칸 / 그 외(링 사이 틈·창 모서리) → 없음 = **바깥 클릭(접기, 그리기 안 함)** | core | `RP:1301-1315` |
+| 칸 목록: 1링 슬라이스 2π/6, 2링 span=clamp(개수×24°, 72°, 200°)를 그룹 방향 중심 정렬, 3링은 한 바퀴−속성 간격을 균등 분할 | core | `RP:1335-1440` |
+| 3링 값 목록(굵기 [1,3,5,8,12]·형광펜 [6,12,18,24,30]·글자 [16,24,36,48,72]·투명도·꼬리 [0.3,0.7,1,2]) | core | `RP:1457-1580`, `RG:58-62` |
+| 히트 판정: r≤22 → 중심 / 링 안 → 칸 / 그 외(링 사이 틈·창 모서리) → 없음 = **바깥 클릭(접기, 그리기 안 함)** | core | `RP:1319-1333` |
 | 키보드 이동 `nextRadialPaletteFocus`(칸 목록·현재·키 → 다음 포커스) | core | `RP:292-386` |
-| 속성 라벨 배치(호 길이 ≥ 글자 폭+12 면 호 중앙, 아니면 첫 칸) — **글자 폭은 DirectWrite 측정값을 인자로** | core | `RP:1765-1814` |
-| 힌트 위치(선호 방향→반대→작업 영역 클램프)·창 중심 클램프·비율 위치 저장/복원·중심 선 굵기 `clamp(v/3,2,6)` | core | `RP:467-496,1186-1295,1830-1840` |
+| 속성 라벨 배치(호 길이 ≥ 글자 폭+12 면 호 중앙, 아니면 첫 칸) — **글자 폭은 DirectWrite 측정값을 인자로** | core | `RP:1808-1857` |
+| 힌트 위치(선호 방향→반대→작업 영역 클램프)·창 중심 클램프·비율 위치 저장/복원·중심 선 굵기 `clamp(v/3,2,6)` | core | `RP:481-510,1204-1312,1869-1882` |
 | 창 생성·포인터·캡처·타이머·키 훅·D2D·DirectWrite·모니터 목록·위치 파일·접근성 설정 | app | — |
 
 macOS 쪽 리팩터링은 요청하지 않는다 — `RadialPaletteSectorGeometry`·`Metrics`(`RG:5-63`)만 컨트롤러와 분리돼 있고 `layoutCells`·`hitTarget`·`nextRadialPaletteFocus` 는 컨트롤러 `private`(NSColor·클로저·AppState 결합)이므로 Windows 가 읽고 재구성한다. 이 로직의 SelfTest 가 없어 이식할 단언이 0 → 검증 공백(§7 #14).
@@ -206,21 +209,22 @@ macOS 쪽 리팩터링은 요청하지 않는다 — `RadialPaletteSectorGeometr
 | 전체 화면 앱 위·가상 데스크톱 | 일반 전체 화면(최대화·F11·슬라이드쇼) 위는 TOPMOST 로 충분(첫 행). 독점 전체 화면·보호 콘텐츠는 불가(첫 행). 가상 데스크톱: `IVirtualDesktopManager` 는 `GetWindowDesktopId`·`IsWindowOnCurrentVirtualDesktop`·`MoveWindowToDesktop` 세 메서드뿐 [D18] → macOS `.moveToActiveSpace`(`WindowLevels.swift:18`) ≈ 설정·대화상자를 열 때 `MoveWindowToDesktop(hwnd, GetWindowDesktopId(전경 창))` | `.canJoinAllSpaces`(오버레이, `OverlayController.swift:140`) 대응 공개 API 가 없다 [확인 필요: TOPMOST·TOOLWINDOW 창이 새 가상 데스크톱(Win+Ctrl+D)에서도 보이는지 — 안 보이면 데스크톱 전환 감지 후 창 이동]. 문서는 앱이 사용자를 다른 데스크톱으로 자동 전환시키지 말라고 한다 [D18]. `MoveWindowToDesktop` 이 호출 프로세스 소유 창만 옮기는지 [확인 필요] |
 | 전역 단축키 | `RegisterHotKey`(`MOD_CONTROL\|MOD_ALT\|MOD_NOREPEAT`) | 실패 = 선점(설계서대로 즉시 알림). VK 기반이라 한글 IME 무관. AltGr 배열 감지 시 +Shift |
 | 판서 모드 한 글자 키 | **`WH_KEYBOARD_LL`**(판서·줌 모드 중에만 설치), 바인딩 키만 삼키고 나머지 통과 | 오버레이가 포커스를 가지면 한글 IME 에서 `VK_PROCESSKEY` 로 와서 원칙 5 가 깨지고 ←/→ 전달을 `SendInput` 으로 되돌려야 한다 → 훅이 맞다. 훅 콜백이 `LowLevelHooksTimeout` 을 넘기면 **조용히 제거**됨(전용 스레드·즉시 반환). 관리자 권한 창이 전경이면 UIPI 로 못 받음. 텍스트 입력 중엔 통과 |
-| 원형 팔레트 입력 | 창 = `WS_EX_TOPMOST·TOOLWINDOW·NOACTIVATE·NOREDIRECTIONBITMAP`, `WM_POINTERACTIVATE`→`PA_NOACTIVATE`, **`WM_NCHITTEST` 는 창 전체를 `HTCLIENT`**(투명 칸·모서리 클릭도 팔레트가 받아 접기 — `HTTRANSPARENT` 금지). 중심 끌기: 누른 위치와 **화면 좌표 델타 ≥ 4 DIP**(`GetCursorPos`, 창이 움직여도 안 변함)면 이동·놓을 때 위치 저장, 미만이면 클릭(펼침/접힘). **바깥 클릭 접기**: 메시지 루프 `DispatchMessage` 직전에서 "팔레트 펼침∧`WM_POINTERDOWN` 대상이 팔레트 창이 아님(앱의 다른 창 전부 — 오버레이·배지·도움말)"이면 접고 메시지 폐기(macOS 로컬 모니터가 팔레트 외 앱 창의 mouseDown 을 `nil` 로 삼킴, `RP:777-786`) | `EnableMouseInPointer` 는 프로세스 전체·1회(문서) → 팔레트·힌트 창의 마우스도 `WM_POINTER*`(`WM_MOUSE*` 아님). 호버 = `WM_POINTERUPDATE`+INRANGE−INCONTACT, 창 이탈 = `WM_POINTERLEAVE`. 드래그 중 캡처를 잃으면(`WM_POINTERCAPTURECHANGED`) 짝 `UP` 이 안 온다(문서) → 끌기·눌림 상태 초기화 |
-| 좌표계·DPI(원형 팔레트) | 상수는 DIP. 각도 판정 `atan2(dx, −dy_screen)`, 힌트 방향 `(sin θ, −cos θ)`. 저장 위치 비율은 **위에서 아래** 기준(macOS 기본 y=0.85 는 y 위쪽 기준 → Windows 기본 0.15). 작업 영역 = `rcWork`(`visibleFrame` 대응), 모니터 키 = `monitor.rs` | AppKit 은 y 가 위쪽(+): `RP:1309`·`RP:1112` 을 그대로 옮기면 상하가 뒤집힌다(SwiftUI 그리기 `RG:180-185` 만 y 아래쪽). 모니터 간 이동 시 `WM_DPICHANGED` 로 창 물리 크기 재계산(중심 기준 유지) |
-| 원형 팔레트 키보드(↑↓←→·Enter·Space·`M`) | 가로채기는 기존 `WH_KEYBOARD_LL` 훅에서: **펼침+보임+텍스트 입력 아님+수정키(Ctrl·Alt·Shift·Win) 없음**일 때만 삼킨다. 훅이 읽는 값은 원자 플래그(`palette_expanded`·`text_input`), 이동 계산은 `PostMessage` 로 UI 스레드에서. 삼킨 keyDown 의 VK 를 집합에 넣어 **짝 keyUp 도 삼킨다**(중간에 접혀도). `↑`=바깥 링(중심→1링→현재 도구(없으면 첫 활성)→첫 값), `↓`=안쪽, `←/→`=같은 링(1·3링 순환, 2링 끝에서 멈춤, 1링 이동만 그룹 선택). **2링 도구 칸에서 `↑` 는 그 도구가 아직 선택 전이고 3링이 있으면 먼저 선택(클릭과 같은 dispatcher 경로)한 뒤 3링으로 들어간다**(`RP:858-868`, 순수 함수 밖 부작용). Enter·Space=클릭과 같은 경로(반복 입력 무시). `M`=`toggleExpansionFromKeyboard`(숨김이면 먼저 보이기, 펼치면 포커스 표시 즉시 켬) | 접힘·숨김 상태의 ←/→ 는 훅이 삼키지 않는다(보드 페이지·아래 앱으로 — 기존 규칙). 텍스트 입력 중 = 오버레이의 `EDIT` 컨트롤 보유 중. 포커스 표시는 키보드 사용 중에만: 마우스가 팔레트 위에서 움직이면 숨김(`RP:1093-1096`). 훅의 수정키 상태를 직접 추적할지 `GetAsyncKeyState` 로 볼지 [확인 필요: W2 실기 — 훅 시점의 `GetKeyState` 는 갱신 전일 수 있음] |
-| 단축키 키캡(⌘ 길게) | macOS `⌘` 단독 0.5초 ↔ Windows **`Ctrl` 단독 0.5초**(⌘↔Ctrl 1:1 원칙, 설계서 단축키 원칙 6; §7 #23). 훅이 Ctrl-down 에서 `SetTimer`, 다른 키 down·수정키 추가·Ctrl-up 이면 취소(`RP:940-986`), 만료 시 현재 수정키가 정확히 Ctrl 뿐일 때만 표시. 글자는 `shortcut.rs` 표시 함수(Windows 키 표기) | 설계서는 `⌘` 만 적고 Windows 키를 안 적었다. `Ctrl+Alt`(앱 수정키)를 누르면 Alt 가 끼어 취소돼 전역 단축키와 안 겹친다 |
-| 힌트 창(툴팁 대체) | 별도 top-level 창: `WS_EX_TOPMOST·TOOLWINDOW·NOACTIVATE·TRANSPARENT(+LAYERED)`(클릭 통과), `WDA_EXCLUDEFROMCAPTURE`, 팔레트 바로 위 단(macOS `tool+1` = `guidance` 와 같은 높이, `RP:405`). 글자 `이름  단축키`(공백 2), 12 DIP 중간 굵기·안쪽 여백 9/6, 위치 `RP:467-496`. 마우스 호버뿐 아니라 **키보드 포커스 이동에도 표시**(`RP:1117-1135`), 펼칠 때 접힌 상태 힌트는 숨김(`RP:1025`) | 시스템 툴팁(`tooltips_class32`)은 마우스 호버 전용이라 키보드 포커스 힌트를 못 띄우고, 캡처 제외·면 스타일 통일도 안 된다 |
-| 팔레트 면 렌더링(Liquid Glass 대응) | **권장: D2D 직접 그린 반투명 면, 블러 없음.** 칸=부채꼴 `PathGeometry`(`RG:151-186` 과 같은 기하), 면 알파≈0.8(라이트 흰색·다크 `#242424` 계열, **수치는 W4b 실기 조정**)+1 DIP 테두리, 칸 없는 곳은 알파 0. 시스템 테마(라이트/다크)·강조색을 따른다. 상태는 macOS 값 그대로: 선택=강조색 틴트 0.72+흰 글자, 호버=틴트 0.18+테두리 1.8, 색 칸=자기 색 0.82, 비활성=불투명도 0.42, 기본 테두리 0.8·`primary` 0.28, 포커스=검정 0.88 6 DIP+흰 2.4, 색 선택=검정 0.9 4.2+흰 1.8(`RG:222-243,405-454`). **W4b 최소안** = 이것 + 그림자 생략 + 힌트·키캡·속성 라벨도 같은 면 칩 | **대안 A(후속, 모양 있는 블러)**: 팔레트 창이 `WDA_EXCLUDEFROMCAPTURE` 라 W7 의 WGC/DDA 프레임에는 창 뒤 화면이 찍힌다 → D2D `GaussianBlur` 를 부채꼴 기하 마스크(`PushLayer`)로 깔면 된다. OS 정책 독립, 비용은 캡처 상시 구동·1~2프레임 지연·WGC 테두리 이슈(W1 ⑥). **대안 B(보류)**: `Windows.UI.Composition` 호스트 백드롭 브러시+`CompositionGeometricClip`(1809+) — 부품은 문서에 있으나 Win32 호스트에서 검은 사각형 보고(MS Q&A)·클립과 조합한 문서 없음·D2D 연동 추가 → PoC 전엔 쓰지 않는다 |
+| 원형 팔레트 입력 | 창 = `WS_EX_TOPMOST·TOOLWINDOW·NOACTIVATE·NOREDIRECTIONBITMAP`, `WM_POINTERACTIVATE`→`PA_NOACTIVATE`, **`WM_NCHITTEST` 는 창 전체를 `HTCLIENT`**(투명 칸·모서리 클릭도 팔레트가 받아 접기 — `HTTRANSPARENT` 금지). 중심 끌기: 누른 위치와 **화면 좌표 델타 ≥ 4 DIP**(`GetCursorPos`, 창이 움직여도 안 변함)면 이동·놓을 때 위치 저장, 미만이면 클릭(펼침/접힘). **바깥 클릭 접기**: 메시지 루프 `DispatchMessage` 직전에서 "팔레트 펼침∧`WM_POINTERDOWN` 대상이 팔레트 창이 아님(앱의 다른 창 전부 — 오버레이·배지·도움말)"이면 접고 메시지 폐기(macOS 로컬 모니터가 팔레트 외 앱 창의 mouseDown 을 `nil` 로 삼킴, `RP:794-820`) | `EnableMouseInPointer` 는 프로세스 전체·1회(문서) → 팔레트·힌트 창의 마우스도 `WM_POINTER*`(`WM_MOUSE*` 아님). 호버 = `WM_POINTERUPDATE`+INRANGE−INCONTACT, 창 이탈 = `WM_POINTERLEAVE`. 드래그 중 캡처를 잃으면(`WM_POINTERCAPTURECHANGED`) 짝 `UP` 이 안 온다(문서) → 끌기·눌림 상태 초기화 |
+| 좌표계·DPI(원형 팔레트) | 상수는 DIP. 각도 판정 `atan2(dx, −dy_screen)`, 힌트 방향 `(sin θ, −cos θ)`. 저장 위치 비율은 **위에서 아래** 기준(macOS 기본 y=0.85 는 y 위쪽 기준 → Windows 기본 0.15). 작업 영역 = `rcWork`(`visibleFrame` 대응), 모니터 키 = `monitor.rs` | AppKit 은 y 가 위쪽(+): `RP:1327`·`RP:1129-1131` 을 그대로 옮기면 상하가 뒤집힌다(SwiftUI 그리기 `RG:184-188` 만 y 아래쪽). 모니터 간 이동 시 `WM_DPICHANGED` 로 창 물리 크기 재계산(중심 기준 유지) |
+| 원형 팔레트 키보드(↑↓←→·Enter·Space·`M`) | 가로채기는 기존 `WH_KEYBOARD_LL` 훅에서: **펼침+보임+텍스트 입력 아님+수정키(Ctrl·Alt·Shift·Win) 없음**일 때만 삼킨다. 훅이 읽는 값은 원자 플래그(`palette_expanded`·`text_input`), 이동 계산은 `PostMessage` 로 UI 스레드에서. 삼킨 keyDown 의 VK 를 집합에 넣어 **짝 keyUp 도 삼킨다**(중간에 접혀도). `↑`=바깥 링(중심→1링→현재 도구(없으면 첫 활성)→첫 값), `↓`=안쪽, `←/→`=같은 링(1·3링 순환, 2링 끝에서 멈춤, 1링 이동만 그룹 선택). **2링 도구 칸에서 `↑` 는 그 도구가 아직 선택 전이고 3링이 있으면 먼저 선택(클릭과 같은 dispatcher 경로)한 뒤 3링으로 들어간다**(`RP:871-887`, 순수 함수 밖 부작용). Enter·Space=클릭과 같은 경로(반복 입력 무시). `M`=`toggleExpansionFromKeyboard`(숨김이면 먼저 보이기, 펼치면 포커스 표시 즉시 켬) | 접힘·숨김 상태의 ←/→ 는 훅이 삼키지 않는다(보드 페이지·아래 앱으로 — 기존 규칙). 텍스트 입력 중 = 오버레이의 `EDIT` 컨트롤 보유 중. 포커스 표시는 키보드 사용 중에만: 마우스가 팔레트 위에서 움직이면 숨김(`RP:1110-1114`). 훅의 수정키 상태를 직접 추적할지 `GetAsyncKeyState` 로 볼지 [확인 필요: W2 실기 — 훅 시점의 `GetKeyState` 는 갱신 전일 수 있음] |
+| 단축키 키캡(⌘ 길게) | macOS `⌘` 단독 0.5초 ↔ Windows **`Ctrl` 단독 0.5초**(⌘↔Ctrl 1:1 원칙, 설계서 단축키 원칙 6; §7 #23). 훅이 Ctrl-down 에서 `SetTimer`, 다른 키 down·수정키 추가·Ctrl-up 이면 취소(`RP:958-1004`), 만료 시 현재 수정키가 정확히 Ctrl 뿐일 때만 표시. 글자는 `shortcut.rs` 표시 함수(Windows 키 표기) | 설계서는 `⌘` 만 적고 Windows 키를 안 적었다. `Ctrl+Alt`(앱 수정키)를 누르면 Alt 가 끼어 취소돼 전역 단축키와 안 겹친다 |
+| 힌트 창(툴팁 대체) | 별도 top-level 창: `WS_EX_TOPMOST·TOOLWINDOW·NOACTIVATE·TRANSPARENT(+LAYERED)`(클릭 통과), `WDA_EXCLUDEFROMCAPTURE`, 팔레트 바로 위 단(macOS `tool+1` = `guidance` 와 같은 높이, `RP:388-411`). 글자 `이름  단축키`(공백 2), 12 DIP 중간 굵기·안쪽 여백 9/6, 위치 `RP:481-510`. 마우스 호버뿐 아니라 **키보드 포커스 이동에도 표시**(`RP:1135-1152`), 펼칠 때 접힌 상태 힌트는 숨김(`RP:1040-1046`) | 시스템 툴팁(`tooltips_class32`)은 마우스 호버 전용이라 키보드 포커스 힌트를 못 띄우고, 캡처 제외·면 스타일 통일도 안 된다 |
+| 팔레트 면 렌더링(Liquid Glass 대응) | **권장: D2D 직접 그린 반투명 면, 블러 없음.** 칸=부채꼴 `PathGeometry`(`RG:155-190`과 같은 기하), 칸 없는 곳은 알파 0. 일반 면은 흰색×`tools.paletteGlassOpacity`(기본 0.62, 0.55...0.90)를 채운 뒤 테두리와 고정 근흑색 0.10 내용을 그린다. 선택 칸=강조색 틴트 0.72+흰 내용, 색 견본=자기 색 틴트 0.82, 통과 중심=강조색 틴트 0.72+흰 내용이며 `tint`는 이 세 강조 경로에만 둔다. 비활성은 면은 유지하고 내용만 0.55. macOS도 `glassEffect → 흰 면 → 테두리 → 내용` 순서이고 힌트는 content view 레이어 배경에 같은 흰 면을 채운다(`RG:192-224,249-303,391-511,560-585`; `RP:388-439`). 따라서 Windows D2D 알파 면과 macOS 흰 면 채움은 검정을 최악 배경으로 하는 같은 합성식 `L=((a+0.055)/1.055)^2.4`이며, 하한 0.55에서 근흑색 0.10 내용과 5.22:1이 보장된다(`S:64-117`; #44). 설정의 값 하나를 `settings.rs`→`state.rs`→모든 팔레트 면에 전달하고 사본 상수를 두지 않는다 | **대안 A(후속, 모양 있는 블러)**: 팔레트 창이 `WDA_EXCLUDEFROMCAPTURE` 라 W7 의 WGC/DDA 프레임에는 창 뒤 화면이 찍힌다 → D2D `GaussianBlur` 를 부채꼴 기하 마스크(`PushLayer`)로 깔면 된다. OS 정책 독립, 비용은 캡처 상시 구동·1~2프레임 지연·WGC 테두리 이슈(W1 ⑥). **대안 B(보류)**: `Windows.UI.Composition` 호스트 백드롭 브러시+`CompositionGeometricClip`(1809+) — 부품은 문서에 있으나 Win32 호스트에서 검은 사각형 보고(MS Q&A)·클립과 조합한 문서 없음·D2D 연동 추가 → PoC 전엔 쓰지 않는다 |
 | (위 행 근거 — OS 백드롭을 안 쓰는 이유) | — | ① `DwmEnableBlurBehindWindow`: Win8 부터 효과 없음(문서). ② `DWMWA_SYSTEMBACKDROP_TYPE`(22621+): Mica/Acrylic 을 "창 전체 경계 뒤"에 그림 — 모양은 `SetWindowRgn` 에 기대야 하나 공존 문서 없음. ③ Acrylic 은 창이 비활성이면 단색(문서) — `NOACTIVATE` 일시 창에서 어떻게 되는지는 문서에 없다(PoC §9). ④ Win32 Mica 공식 경로는 Windows App SDK 런타임 필요(작업 규칙 "의존성" 위배)·Mica 는 불투명. ⑤ `SetWindowCompositionAttribute` 는 비공개 API. ⑥ 표준 `CreateBackdropBrush` 는 "비주얼 바로 뒤"(자기 트리 안)만 샘플 |
 | 접근성(투명 효과·고대비·테마) | macOS 는 시스템이 처리했지만 Windows 는 직접 그리므로 앱이 반응: `UISettings.AdvancedEffectsEnabled`=false(설정 > 투명 효과 끔)면 면 알파 1.0 · 고대비(`SPI_GETHIGHCONTRAST`·`HCF_HIGHCONTRASTON`)면 틴트·투명 모두 끄고 `GetSysColor`(WINDOW·WINDOWTEXT·HIGHLIGHT·HIGHLIGHTTEXT) 사용, 포커스 이중 테두리 유지 | 변경 통지: 고대비는 `WM_THEMECHANGED`(HIGHCONTRAST 문서), 투명 효과·라이트/다크는 `UISettings` 이벤트 또는 `WM_SETTINGCHANGE` [확인 필요: 실기에서 어느 메시지가 오는지] |
-| 통과 모드(`U` — 누르는 동안만) | `overlay.rs` 의 `set_click_through(bool)` **하나**를 일반 모드와 공유(macOS `ignoresMouseEvents = !판서 ∨ 통과`, `OverlayController.swift:142-143,171,192-196`): 켜면 `WS_EX_TRANSPARENT`(+LAYERED) ON·판서는 그대로 표시, 끄면 OFF. 상태 출처 `PassThroughModeSource{key(키코드), timed}`(`AppState.swift:14-17`)가 시작·종료 규칙을 가른다. **키(홀드)**: 판서 모드에서 카탈로그 `annotation.pass-through`(기본 `U`, 수정키 없는 단일 바인딩만, 키 반복 무시)를 누르면 진행 획을 확정(`finishActiveInteraction`/`finishAllActiveInteractions`)하고 `beginKeyPassThrough(keyCode)`, 같은 키 keyUp 이면 `endKeyPassThrough`(`CommandDispatcher.swift:74-88,98-105`, `InkView.swift:686-688`). 보드 중이면 안 켜지고, 이미 시간제면 키가 시간제 자원을 지우고 키 모드로 바꾼다(`AppState.swift:366-379`). **시간제(팔레트·마우스)**: 원형 팔레트 발표 그룹 항목(`RadialPaletteController.swift:168`) → `togglePassThroughMode`: 꺼짐→시간제, 시간제→끔, 키 모드→무시(`AppState.swift:340-349`). 켜기 조건=판서 모드∧보드 아님∧**전역 마우스 감시 설치 성공**(실패 시 안 켜고 로그, `:351-364`). 시간제 종료: 팔레트 항목 재선택 · `Esc`(체인 맨 앞, §2.2 한 단계 나가기) · 켠 뒤 첫 입력 없이 10초 · 마지막 클릭·스크롤 뒤 3초(만료 때 버튼이 눌려 있으면 3초 연장, `:430-438`) · 판서 끔(`:160`)/보드 켬(`:624`). 상수는 `PassThroughDefaults`(`:6-12`). 표시: 팔레트 중심 아이콘을 통과 모드 정의로 바꾸고 강조색 0.72 틴트+흰 아이콘(`RadialPaletteController.swift:1729-1731,1759`, `RadialPaletteGlassView.swift:341-343,383`) | `WM_NCHITTEST→HTTRANSPARENT` 는 **같은 스레드의 아래 창에만** 유효(문서) → 다른 프로세스 앱엔 못 쓴다, 채택 불가. layered 창에 `WS_EX_TRANSPARENT` 이면 모양과 무관하게 마우스가 아래 창으로 간다(Window Features 문서). 키 반복·keyUp 이 아래 앱으로 새면 `u` 글자가 들어가므로 키 라우팅 행 참조 |
-| 통과 모드 — 전역 클릭 감시·안전망 | `WH_MOUSE_LL`(권한 프롬프트 없음): 버튼 down/up(좌·우·기타)·휠만 처리(이동 제외, `AppState.swift:94-102`), **통과 켤 때 설치·끌 때 해제**, 콜백은 `PostMessage` 만(타임아웃 규칙은 키 훅과 같음). 커서 강조(`presenter.rs`)와 훅을 공유하면 참조 카운트. 두 출처 모두 마우스 입력이 오면 3초 타이머를 다시 건다(`passThroughInteractionDidOccur`, `:412-428`). 키 모드는 첫 입력 전엔 키 뗌만 기다리고, 마우스 입력이 한 번이라도 오면 마지막 입력 뒤 3초, 그리고 최대 30초(`keyMaximumHoldDuration`, `:440-451`)가 키 뗌을 놓쳤을 때의 안전망이다. 자기 창 클릭은 기한을 연장하지 않는다(macOS 전역 감시는 자기 앱 이벤트를 안 받는다 — 팔레트 클릭으로 3초가 늘면 안 됨): UI 스레드에서 클릭 점이 **자기 비-오버레이 창(팔레트·힌트·배지·도움말)의 사각형 안인지**로 판정(PID·`WindowFromPoint` 는 통과 중인 오버레이가 자기 PID 라 오판). 기한은 `SetTimer` 한 개를 갱신 | 관리자 권한 앱 위 클릭은 UIPI 로 훅이 못 받을 수 있다 → 시간제는 첫 입력 전 10초 만료로, 키 모드는 키 뗌·30초로만 복귀 [확인 필요: 실기]. 복귀 때 `SetForegroundWindow` 호출 금지(오버레이는 NOACTIVATE 라 활성화 불필요 — macOS "앱을 활성화하지 않음" 자동 충족) |
+| 통과 모드(`U` — 누르는 동안만) | `overlay.rs` 의 `set_click_through(bool)` **하나**를 일반 모드와 공유(macOS `ignoresMouseEvents = !판서 ∨ 통과`, `OverlayController.swift:142-143,171,192-196`): 켜면 `WS_EX_TRANSPARENT`(+LAYERED) ON·판서는 그대로 표시, 끄면 OFF. 상태 출처 `PassThroughModeSource{key(키코드), timed}`(`AppState.swift:14-17`)가 시작·종료 규칙을 가른다. **키(홀드)**: 판서 모드에서 카탈로그 `annotation.pass-through`(기본 `U`, 수정키 없는 단일 바인딩만, 키 반복 무시)를 누르면 진행 획을 확정(`finishActiveInteraction`/`finishAllActiveInteractions`)하고 `beginKeyPassThrough(keyCode)`, 같은 키 keyUp 이면 `endKeyPassThrough`(`CommandDispatcher.swift:74-105`, `InkView.swift:734-741`). 보드 중이면 안 켜지고, 이미 시간제면 키가 시간제 자원을 지우고 키 모드로 바꾼다(`AppState.swift:370-383`). **시간제(팔레트·마우스)**: 원형 팔레트 발표 그룹 항목(`RadialPaletteController.swift:168`) → `togglePassThroughMode`: 꺼짐→시간제, 시간제→끔, 키 모드→무시(`AppState.swift:344-353`). 켜기 조건=판서 모드∧보드 아님∧**전역 마우스 감시 설치 성공**(실패 시 안 켜고 로그, `:355-364`). 시간제 종료: 팔레트 항목 재선택 · `Esc`(체인 맨 앞, §2.2 한 단계 나가기) · 켠 뒤 첫 입력 없이 10초 · 마지막 클릭·스크롤 뒤 3초(만료 때 버튼이 눌려 있으면 3초 연장, `:434-439`) · 판서 끔(`:157-164`)/보드 켬(`:621-630`). 상수는 `PassThroughDefaults`(`:6-12`). 표시: 팔레트 중심 아이콘을 통과 모드 정의로 바꾸고 강조색 0.72 틴트+흰 아이콘(`RP:1741-1792`, `RG:414-480`) | `WM_NCHITTEST→HTTRANSPARENT` 는 **같은 스레드의 아래 창에만** 유효(문서) → 다른 프로세스 앱엔 못 쓴다, 채택 불가. layered 창에 `WS_EX_TRANSPARENT` 이면 모양과 무관하게 마우스가 아래 창으로 간다(Window Features 문서). 키 반복·keyUp 이 아래 앱으로 새면 `u` 글자가 들어가므로 키 라우팅 행 참조 |
+| 통과 모드 — 전역 클릭 감시·안전망 | `WH_MOUSE_LL`(권한 프롬프트 없음): 버튼 down/up(좌·우·기타)·휠만 처리(이동 제외, `AppState.swift:95-103`), **통과 켤 때 설치·끌 때 해제**, 콜백은 `PostMessage` 만(타임아웃 규칙은 키 훅과 같음). 커서 강조(`presenter.rs`)와 훅을 공유하면 참조 카운트. 두 출처 모두 마우스 입력이 오면 3초 타이머를 다시 건다(`passThroughInteractionDidOccur`, `:416-431`). 키 모드는 첫 입력 전엔 키 뗌만 기다리고, 마우스 입력이 한 번이라도 오면 마지막 입력 뒤 3초, 그리고 최대 30초(`keyMaximumHoldDuration`, `:444-454`)가 키 뗌을 놓쳤을 때의 안전망이다. 자기 창 클릭은 기한을 연장하지 않는다(macOS 전역 감시는 자기 앱 이벤트를 안 받는다 — 팔레트 클릭으로 3초가 늘면 안 됨): UI 스레드에서 클릭 점이 **자기 비-오버레이 창(팔레트·힌트·배지·도움말)의 사각형 안인지**로 판정(PID·`WindowFromPoint` 는 통과 중인 오버레이가 자기 PID 라 오판). 기한은 `SetTimer` 한 개를 갱신 | 관리자 권한 앱 위 클릭은 UIPI 로 훅이 못 받을 수 있다 → 시간제는 첫 입력 전 10초 만료로, 키 모드는 키 뗌·30초로만 복귀 [확인 필요: 실기]. 복귀 때 `SetForegroundWindow` 호출 금지(오버레이는 NOACTIVATE 라 활성화 불필요 — macOS "앱을 활성화하지 않음" 자동 충족) |
 | 통과 모드 — 키 뗌 감지·키 라우팅(설계 차이) | macOS 는 아래 앱을 누르면 그 앱이 활성화돼 오버레이가 keyUp 을 못 받으므로 키 뗌을 4수단으로 잡는다: ① 로컬 keyUp(`InkView.keyUp` → `endKeyPassThrough`) ② `CGEventSource.keyState` 60Hz 폴링(`:466-494` — 시작 150ms 안에 "안 눌림"이면 신뢰 불가로 폴링 중단·로그) ③ 안전망(마지막 마우스 입력 3초·최대 30초) ④ 손쉬운 사용 권한이 있으면 활성 이벤트 탭이 대상 키코드 하나의 keyDown/keyUp 을 삼킨다(수정키가 있으면 통과, keyUp 에서 종료, `:496-566`). **Windows 는 `WH_KEYBOARD_LL` 이 전경 창과 무관하게 모든 키를 보므로 ① 을 훅의 keyUp 으로 대체하고 ②·④ 는 만들지 않는다**(§7 #24): 통과 중 훅이 대상 키(`U`, 수정키 없음)의 keyDown(반복 포함)·keyUp 만 삼키고 나머지 키는 통과 → 아래 앱에 `u` 글자가 안 들어가고 keyUp 에서 종료. ③ 은 **유지**. 시간제는 첫 클릭 전에 오버레이가 포커스를 가져 `Esc` 가 체인에 닿는 macOS 동작에 맞춰, 훅이 이 구간(첫 클릭·스크롤 전)에만 `Esc` 를 삼켜 종료로 연결하고 이후엔 아무것도 안 삼킨다 | UIPI: 전경 창이 관리자 권한이면 LL 훅이 키를 못 받는다 → keyUp 을 놓치므로 ③ 만으로 복귀한다. `LowLevelHooksTimeout` 초과로 훅이 조용히 제거돼도 같다(판서 모드 한 글자 키 행). 반대로 대상 키 외 키를 삼키면 아래 앱 타이핑이 막힌다. macOS 는 손쉬운 사용 권한이 없으면 ④ 가 꺼진다(로그만, `:498-502`) — Windows 훅에는 권한 개념이 없다. 설계서·Swift 주석에 Windows 규칙은 없다 |
 | 펜 압력·지우개 끝 | `WM_POINTER*` + `GetPointerPenInfo(History)`, 압력 0~1024, `PEN_FLAG_ERASER`/`PEN_FLAG_INVERTED` | Wacom 은 드라이버 "Windows Ink 사용" 이 꺼져 있으면 WM_POINTER 가 안 온다 → 첫 실행 안내. 합쳐진 점은 History 로 받아야 스무딩이 안 끊긴다 |
+| 임시 지우개·입력 소유권 | `uses_eraser = 마우스 우클릭 ∨ 펜 측면 버튼(IsBarrelButtonPressed) ∨ 펜 지우개 끝(IsInverted/IsEraser) ∨ currentTool==eraser`. 어느 도구에서 시작해도 `currentTool`은 바꾸지 않고 현재 지우개 설정으로 down~up 한 제스처를 만든 뒤 `replaceStrokes` 한 번으로 Undo 1단위(`IV:507-666,859-909,1475-1492`; `AS:902-923,968-982`). 소유 버튼/포인터 하나를 잡은 동안 다른 버튼은 무시하고, 다음 down 때 이전 소유 버튼이 실제로 안 눌렸으면 누락된 up으로 보고 진행 상호작용을 끝낸 뒤 새 입력을 받는다(`IV:201-213,244,507-518`) | Windows의 "실제로 눌림" 확인은 마우스는 `GetAsyncKeyState`, 펜은 포인터 상태를 쓰는 안이지만 API 조합은 **[확인 필요: W2 실기]**. `CANCELED`·`CAPTURECHANGED`도 같은 종료 경로. 측면 버튼=우클릭=임시 지우개, Pencil 더블탭 대응은 §7 #34 |
 | 레이저(점·꼬리) | `laser.rs`: 꼬리 = 누른 구간별 점 목록(위치·시각), 그릴 땐 한 `PathGeometry`(구간마다 Figure)·`StrokeStyle` 둥근 캡·조인·굵기 `max(4, 크기×1.25)`·색=레이저색을 **불투명으로 그리고 `PushLayer` 불투명도 0.7**(형광펜과 같은 기법 — 겹쳐도 안 진해짐, `IV:21-43,117-129`, `IV`=`InkView.swift`). 점=반지름 `laserSize`, 글로우(색 동일·불투명 0.9·반경=크기)는 점+꼬리에 **한 번**(D2D `Shadow` 효과; 구간마다 주면 이음매가 구슬로 보인다, 027 수정). 줄이기: 프레임/16ms 마다 `cutoff=now−꼬리시간` 보다 오래된 점을 **오래된 끝부터** 제거하되 만료점 1개는 남겨 끝이 cutoff 에 맞게(`IV:97-115`), 점이 다 사라지고 누르는 중이 아니면 중단. 시각은 단조 시계(`QueryPerformanceCounter`). 도구 전환·판서 끔·보드 진입 시 `clear`(`IV:285-319`) | 입력 매핑은 다음 행 |
-| 레이저 입력 매핑 | 호버(점만) = `WM_POINTERUPDATE`∧INRANGE∧¬접촉 · 누름(꼬리) = 펜·터치 `INCONTACT`, 마우스 `FIRSTBUTTON`(좌클릭만, macOS 도 좌 드래그만) · 놓음 = `UP` → 꼬리 추가 중단(기존 꼬리는 줄어듦) · 오버레이·범위 이탈 = `WM_POINTERLEAVE`/INRANGE 해제 → 점 숨김+꼬리 끊기(`tabletProximity`, `IV:466-473`) · `CANCELED`·`CAPTURECHANGED` 도 끊기 | 펜이 범위를 벗어났다 돌아오면 **새 `pointerId`**(POINTER_INFO 문서) → 이전 꼬리와 잇지 않는다(안 끊으면 점프 줄이 화면을 가른다). 펜 지우개 끝(`PEN_FLAG_ERASER/INVERTED`)은 레이저 선택 중에도 지우개로 동작 — 점 숨기고 지우개 커서(`IV:587-590,1407-1409`). 마우스의 `INCONTACT` 의미(우클릭만 눌러도 켜지는지) [확인 필요: W2 실기] |
-| 도구별 마지막 설정(`state.rs`) | 슬롯 6개(`pen·highlighter·arrow·rectangle·ellipse·text`)=`{colorIndex,size}`, 저장소는 설정 `tools.perToolMemory`(.pansetting 대상) — `state.rs` 는 값을 안 갖고 `settings.rs` 를 읽고 쓴다. 슬롯 없음: 레이저·지우개·선택·가리개. 크기 범위 1–30(글자 8–96), 기본 pen 3·형광펜 18·화살표/사각/원=pen 값·글자 24(`Ink.swift:38-72`, `SettingsModel.swift:70-82`). **읽기**: 슬롯 도구=자기 슬롯, 슬롯 없는 도구=`lastColorTool`(마지막으로 슬롯 있던 도구, 초기 pen)의 색(`AS:84,187-202`) → 획 색·중심 테두리 색 모두. **숫자키** `selectColor(i)` 는 §2.2 단축키 "숫자키 1~6". `[` `]`=슬롯 크기 ±(범위 클램프), 지우개=지름 ±`delta×2`(`AS:748-752,857-868`, `Ink.swift:155`) | 도구 전환은 색·크기를 바꾸지 않는다(현재 도구 슬롯을 읽을 뿐). 프리셋 수가 줄면 인덱스는 마지막으로 클램프(설계서). 팔레트 3링 선택 표시는 이 값으로 판정: 색=`selectedColorIndex==i`, 굵기=`\|기억값−값\|<0.001`(`RP:1505-1524`) |
+| 레이저 입력 매핑 | 호버(점만) = `WM_POINTERUPDATE`∧INRANGE∧¬접촉 · 누름(꼬리) = 펜·터치 `INCONTACT`, 마우스 `FIRSTBUTTON`(좌클릭만, macOS 도 좌 드래그만) · 놓음 = `UP` → 꼬리 추가 중단(기존 꼬리는 줄어듦) · 오버레이·범위 이탈 = `WM_POINTERLEAVE`/INRANGE 해제 → 점 숨김+꼬리 끊기(`tabletProximity`, `IV:482-489`) · `CANCELED`·`CAPTURECHANGED` 도 끊기 | 펜이 범위를 벗어났다 돌아오면 **새 `pointerId`**(POINTER_INFO 문서) → 이전 꼬리와 잇지 않는다(안 끊으면 점프 줄이 화면을 가른다). 펜 지우개 끝(`PEN_FLAG_ERASER/INVERTED`)은 레이저 선택 중에도 지우개로 동작 — 점 숨기고 지우개 커서(`IV:624-635,1475-1481`). 마우스의 `INCONTACT` 의미(우클릭만 눌러도 켜지는지) [확인 필요: W2 실기] |
+| 도구별 마지막 설정(`state.rs`) | 슬롯 6개(`pen·highlighter·arrow·rectangle·ellipse·text`)=`{colorIndex,size}`, 저장소는 설정 `tools.perToolMemory`(.pansetting 대상) — `state.rs` 는 값을 안 갖고 `settings.rs` 를 읽고 쓴다. 슬롯 없음: 레이저·지우개·선택·가리개. 크기 범위 1–30(글자 8–96), 기본 pen 3·형광펜 18·화살표/사각/원=pen 값·글자 24(`Ink.swift:38-72`, `SettingsModel.swift:119-165`). **읽기**: 슬롯 도구=자기 슬롯, 슬롯 없는 도구=`lastColorTool`(마지막으로 슬롯 있던 도구, 초기 pen)의 색(`AS:84,186-205`) → 획 색·중심 테두리 색 모두. **숫자키** `selectColor(i)` 는 §2.2 단축키 "숫자키 1~6". `[` `]`=슬롯 크기 ±(범위 클램프), 지우개=지름 ±`delta×2`(`AS:752-757,857-880`, `Ink.swift:155`) | 도구 전환은 색·크기를 바꾸지 않는다(현재 도구 슬롯을 읽을 뿐). 프리셋 수가 줄면 인덱스는 마지막으로 클램프(설계서). 팔레트 3링 선택 표시는 이 값으로 판정: 색=`selectedColorIndex==i`, 굵기=`\|기억값−값\|<0.001`(`RP:1530-1566`) |
 | 실시간 줌 | Win11: **WGC**(`CreateForMonitor`, `CreateFreeThreaded` 프레임 풀) → D3D11 → D2D. 대안 Desktop Duplication | macOS 는 스트림별 자기 앱 제외(`SCContentFilter`). Windows 의 스트림별 창 제외는 Magnification API(`MagSetWindowFilterList` EXCLUDE)뿐. 기본안: 줌 창 `WDA_EXCLUDEFROMCAPTURE`(macOS 줌 패널 `sharingType=.none` 과 같음) + 줌 중 그 모니터 오버레이 숨김(라이브 줌엔 macOS 도 판서를 안 그린다 — `ZoomController.swift:303` 은 정지 줌에서만 inkView 표시). 차이: 줌 중 화상회의 공유에도 판서가 안 보인다. **WGC 노란 테두리 끄기(`IsBorderRequired`)는 10.0.20348+ 이고 사용자 동의 + 패키지 capability `graphicsCaptureWithoutBorder` 필요** → Win10 은 테두리 불가. DDA 는 테두리 없음 대신 하이브리드 GPU·`ACCESS_LOST`(모드 변경·UAC) 처리, 커서 직접 합성 |
 | 공유에서 창 숨기기 | `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` — 팔레트·수업 배지·도움말(설정에 따라) | Win10 2004+, top-level·자기 프로세스 창만, DWM 합성 중에만. 2004 미만은 `WDA_MONITOR`(검은 사각형)로 동작. 런타임 토글 가능 |
 | 쉬는 시간 음악 | 열기: `chrome.exe <URL>`(없으면 `ShellExecuteW`). 종료: SMTC 로 Chrome 세션만 `TryPauseAsync`(§7 #7 결정) | **CDP 불가**: Chrome 136+ 는 기본 프로필에서 `--remote-debugging-port` 를 무시한다. 탭은 남는다(사용자 결정). SMTC 에 Chrome 세션이 안 잡히는 경우 [확인 필요: W6 실기] |
@@ -400,7 +404,7 @@ macOS 는 **1단계(모델·계획·캡처·설정 탭)만 구현**됐다. 적�
 | 선택 | `.controlAccentColor` 틴트 + 배경 0.28 | 시스템 강조색(`UISettings.GetColorValue(Accent)`; 변경은 `ColorValuesChanged`) 틴트 + 배경 α .28 |
 | 호버·눌림 | — | 배경에 아이콘색 α 6%·10% 오버레이(제안, W4a 실기에서 조정 — §7 #30). 아이콘 자체는 안 바꾼다 |
 | 고대비 | — | `SPI_GETHIGHCONTRAST`(`HCF_HIGHCONTRASTON`)를 시작 시·`WM_SYSCOLORCHANGE` 때 읽는다. 켜지면 **전 아이콘을 `COLOR_WINDOWTEXT`(선택=`COLOR_HIGHLIGHT`, 비활성=`COLOR_GRAYTEXT`) 단색**으로, 배경 이미지 생략, **attr 색·halo 끔**(공식 지침: 다색 이미지는 전경/배경 한 쌍으로). 펜 색은 색 칸이 따로 전달 |
-| 표면 재질 | Liquid Glass | 팔레트 면은 §3 "팔레트 면 렌더링"(직접 그린 반투명). 반투명 표면 위 아이콘의 "배경색" 인자(§3.2.6)는 **테마 기준 불투명 근사색**으로 넘긴다. 그 밖 창의 Mica/Acrylic(`DWMWA_SYSTEMBACKDROP_TYPE`, Win11 22H2+)은 이 절 범위 밖 |
+| 표면 재질 | Liquid Glass | 팔레트 면은 §3 "팔레트 면 렌더링"(직접 그린 반투명). 속성 아이콘의 배경색 인자는 유리=선택 시 강조색·그 밖 흰색 0.93 고정, 가로=선택 시 강조색·그 밖 시스템 모양 0.93/0.18(§3.2.6). 그 밖 창의 Mica/Acrylic(`DWMWA_SYSTEMBACKDROP_TYPE`, Win11 22H2+)은 이 절 범위 밖 |
 
 #### 3.2.5 트레이 아이콘
 
@@ -420,21 +424,21 @@ macOS 는 **1단계(모델·계획·캡처·설정 탭)만 구현**됐다. 적�
 
 #### 3.2.6 속성 아이콘(attr 레이어) — 순수 로직은 core, 그리기는 app
 
-macOS 구현은 아직 없다(별도 작업). 규칙 정본 = `assets/symbols/attr/README.md`·`manifest.json`. Windows 는 **macOS 구현 후** 착수(W4b 하위)해 같은 입력 → 같은 레이어 목록으로 맞춘다.
+macOS 구현은 #43으로, `AttrIconPure` 단언 3개는 #45로 머지됐다. 규칙 정본 = `assets/symbols/attr/README.md`·`manifest.json`과 `AttrIcon.swift`(`AI`)의 확정 해석. Windows 는 같은 입력 → 같은 레이어 목록으로 맞춘다.
 
 | 경계 | 내용 |
 | --- | --- |
-| core `attr_icon.rs` | 입력: `tool`(디자인 이름)·`attrs`(color RGBA·size·size 범위·heads·fill·trail·eraser 모드)·`ui_color`·`bg_color`. `manifest.json` 을 `include_str!`+`serde_json` 으로 **읽는다**(도구·레이어 하드코딩 금지). `{width}`→1~4, `{heads}`→single/double 치환 → 조건 평가 → 명암 판정. 출력 `Vec<Layer{name, paint: Ui\|Attr, halo: Option<Rgba>}>` = 그리는 순서(아래→위). OS 의존 0 |
-| app `app_icon.rs` | `name` → 임베드 `attr/svg/<name>.svg` 문서 → `paint` 색(ui=§3.2.4 상태색, attr=도구 색)을 루트 `color` 로 → 그림. halo 가 있으면 **같은 문서를 halo 색으로 ±0.5 DIP 4방향 어긋나게 먼저** 그린다(README 의 Mac 방식 — D2D SVG 에서 굵은 Stroke 로 덮어쓰기는 채움 레이어에서 어렵다). "1pt" = 1 DIP |
-| 쓰는 곳(README 제안) | 원형 중심 18·2링 14·가로 팔레트 도구 버튼. 설정이 바뀌면 즉시 다시 그림 |
+| core `attr_icon.rs` | 입력: `tool`(디자인 이름)·`attrs`(color RGBA·size·size 범위·heads·fill·trail·eraser 모드)·`ui_color`·`bg_color`. `manifest.json` 을 `include_str!`+`serde_json` 으로 **읽는다**(도구·레이어 하드코딩 금지). `{width}`→1~4, `{heads}`→single/double 치환 → 조건 평가 → 명암 판정. 출력 `Vec<Layer{name, paint: Ui\|Attr, halo: Option<Rgba>}>` = 그리는 순서(아래→위). OS 의존 0. Swift 순수 원본 `AI:26-121`, 입력 구성 `AI:211-350`, 평가 `AI:382-478`; 두께 단계·조건 문법·명암/halo의 A 단언 3개는 `SelfTest.swift:98-166` 그대로 이식 |
+| app `app_icon.rs` | `name` → 임베드 `attr/svg/<name>.svg` 문서 → `paint` 색(ui=§3.2.4 상태색, attr=도구 색)을 루트 `color` 로 → 그림. halo 가 있으면 **같은 문서를 halo 색으로 ±0.5 DIP 4방향 어긋나게 먼저** 그린다(`AI:481-518`; D2D SVG 에서 굵은 Stroke 로 덮어쓰기는 채움 레이어에서 어렵다). "1pt" = 1 DIP |
+| 쓰는 곳 | 원형 중심 18·2링 14·가로 팔레트 도구 버튼. 설정·호버·선택·통과·외관이 바뀌면 캐시 키를 달리하거나 비운다(`RG:361-389,414-480,525-557`; `AppIcon.swift:71-110,254-264`) |
 
 | 규칙 | 정의·함정 |
 | --- | --- |
-| 도구 id | manifest `tools` 키는 **디자인 이름**(`tool.rect`·`tool.circle`), 앱 키는 `tool.rectangle`·`tool.ellipse`. 이미 있는 `symbol-map.tsv` 를 역방향 조회한다 — 두 번째 대응표 금지 |
+| 도구 id | manifest `tools` 키는 **디자인 이름**(`tool.rect`·`tool.circle`), 앱 키는 `tool.rectangle`·`tool.ellipse`. Swift 대응 정본은 `AttrIcon.manifestKeyByTool` 한 곳(`AI:211-221`). Windows도 같은 대응을 한 곳에서만 만들고 레이어 규칙은 manifest에서 읽는다 |
 | 조건 문법 | layers 행의 3번째 칸에서 읽는다: `fill`·`trail`, `!x`, `mode=v`, `mode!=v`. manifest 의 `conditions` 사전은 4개뿐인데 layers 는 `mode=rect`·`mode=lasso`·`mode!=brush` 까지 7종을 쓴다 → **사전을 정본으로 쓰지 않는다**(검증: 모든 layer 이름이 파일로 존재, 미사용 파일 0) |
-| 두께 단계 | Swift 는 연속값(펜·형광펜·화살표·도형 1~30 `Ink.swift:93`, 텍스트=글꼴 크기 범위 `Ink.swift:62~`, 지우개=크기). 제안: `t=(size−min)/(max−min)`, `level=1+min(3, floor(4t))`. README 의 "가장 가까운 단계"가 4등분 구간인지 끝점 포함 4점인지 불명 → [확인 필요: macOS 속성 아이콘 구현 때 한 곳에서 확정 — §5.4] |
-| 지우개 모드 | manifest `mode` = brush·rect·lasso. Swift = `EraserMode{partial,stroke,area}`(`Ink.swift:104`) + `EraserAreaShape{rectangle,lasso}`(`AppState.swift:247`). 제안: partial→`brush`, stroke→`stroke`, area+rectangle→`rect`, area+lasso→`lasso` 를 **그대로 넘기고**(`mode` 는 4값), `stroke` 는 어떤 `mode=` 행에도 안 걸려 `mode!=brush` 의 body.small 만 그려진다 [확인 필요: 사용자 — 획 단위 지우개 모양이 이것인지] |
-| 명암 | 상대휘도 `L=0.2126R+0.7152G+0.0722B`(sRGB 선형화 후), `ratio=(Lmax+0.05)/(Lmin+0.05)`. **attr 불투명 RGB** 와 **그 아이콘 바로 뒤 배경(평상·호버·선택 각각)** 이 `ratio<1.8` 이면 attr 레이어에 halo, 단 `*.fill` 레이어 제외. halo 색: 배경이 밝으면 `rgba(0,0,0,.55)`, 어두우면 `rgba(255,255,255,.7)`. "밝다" 임계는 정본에 없음 → 제안 `L_bg ≥ 0.179`(흑·백 대비가 같아지는 점) [확인 필요: macOS 구현과 일치 확인 — §5.4] |
+| 두께 단계 | `t=clamp((size−min)/(max−min),0,1)`, `level=1+min(3,floor(4t))`; `max==min`이면 2(`AI:32-36`). 범위는 원형 3링 배열, 지우개는 설정 프리셋 최솟값·최댓값(`AI:248-320`) |
+| 지우개 모드 | Swift `EraserMode{partial,stroke,area}` + `EraserAreaShape{rectangle,lasso}`를 partial→`brush`, stroke→`stroke`, area+rectangle→`rect`, area+lasso→`lasso`로 넘긴다(`AI:306-332`). `stroke`는 `mode!=brush` 레이어만 남는 것이 현행 정본 |
+| 명암·배경 추정 | 상대휘도·명암비는 `AI:85-111`; `ratio<1.8`이면 attr 레이어에 halo, 단 `*.fill` 제외(`AI:472-478`). halo 색은 배경 휘도 0.5 이상이면 검정 55%, 아니면 흰색 70%(`AI:4-10,603-608`). **유리**는 선택 시 강조색, 그 밖은 외관과 무관한 흰색 0.93(`S:93-108`); **가로 팔레트**는 선택 시 강조색, 그 밖은 시스템 모양에 따라 흰색 0.93/0.18(`AppIcon.swift:4-7,254-264`). 유리 내용색의 정본은 `RadialPaletteGlassStyle.contentColor(isSelected:isEnabled:)` 하나(`S:93-98`) |
 | 고대비 | attr·halo 끔(§3.2.4) |
 
 #### 3.2.7 설치·배포 자산
@@ -521,14 +525,14 @@ jobs:
 
 | 항목 | 누가 | 언제 |
 | --- | --- | --- |
-| `fixtures/pansetting/macos-v1.pansetting`(**현재 main 으로 내보낸 기본값** — §2.2) + `SelfTest.swift:1148-1249` 점검이 이 파일과 `windows-v1` 을 읽게 입력만 수정 | macOS 쪽 | W2 착수 전 |
-| `fixtures/shortcuts-default.json`(§2.2 형식, `M` 포함, `id` = 아이콘 키, `annotation.pass-through\|annotation`=`U` 포함) | macOS 쪽(카탈로그에서 생성) | W2 착수 전 |
+| `fixtures/pansetting/macos-v1.pansetting`(**현재 main 으로 내보낸 기본값** — §2.2) + `SelfTest.swift:1218-1318` 설정 점검이 이 파일과 `windows-v1` 을 읽게 입력만 수정 | macOS 쪽 | W2 착수 전 |
+| `fixtures/shortcuts-default.json`(§2.2 형식, 정의 50개, `M`·`annotation.pass-through\|annotation`=`U`, `tool.eraser-toggle` 포함 unbound 6개) | macOS 쪽(카탈로그에서 생성) | W2 착수 전 |
 | `docs/design.md` 낡은 문장 3곳(:14 "Windows 10/11", :262 미디어 키 일시정지, :368 Fluent 아이콘)을 확정 결정(#1·#7·아이콘 세트)에 맞게 수정 | macOS 쪽 | W1 착수 전(§7 #19) |
 | 앱 아이콘 PNG(16·20·24·32·40·48·64·256) + 묶은 `.ico` → `assets/app-icon/`(지금은 `build.sh` 가 코드로만 그림) | macOS 쪽 | W1 착수 전(없으면 임시 아이콘) |
 | `symbol-map.tsv` 에 `eraser.area-shape`·`palette.radial.toggle` 연결 또는 폴백 확정, `annotation.pass-through` 디자인·`docs/icons.md` 행 복구 | macOS 쪽 | W4a 착수 전 |
 | 원형 팔레트 각도·구역 판정 | 요청 없음 — Windows 가 `RadialPaletteSectorGeometry`·`Metrics` 를 읽고 나머지는 재구성(§2.3) | — |
 | §7 #14 남은 영역 승인 시: 팔레트 기하·도구별 기억 이행의 시험 입력을 기존 SelfTest 점검에 얹고 `fixtures/` JSON 을 양쪽이 읽게(`DisplayPlanner` 쪽은 #38 로 완료) | macOS 쪽 | 해당 단계(W2·W4b) 착수 전 |
-| 속성 아이콘 macOS 구현 + 두께 4분할·halo 임계·지우개 모드 대응·halo 가 레이어 자체 투명도를 따르는지 확정(§3.2.6) | macOS 쪽 | W4b 의 속성 아이콘 하위 항목 착수 전 |
+| 속성 아이콘 구현은 #43으로 완료. 두께 단계·조건 문법·명암 판정의 순수 함수 시험 입력은 §7 #14 승인 시 기존 SelfTest 점검에 추가(시험 순증 승인 전에는 소스 대조+W4b 실기) | macOS 쪽 | W4b 착수 전 |
 | `ROADMAP.md`·`README.md` 에 021~039 반영 | macOS 쪽 | 착수 조건 아님(Windows 쪽은 `git log` 로 대체) |
 
 ## 6. 단계 로드맵
@@ -538,10 +542,10 @@ W 번호 유지(§3·§9 의 W1~W9 참조가 그대로 유효). 새 단계는 W4
 | 단계 | 대응 macOS | 산출물 | 검증 | 규모(Rust 줄) |
 | --- | --- | --- | --- | --- |
 | **W1 골격** | 001·002 일부·030·032 | workspace·CI, 트레이 아이콘·메뉴(종료) + **트레이 ICO 4종 임베드·밝기 판정·`TaskbarCreated`**(§3.2.5), 모니터별 투명 오버레이(DComp), `Ctrl+Alt+P` 판서 모드 토글(클릭 통과 on/off), WM_POINTER 로 압력 있는 선 긋기, PerMonitorV2, 단일 인스턴스 + **`monitor.rs`(식별·활성 경로·좌표 정본 — 오버레이를 만들 때부터 이 경로만)·`z_bands.rs` 5대역·`run_above_overlay` 앵커**(§3) + **`rc.exe` PNG-ICO 수용 확인·SVG 시험 1회**(루트 `color`·`SetTransform`, §3.2.2) | CI 초록. 실기: ① 두 모니터에 선 ② 판서 끄면 아래 앱 클릭 ③ 펜 압력 ④ **PowerPoint 슬라이드쇼 위 표시** ⑤ **오버레이에 WDA 걸면 Teams/Zoom 공유에서 빠지는지** ⑥ **WGC 모니터 캡처 노란 테두리를 비패키지로 끌 수 있는지** ⑦ 배율 다른 3화면(노트북·외부·빔)에서 창 위치·크기, 생성 직후 `GetWindowRect == rcMonitor` ⑧ 판서 켠 채 `MessageBox`·`IFileDialog` 가 오버레이 위에 뜨고 클릭됨 ⑨ 새 가상 데스크톱에서 오버레이 보임 여부 ⑩ 작업 표시줄 밝기 전환 3회에 트레이 아이콘 교체 | 1.7k |
-| W2 판서 엔진 | 002·022·027·028·033·036 | core `ink`·`settings`(스키마 전체: `perToolMemory`·`display`·`paletteStyle`·옛 키 이행·`SettingsStoreIssue`)·`shortcut`·`state`(도구별 설정 기억·숫자키·`[ ]`)·`laser.rs`(꼬리 점 버퍼·줄이기)·`display_preset.rs` 의 모델·serde·검증기(`display` 묶음 왕복용) + .pansetting 픽스처, 펜/형광펜/레이저(꼬리 한 줄 경로·누를 때만·범위 이탈 시 끊기)·Catmull-Rom·Undo 100, LL 훅 모드 키(P H L 1~6 [ ] Ctrl+Z), **통과 모드 `U`**(키 홀드 + 팔레트 시간제 — `PassThroughModeSource` 상태기계·`set_click_through`·`WH_KEYBOARD_LL` keyUp·`WH_MOUSE_LL` 안전망, `mousehook.rs` 를 여기서 처음 만들고 W8 이 재사용, §3) | `cargo test`(이식 selftest 중 해당분), 실기: 한글 IME 상태에서 P · 레이저 호버=점만/누르면 꼬리/펜 범위 이탈 시 꼬리 끊김 · 숫자키·`[ ]` 가 도구별로 따로 기억 · `U` 를 누르는 동안 아래 앱 클릭·스크롤이 전달되고 키를 떼면 판서로 복귀 · 훅이 keyUp 을 놓친 경우 마지막 마우스 입력 3초·최대 30초 안전망 · 팔레트 시간제: 브라우저 링크 클릭 후 3초 복귀·첫 입력 없이 10초 복귀·`Esc` · 관리자 앱 위(UIPI) | 3.5k |
-| W3 지우개 | 003 | core `eraser`, 부분/획/영역, 펜 지우개 끝, 전체/모니터 지우기 | 이식 selftest, 실기 지우개 끝 | 1.0k |
+| W2 판서 엔진 | 002·022·027·028·033·036·045 | core `ink`·`settings`(스키마 전체: `perToolMemory`·`display`·`paletteStyle`·`paletteGlassOpacity`·옛 키 이행·`SettingsStoreIssue`)·`shortcut`(정의 50개와 기본 키 없는 `tool.eraser-toggle`)·`state`(도구별 설정 기억·숫자키·`[ ]`·지우개 이전 도구 비영속 기억)·`laser.rs`(꼬리 점 버퍼·줄이기)·`display_preset.rs` 의 모델·serde·검증기(`display` 묶음 왕복용) + .pansetting 픽스처, 펜/형광펜/레이저(꼬리 한 줄 경로·누를 때만·범위 이탈 시 끊기)·Catmull-Rom·Undo 100, LL 훅 모드 키(P H L 1~6 [ ] Ctrl+Z), **통과 모드 `U`**(키 홀드 + 팔레트 시간제 — `PassThroughModeSource` 상태기계·`set_click_through`·`WH_KEYBOARD_LL` keyUp·`WH_MOUSE_LL` 안전망, `mousehook.rs` 를 여기서 처음 만들고 W8 이 재사용, §3) | `cargo test`(이식 selftest 중 해당분), 실기: 한글 IME 상태에서 P · 레이저 호버=점만/누르면 꼬리/펜 범위 이탈 시 꼬리 끊김 · 숫자키·`[ ]` 가 도구별로 따로 기억 · `U` 를 누르는 동안 아래 앱 클릭·스크롤이 전달되고 키를 떼면 판서로 복귀 · 훅이 keyUp 을 놓친 경우 마지막 마우스 입력 3초·최대 30초 안전망 · 팔레트 시간제: 브라우저 링크 클릭 후 3초 복귀·첫 입력 없이 10초 복귀·`Esc` · 관리자 앱 위(UIPI) | 3.5k |
+| W3 지우개 | 003·045 | core `eraser`, 부분/획/영역, 펜 지우개 끝, 마우스 우클릭·펜 측면 버튼 임시 지우개, 버튼/포인터 소유권 가드, 전체/모니터 지우기 | 이식 selftest, 실기: 모든 도구에서 우클릭·측면 버튼·지우개 끝, 다른 버튼 동시 입력 무시, up 유실 자가 복구, Undo 1단위 | 1.0k |
 | **W4a 가로 팔레트·도움말·아이콘** | 004·037·038·039 | 가로 팔레트·Esc 단계·Tab, 도움말(카탈로그 생성, DirectWrite, 검색 EDIT), `app_icon.rs`(키 조회·SVG 캐시·폴백 글리프·상태색·고대비, §3.2.2~4) | 실기, 아이콘 없는 키 폴백, 100% 모니터·빔에서 10~14 DIP 아이콘 가독 | 1.6k |
-| **W4b 원형 팔레트** | 021·029·031·035 | core `radial`(그룹 표·기하·히트·키보드 탐색, §2.3) + 중심 + 1·2·3링·펼침/접기/이동·`M`·방향키·Ctrl 길게 키캡·힌트 창·접근성(투명 효과 끔·고대비)·D2D 반투명 면(`palette_render.rs`) + **하위(macOS 속성 아이콘 구현 후)**: `attr_icon.rs` + halo 그리기(§3.2.6), macOS SelfTest 의 레이어 목록 단언 이식 | 실기: ① 모든 링 클릭·호버·힌트 ② 100%·150% 모니터 간 이동·가장자리 펼침 ③ ↑↓←→·Enter 이동, 텍스트 입력 중 안 가로챔 ④ 밝은·어두운 배경·슬라이드쇼 위 가독성 ⑤ 투명 효과 끔·고대비·다크 ⑥ 펜·키보드 조작 | 2.0k |
+| **W4b 원형 팔레트** | 021·029·031·035·043·044·047·048 | core `radial`(그룹 표·기하·히트·키보드 탐색, §2.3) + 중심 + 1·2·3링·펼침/접기/이동·`M`·방향키·Ctrl 길게 키캡·힌트 창·접근성(투명 효과 끔·고대비)·D2D 반투명 면(`palette_render.rs`, 0.55...0.90·기본 0.62) + `attr_icon.rs` + halo 그리기(§3.2.6) | 실기: ① 모든 링 클릭·호버·힌트 ② 100%·150% 모니터 간 이동·가장자리 펼침 ③ ↑↓←→·Enter 이동, 텍스트 입력 중 안 가로챔 ④ 밝은·어두운 배경·슬라이드쇼 위에서 유리 대비(0.55/0.62/0.90)와 속성 halo ⑤ 투명 효과 끔·고대비·다크 ⑥ 펜·키보드 조작 | 2.0k |
 | W5 보드·타이머 | 005·006 | 화이트·블랙보드 페이지·패턴, 수업 배지(드래그·스냅·WDA·위치 기억), 쉬는 시간 전체 화면, 잠자기 복귀 | core timer selftest, 실기 | 2.0k |
 | W6 쉬는 시간 음악 | 007 | `chrome.exe` 열기·SMTC 일시정지·볼륨 페이드·복원 | 실기(Chrome·Premium) | 0.8k |
 | W7 줌 | 008 | WGC(또는 W1 판정에 따라 DDA) 라이브·정지 줌, 따라가기 3방식, Space 미리보기(회색 효과), 배율 표시 | core zoom selftest, 실기 60fps·하이브리드 GPU | 2.0k |
@@ -552,7 +556,7 @@ W 번호 유지(§3·§9 의 W1~W9 참조가 그대로 유효). 새 단계는 W4
 
 macOS 쪽 선행 작업은 §5.4.
 
-**규모 근거**: Swift 15,113 → 21,275(99548ce, +6,162, 파일 35개; `AppIcon.swift` 206·통과 모드·#38 포함) ⇒ ≈ 21.3k. 증가분 = 원형 팔레트 2,331(1876+455) · 화면 프리셋 1,950(1006+834+110) · SettingsModel +396 · 그 밖 +1,485(`AppIcon.swift`·통과 모드·SelfTest +365 포함). 인계서와 같은 가정(Swift→Rust ×1.15, Win32·DComp 보일러플레이트 포함)을 그대로 쓰면 ≈ 24.5k, 위 단계 합 23.1k 는 통과 모드·#38 반영 전 추정이라 약 1.4k 낮다(범위 22~25k 안). **비례하지 않는 세 곳**: ① 유리(SwiftUI 455줄)는 이식이 아니라 D2D 단색 그리기로 대체 — 줄 수 비슷·시각은 다름 ② SwiftUI 설정 2파일 1.9k 는 Win32 Common Controls 로 ×1.8 가정(실측 아님, 합계의 +1.5k) ③ AppleScript·Chrome 탭 제어(≈0.3k)는 SMTC 로 바뀌어 순감 없음. core 로 가는 순수 로직은 ≈ 6.9k줄(추정). 추정치(Win32 설정 UI 계수 ×1.8·core 6.9k)는 실측이 아니다 — W2 끝에서 core 실측으로 보정.
+**규모 근거**: `wc -l Sources/EduTools/*.swift` = Swift 22,562줄, `rg --files Sources/EduTools -g '*.swift'` = 36파일(d2f3310). 초기 15,113줄 대비 +7,449. 증가분 = 원형 팔레트 2,504(1919+585) · 화면 프리셋 1,950(1006+834+110) · SettingsModel +463 · AttrIcon 760 · 그 밖 +1,772(AppIcon·통과 모드·우클릭 지우개·SelfTest 포함). 99548ce 이후 #41~#45의 순증은 1,287줄(`git diff --numstat`). 인계서와 같은 가정(Swift→Rust ×1.15, Win32·DComp 보일러플레이트 포함)을 그대로 쓰면 ≈25.9k이며 위 단계 합 23.1k는 최신 기능 전 추정이라 약 2.8k 낮다. **비례하지 않는 세 곳**: ① 유리(SwiftUI 585줄)는 이식이 아니라 D2D 알파 면으로 대체 — 줄 수는 비슷해도 시각 구현은 다름 ② SwiftUI 설정 2파일 1.9k는 Win32 Common Controls로 ×1.8 가정(실측 아님, 합계의 +1.5k) ③ AppleScript·Chrome 탭 제어(≈0.3k)는 SMTC로 바뀌어 순감 없음. core로 가는 순수 로직은 ≈7.3k줄(추정). 추정치는 W2 끝에서 core 실측으로 보정한다.
 
 ## 7. 사용자에게 물을 결정
 
@@ -572,8 +576,8 @@ macOS 쪽 선행 작업은 §5.4.
 | 10 | 계획서를 저장소 `docs/windows-plan.md` 로 올릴지 | ✅ 올림(2026-10-28, 이 파일) |
 | 11 | iPad 동반 앱(설계서 언급) 범위 | 🔶 이번 범위 밖 |
 | 12 | macOS 에서 확정·구현된 기능(원형 팔레트·`M`·키보드, 통과 모드 `U`, 도구별 설정 기억, 화면 구성 프리셋, 아이콘 세트, 대화상자 높이 계층)의 Windows 포함 범위 | 🔶 전부 포함(W2·W4a/b·W10). 유리만 #13. 화면 프리셋을 좁게 가는 대안: `display` 모델·검증·왕복·보존까지만(가져온 프리셋이 안 사라지게) 하고 편집 UI·계획·캡처·적용·자동 전환은 제외 — macOS 도 2·3단계 미구현이고 식별 값(`CGDisplay*`)이 OS 별로 다르다는 이유 |
-| 13 | 원형 팔레트 유리 대응 수준 | 🔶 ① D2D 직접 그린 반투명 면, 블러 없음(권장 — 오버레이가 투명 창이라 뒤 화면 블러 불가; 알파 0.8·색은 W4b 실기에서 조정, 안 읽히면 ② 를 W4b 안으로 당김) ② 캡처 기반 모양 블러(후속, §3 팔레트 면 렌더링 대안 A). Windows.UI.Composition 브러시(대안 B)는 PoC 전 보류 |
-| 14 | 동치 장치가 0 인 남은 영역(원형 팔레트 기하·탐색·힌트, 도구별 기억 이행, `DisplayPresetCapture`·`DisplayPresetValidator`·`matchesCurrent`)의 시험 입력을 Swift SelfTest 에 얹는 것(macOS 규칙은 시험 순증 0) | 🔶 **부분 결정(2026-10-28 사용자): `DisplayPlanner`·매칭·격자 검증·자동 집합 시험은 승인 — #38 이 단언 6개를 추가(§2.2).** 남은 영역은 승인 권장 — 기존 점검에 입력만 얹고 `fixtures/` JSON 을 양쪽이 같이 읽게. 아니면 그 영역은 동치 장치 0 — Windows 는 같은 알고리즘·같은 순회 순서로 이식하고 W4b·W10 실기로만 판정, 공백은 이슈로 보고 |
+| 13 | 원형 팔레트 유리 대응 수준 | 🔶 ① D2D 직접 그린 반투명 면, 블러 없음(권장). 일반 면=흰색 알파 `tools.paletteGlassOpacity` 0.55...0.90·기본 0.62, 내용=근흑색 0.10, 비활성=내용만 0.55. 선택 칸·색 견본·통과 중심만 각각 강조색·자기 색·강조색 틴트를 쓴다. Windows D2D 알파 면과 macOS의 `glassEffect` 위 흰 면 채움은 검정을 최악 배경으로 하는 같은 합성식이라 하한 대비 5.22:1이 보장됨(§2.3·§3, #44) ② 캡처 기반 모양 블러(후속, §3 대안 A). Windows.UI.Composition 브러시(대안 B)는 PoC 전 보류 |
+| 14 | 동치 장치가 0 인 남은 영역(원형 팔레트 기하·탐색·힌트, 도구별 기억 이행, `DisplayPresetCapture`·`DisplayPresetValidator`·`matchesCurrent`)의 시험 입력을 Swift SelfTest 에 얹는 것 | 🔶 **부분 결정:** `DisplayPlanner`·매칭·격자 검증·자동 집합은 승인·추가 완료(#38, A 6개), 속성 아이콘 두께 단계·조건 문법·명암/halo 판정도 승인·추가 완료(#45, A 3개; §2.2·§3.2.6). 남은 영역은 승인 권장 — 기존 점검에 입력만 얹고 `fixtures/` JSON 을 양쪽이 같이 읽게. 아니면 그 영역은 동치 장치 0 — Windows 는 같은 알고리즘·같은 순회 순서로 이식하고 W4b·W10 실기로만 판정, 공백은 이슈로 보고 |
 | 15 | 화면 프리셋 2·3단계(적용·자동 전환)의 Windows 시점 | 🔶 macOS 2단계 구현·실기 뒤 W11. 그전엔 W10(계획 보기까지). macOS 를 안 기다리고 design.md 규칙만으로 먼저 갈 수도 있으나 W11 착수 전 #25~#27 확정 필요 |
 | 16 | PR #35(통과 모드) 머지를 W2 착수 조건으로 | ✅ **해소(2026-10-28): 머지됨(c42fcc0).** 사용자 확인 "U 확인했어, 머지하고 진행해". 통과 모드(`U` 를 누르는 동안만 + 팔레트 시간제)는 현행 정본이다(§3). 038 아이콘 로더도 e702809 로 머지됨 |
 | 17 | `fixtures/pansetting/windows-v1.pansetting` 을 "편집 범위" 에 넣을지 | 🔶 넣는다(§2.2·§4 가 이미 요구). 나머지 `fixtures/` 는 macOS 쪽 소유 |
@@ -589,19 +593,20 @@ macOS 쪽 선행 작업은 §5.4.
 | 27 | 복제 마스터 — CCD 에 마스터가 없어 "경로 우선순위 첫 타깃" 으로 둠(§3.1.2) | 🔶 macOS 의 마스터(해상도·모드 기준)와 같은 의미로 본다 — 확인 |
 | 28 | 아이콘 최소 표시 크기 — 디자이너 PNG 는 16 DIP 하한인데 macOS 표시는 10~14pt | 🔶 macOS 와 같은 크기로 시작하고 W4a 실기(§9)에서 안 읽히면 키움(레이아웃 영향 — 팔레트와 합의) |
 | 29 | 앱 아이콘 원본 — macOS `build.sh` 의 코드 드로잉을 그대로 쓰나, 별도 디자인인가. 누가 `.ico` 를 만드나 | 🔶 macOS 쪽이 `assets/app-icon/` 에 PNG·`.ico` 를 내보냄(§3.2.7·§5.4). 별도 디자인이면 디자이너가 제공 |
-| 30 | `keystroke-display.toggle` 의 Windows 아이콘(`key.ctrl` 키캡 vs "Ctrl" 글자)과 호버·눌림 표현(배경 α 6%·10%·WinUI 토큰 색 — 제안값) | 🔶 `key.ctrl` 과 제안값으로 시작, W4a 실기 후 취향 확인 |
+| 30 | `keystroke-display.toggle` 의 Windows 아이콘(`key.ctrl` 키캡 vs "Ctrl" 글자)과 호버·눌림 표현(배경 α 6%·10%·WinUI 토큰 색 — 제안값) | 🔶 `key.ctrl` 과 제안값으로 시작, W4a 실기 후 취향 확인. 속성 아이콘 halo 배경은 별도 확정 규칙: 유리=선택 강조색/그 밖 흰색 0.93, 가로=선택 강조색/그 밖 시스템 모양 0.93·0.18(§3.2.6) |
 | 31 | 아이콘 없는 키: `annotation.pass-through`(U — 카탈로그 정의 있음·SF `cursorarrow.click`, 디자인 SVG 없음)·`eraser.area-shape`·`palette.radial.toggle`(기존 디자인 재사용 가능) | 🔶 후자 둘은 `symbol-map.tsv` 한 줄 연결(macOS 쪽 결정), `pass-through` 는 디자인 수령 또는 Segoe Fluent 글리프(§3.2.3). 즐겨찾기 칸은 비활성이라 칸만 둠(저장 모델 미정) |
 | 32 | 설정 이름 길이(≤40) 판정 — Swift 는 자소(`String.count`), Rust `chars()` 는 스칼라라 결합 문자·ZWJ 이모지에서 더 엄격 | 🔶 의존 추가(`unicode-segmentation`) 없이 스칼라 기준 + 알려진 편차(의존 추가는 승인 필요) |
 | 33 | `SettingsBundle` 에 값을 더하면(예: `display`) 구 리더가 `includedBundles` 의 모르는 값에서 파일 전체를 거부 — `formatVersion` 을 올릴지 | 🔶 지금은 배포된 구 버전이 없어 무해. 다음 묶음 추가 PR 에서 결정 |
+| 34 | Windows 펜 버튼·제스처 매핑 | 🔶 **권장: 펜 측면 버튼 = 마우스 우클릭 = 누르는 동안 임시 지우개**, 펜 지우개 끝도 같은 `uses_eraser` 판정. Apple Pencil `changeMode(with:)` 더블탭은 Sidecar 전용이라 Windows 대응 없음. 지우개 ↔ 이전 도구 전환이 필요하면 기본 키 없는 `tool.eraser-toggle`에 사용자가 키를 지정하고, Windows 더블탭 대응은 이번 범위 밖 |
 
 ## 8. 가장 큰 위험
 
-1. **두 구현의 동작 표류(상승)** — 정본(Swift)이 계속 바뀐다: 15,113 → 21,275줄(+41%), 원형 팔레트는 021→035 에서 네 번 바뀌었고, 통과 모드는 036 에서 탭 토글이 "누르는 동안만" 방식으로 바뀐 채 머지(#35)됐으며, 화면 프리셋 배치 규칙도 #38 로 바뀌었다(열·행 최대 폭 합산 → 이웃 붙이기). 인계서가 "유일한 자동 장치" 라 한 픽스처 2종은 **아직 없다**(`fixtures/` 부재, §5.4 미이행). SelfTest 72개 중 플래너·매칭·격자는 #38 로 6개가 생겼으나 팔레트·통과·`DisplayPresetCapture` 를 직접 보는 단언은 0이고, 기억 이행·프리셋 내보내기는 기존 단언 안에 입력만 얹혀 있다(:1182-1187·:1205-1245). 대응: 픽스처 선행 + §7 #14 + Swift 로직 PR 마다 Windows 영향 표시(#18).
+1. **두 구현의 동작 표류(상승)** — 정본(Swift)이 계속 바뀐다: 15,113 → 22,562줄(+49%), 원형 팔레트·통과·화면 프리셋 뒤에도 #41~#45에서 유리 설정·입력·속성 아이콘·면 채움·시험이 추가됐다. 인계서가 "유일한 자동 장치" 라 한 픽스처 2종은 **아직 없다**(`fixtures/` 부재, §5.4 미이행). SelfTest 75개 중 플래너·매칭·격자는 #38로 6개, 속성 아이콘 순수 함수는 #45로 3개가 생겼으나 팔레트·통과·`DisplayPresetCapture`를 직접 보는 단언은 0이고, 기억 이행·유리 기본값·프리셋 내보내기는 기존 단언 안에 입력만 얹혀 있다(:1252-1269·:1276-1318). 대응: 픽스처 선행 + §7 #14 + Swift 로직 PR마다 Windows 영향 표시(#18).
 2. **줌 캡처 의미론** — 변경 없음. 최소 버전·배포 형식은 #1·#6 으로 결정됨 → 남은 판별은 W1 ⑤⑥.
 3. **입력 라우팅·z순서** — 변경 없음 + 새로 통과 모드(자동 복귀가 UIPI 영향)·대화상자 높이 계층(#12).
-4. **시각 동치 불가(신규)** — Liquid Glass·시스템 의미색은 대응이 없어 기능만 동치, 대비는 직접 설계(#13).
+4. **시각 동치 불가(신규)** — Liquid Glass 자체는 대응이 없지만 흰 알파 면·고정 내용색·속성 아이콘 배경 추정은 #41·#43·#44의 수치 모델로 고정됐고, 흰 면 대비는 같은 합성식으로 보장됐다. 남은 것은 실제 화면·빔 가독성 실기(#13).
 5. **화면 구성 적용은 실기 의존(신규)** — macOS 도 2·3단계 미구현, 잘못된 적용은 화면을 잃는다. Swift 2·3단계가 없어 적용·복구·자동 전환의 정본이 문서(design.md)뿐이라 두 구현이 규칙을 따로 해석할 수 있다(표류의 변형) → 안전장치 설계 확정 전 W11 착수 금지(#15).
-6. **설정 스키마 손실 왕복(신규)** — `.pansetting` 에 `display`·`perToolMemory`·옛 키 이행이 들어 있다. Windows 가 모르는 키를 버리면 macOS 로 되돌아올 때 사라진다 → W2 첫 왕복 실물 시험.
+6. **설정 스키마 손실 왕복(신규)** — `.pansetting` 에 `display`·`perToolMemory`·`paletteGlassOpacity`·옛 키 이행이 들어 있다. Windows 가 모르는 키를 버리면 macOS 로 되돌아올 때 사라진다 → W2 첫 왕복 실물 시험.
 7. **모니터 식별이 macOS 보다 약하다(신규)** — devicePath 는 포트·독에 묶이고 프로젝터·일부 모니터의 EDID serial 이 0·1 이라 ② 도 실패한다. 자동 전환은 "모르는 모니터가 있으면 전환 안 함"이라 안전하지만 "연결 안 됨"이 잦다. Miracast·IDD 는 연결마다 식별이 바뀔 수 있다(§3.1.1·§3.1.5).
 8. **GDI 배치 제약 ↔ 계획 결과(신규)** — #38 로 격자 이웃을 변을 맞대 붙여 틈은 규칙상 없어졌고 겹침은 적용 불가로 걸러지지만, 크기가 다른 화면은 변이 일부만 닿는다. `SetDisplayConfig` 가 이 배치를 그대로 받는지(`SDC_VALIDATE`)는 W11 실기 [D8](§3.1.3 #3).
 9. **Windows 자체 구성 DB·Win+P 와의 경합(신규)** — 저장 구성이 서로 덮고 Win+P 가 자동 전환과 싸울 수 있다(§3.1.3·§3.1.4).
@@ -629,10 +634,12 @@ macOS 쪽 선행 작업은 §5.4.
 | 통과 모드 복귀가 아래 앱이 관리자 권한일 때 UIPI 로 안 풀리는가(키 모드 = `WH_KEYBOARD_LL` keyUp, 시간제 = `WH_MOUSE_LL` 입력 — 못 받으면 30초/10초 안전망으로만 복귀) · LL 훅의 keyUp 만으로 키 모드 종료가 신뢰되는가 | Med | W2 실기 |
 | 통과 중 키 삼킴 범위(키 모드는 대상 키 `U` 만, 시간제는 첫 클릭 전 `Esc` 만)로 아래 앱 타이핑이 막히지 않는가 | Med | W2 실기(§7 #24) |
 | 마우스 `POINTER_FLAG_INCONTACT` 의미, `WM_POINTER` 드래그 캡처(`SetCapture`) 동작 | Med | W2 실기 |
+| 임시 지우개 소유권 복구에서 마우스는 `GetAsyncKeyState`, 펜은 포인터 상태로 "이전 소유 버튼이 실제로 눌림"을 신뢰성 있게 판정할 수 있는가 | Med | W2: 우클릭·측면 버튼 down 중 다른 버튼, up 유실·`CAPTURECHANGED` 합성 입력 |
 | 전역 키 해제 감지: `RegisterHotKey` 후 `GetAsyncKeyState` 폴링(≈30ms)으로 `⌃⌥/` 길게 누르기를 구현할 수 있는가(LL 훅 대안) | Med | W4a 도움말 실기 |
 | 10~14 DIP 아이콘(선 0.7~1.0px @100%) 가독 — 디자이너 PNG 는 16 DIP 하한 | Med | W4a 실기(100% 모니터·빔) |
 | `UISettings` 강조색·`ColorValuesChanged` 를 비패키지 Win32 에서 호출 | Med-High | W4a |
-| 단색 반투명 칸의 가독성 — macOS 는 시스템 의미색에 맡기지만 Windows 는 대비를 직접 정해야 | Med | W4b: 밝은·어두운 바탕·PowerPoint 슬라이드쇼 |
+| 유리 면 0.55/0.62/0.90과 근흑색 0.10 내용의 실기 가독성 — macOS 흰 면 채움과 Windows D2D 알파 면은 검정을 최악으로 하여 하한 5.22:1이 보장되지만 실제 디스플레이·빔 출력 확인 필요 | Med-High | W4b: 밝은·검정 바탕·PowerPoint 슬라이드쇼·빔에서 세 값 비교 |
+| 속성 아이콘 배경 추정(유리 0.93 고정, 가로 0.93/0.18)과 halo가 선택·비활성·다크 모드에서 실제 뒤 면을 충분히 대표하는가 | Med | W4b: 8개 도구×선택/비선택, 라이트/다크, 저대비 색 실기 |
 | DWM 시스템 백드롭 PoC(1시간, 대안 A 보다 쌈): 280 DIP·`NOREDIRECTIONBITMAP`·`NOACTIVATE` 창에 `DwmSetWindowAttribute(DWMWA_SYSTEMBACKDROP_TYPE=DWMSBT_TRANSIENTWINDOW)`(+필요 시 `DwmExtendFrameIntoClientArea(-1)`) → ① 비활성인데 Acrylic 이 유지되나 ② `SetWindowRgn`(링 부채꼴 합집합)이 백드롭을 모양대로 자르나(가장자리 계단 정도) ③ 같은 HWND 의 DComp+D2D 알파 면과 겹쳐 그려지나 | Low | W4b 이후 1회 |
 | 호스트 백드롭 브러시+`CompositionGeometricClip` 이 Win32 호스트에서 모양 있는 블러를 내는가 | Low | 대안 B 채택 시에만 PoC |
 | Chrome `--new-window` 대신 SMTC 세션 목록에 Chrome(YouTube Music)이 잡히고 `TryPauseAsync` 가 되는가(창 찾기 불필요 — #7) | Med | W6 실기 |
