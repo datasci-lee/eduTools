@@ -121,7 +121,7 @@ Oct 28, 2026 · @이경환
 ## 원형 도구 팔레트
 
 원형 팔레트는 바깥으로 갈수록 “무엇을 → 무엇으로 → 어떻게”를 고르는 구조이며 기본 팔레트입니다. 설정의 도구 탭이나 팔레트의 보드·설정 그룹에서 가로형으로 즉시 전환할 수 있습니다.
-중심과 실제 칸만 macOS Liquid Glass로 그리며 칸이 없는 영역은 완전히 투명합니다. 글자와 아이콘은 시스템 의미색을 사용해 뒤 화면과 시스템 외관에 맞춰 대비가 바뀌고, 색 칸은 자기 색을 유리 틴트로 표시합니다. 속성 라벨과 단축키 키캡, 힌트도 작은 유리 칩으로 표시합니다.
+중심과 실제 칸만 macOS Liquid Glass로 그리며 칸이 없는 영역은 완전히 투명합니다. 유리 면은 시스템 외관과 무관하게 밝은 틴트를 쓰고 글자와 아이콘은 고정 근흑색, 선택 상태는 흰색, 비활성 상태는 근흑색 55%로 표시합니다. 색 칸은 자기 색을 유리 틴트로 표시합니다. 속성 라벨과 단축키 키캡, 힌트도 작은 유리 칩으로 표시합니다.
 
 | 링 | 내용 |
 | --- | --- |
@@ -153,6 +153,25 @@ Oct 28, 2026 · @이경환
 | `Tab` | 선택한 모양의 팔레트를 숨기거나 표시 |
 
 펼친 지름은 280pt이며 원 전체가 현재 화면의 `visibleFrame` 안에 들어오도록 일시적으로 이동합니다. 접으면 저장된 중심 위치로 돌아옵니다. 원형 패널과 힌트는 화면 공유에서 제외합니다.
+
+### 도구 속성 아이콘
+
+원형 중심·2링 도구 칸·가로 팔레트 도구 버튼은 `assets/symbols/attr/manifest.json`의 레이어 규칙으로 현재 또는 도구별 마지막 설정을 합성합니다. 일반 아이콘 키와 단축키 표, 명령 실행 경로는 그대로 사용하며, 매니페스트나 레이어를 읽지 못하면 사유를 한 번 로그하고 일반 아이콘으로 돌아갑니다. 선택·화면 가리개처럼 매니페스트에 없는 도구와 1링·3링·도움말·메뉴바는 일반 아이콘을 유지합니다.
+
+| manifest 도구 | 앱 도구 | 속성 입력 |
+| --- | --- | --- |
+| `tool.pen` | `.pen` | `perToolMemory.pen` 색·크기 |
+| `tool.highlighter` | `.highlighter` | `perToolMemory.highlighter` 색·크기 |
+| `tool.text` | `.text` | `perToolMemory.text` 색·글자 크기 |
+| `tool.arrow` | `.arrow` | `perToolMemory.arrow` 색·크기, `arrowStyle`의 single/double |
+| `tool.rect` | `.rectangle` | `perToolMemory.rectangle` 색·크기, 채움 없음 |
+| `tool.circle` | `.ellipse` | `perToolMemory.ellipse` 색·크기, 채움 없음 |
+| `tool.eraser` | `.eraser` | 지름, partial→brush·stroke→stroke·area rectangle/lasso→rect/lasso |
+| `tool.laser` | `.laser` | `laserColor`, 꼬리 켬 |
+
+두께 단계는 `1 + min(3, floor(4t))`, `t = clamp((size - lo) / (hi - lo), 0, 1)`로 계산하고 `hi == lo`이면 2단계로 둡니다. 범위는 3링 정본인 `RadialPaletteMetrics.writingWidths`·`highlighterWidths`·`textSizes`의 최솟값과 최댓값, 지우개는 설정의 `presetDiameters` 최솟값과 최댓값을 사용합니다.
+
+`attr` 레이어와 바로 뒤 배경의 WCAG 상대휘도 명암비가 1.8 미만이면 `.fill`이 아닌 레이어를 0.5pt씩 사방으로 먼저 그려 1pt halo를 만듭니다. 밝은 배경은 검정 55%, 어두운 배경은 흰색 70%입니다. Liquid Glass 면은 선택 시 시스템 강조색, 그 밖은 시스템 외관과 무관한 흰색 0.93으로 **근사**합니다. 실제 유리 면은 뒤 배경과 설정 불투명도 0.55...0.90으로 혼합됩니다. 가로 팔레트의 시스템 면은 선택 시 시스템 강조색, 그 밖은 시스템 모양에 따라 흰색 0.93 또는 0.18로 근사해 기존 동작을 유지합니다. 설정·호버·선택·통과 모드가 바뀌면 원형 아이콘을, 시스템 모양이 바뀌면 가로 팔레트 아이콘을 키+속성+렌더 상태 캐시 키로 다시 선택하거나 합성합니다.
 
 ## 멀티 모니터·iPad(Apple Pencil) 지원
 

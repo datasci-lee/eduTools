@@ -1,6 +1,11 @@
 import AppKit
 import Foundation
 
+enum AttrIconBackgroundEstimate {
+    static let lightSurfaceWhiteComponent: CGFloat = 0.93
+    static let darkSystemSurfaceWhiteComponent: CGFloat = 0.18
+}
+
 enum AppIcon {
     enum Key {
         static let optionOn = "option.on"
@@ -61,6 +66,48 @@ enum AppIcon {
         )
         cache[cacheKey] = image.map(CachedImage.image) ?? .unavailable
         return image
+    }
+
+    static func image(
+        key: String,
+        fallbackSystemName: String,
+        selected: Bool = false,
+        attributeConfiguration: AttrIconConfiguration,
+        pointSize: CGFloat,
+        uiColor: NSColor,
+        backgroundColor: NSColor,
+        visualState: AttrIconVisualState,
+        accessibilityDescription: String? = nil
+    ) -> NSImage? {
+        if let image = AttrIcon.image(
+            configuration: attributeConfiguration,
+            pointSize: pointSize,
+            uiColor: uiColor,
+            backgroundColor: backgroundColor,
+            visualState: visualState,
+            accessibilityDescription: accessibilityDescription
+        ) {
+            return image
+        }
+
+        guard let fallback = image(
+            key: key,
+            fallbackSystemName: fallbackSystemName,
+            selected: selected,
+            accessibilityDescription: accessibilityDescription
+        ), let color = AttrIcon.colorComponents(uiColor)
+        else {
+            return nil
+        }
+        let size = NSSize(width: pointSize, height: pointSize)
+        let tinted = AttrIcon.tintedImage(base: fallback, size: size, color: color)
+        tinted.isTemplate = false
+        tinted.accessibilityDescription = accessibilityDescription
+        return tinted
+    }
+
+    static func effectiveAppearanceDidChange() {
+        AttrIcon.effectiveAppearanceDidChange()
     }
 
     static func hasCustomAsset(key: String, selected: Bool = false) -> Bool {
@@ -202,5 +249,17 @@ enum AppIcon {
         }
         image.isTemplate = true
         return image
+    }
+
+    /// The linear palette uses a system surface, so its estimate follows effective appearance.
+    static func estimatedSystemSurfaceColor(selected: Bool) -> NSColor {
+        if selected {
+            return .controlAccentColor
+        }
+        let match = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua])
+        let whiteComponent = match == .darkAqua
+            ? AttrIconBackgroundEstimate.darkSystemSurfaceWhiteComponent
+            : AttrIconBackgroundEstimate.lightSurfaceWhiteComponent
+        return NSColor(calibratedWhite: whiteComponent, alpha: 1)
     }
 }

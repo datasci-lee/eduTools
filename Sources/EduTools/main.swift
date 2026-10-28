@@ -32,6 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = NSApp.setActivationPolicy(.accessory)
         ShortcutCatalog.configure(settingsStore: settingsStore)
         AppIcon.auditBundledNames(radialPaletteKeys: RadialPaletteController.iconKeys)
+        AttrIcon.auditBundledAssets()
 
         let dispatcher = AppCommandDispatcher(state: appState)
         self.dispatcher = dispatcher

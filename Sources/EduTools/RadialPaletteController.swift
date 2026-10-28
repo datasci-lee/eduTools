@@ -1754,6 +1754,7 @@ final class RadialPaletteController: NSObject {
                     geometry: cell.geometry,
                     iconKey: cell.iconKey,
                     iconName: cell.iconName,
+                    attributeConfiguration: attributeConfiguration(for: cell),
                     accessibilityLabel: cell.name,
                     shortLabel: cell.shortLabel,
                     shortcut: cell.shortcut,
@@ -1767,6 +1768,13 @@ final class RadialPaletteController: NSObject {
             propertyLabels: renderPropertyLabels(for: cells),
             centerIconKey: centerDefinition?.id,
             centerIconName: centerDefinition?.iconName,
+            centerAttributeConfiguration: state.isPassThroughModeEnabled
+                ? nil
+                : AttrIcon.configuration(
+                    for: state.currentTool,
+                    state: state,
+                    settings: settingsStore.settings
+                ),
             centerAccessibilityLabel: centerDefinition?.name,
             centerShortcut: centerDefinition?.displayKeys ?? "",
             centerColor: centerColor(),
@@ -1774,6 +1782,19 @@ final class RadialPaletteController: NSObject {
             centerIsPassThroughEnabled: state.isPassThroughModeEnabled,
             centerIsHovered: hoveredIdentifier == "palette.center",
             centerIsFocused: focusedIdentifier == "palette.center"
+        )
+    }
+
+    private func attributeConfiguration(
+        for cell: RadialPaletteCell
+    ) -> AttrIconConfiguration? {
+        guard case let .entry(entry) = cell.action, let tool = entry.inkTool else {
+            return nil
+        }
+        return AttrIcon.configuration(
+            for: tool,
+            state: state,
+            settings: settingsStore.settings
         )
     }
 
