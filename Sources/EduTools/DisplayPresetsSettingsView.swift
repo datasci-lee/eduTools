@@ -609,7 +609,7 @@ struct DisplayPresetsSettingsView: View {
             onlineDisplays = current
             let plan = DisplayPlanner.plan(preset: preset, online: current)
             presentedMessage = DisplaySettingsMessage(
-                title: "화면 구성 계획",
+                title: plan.isApplicable ? "화면 구성 계획" : "화면 구성 계획 · 적용 불가",
                 detail: plan.summary()
             )
         } catch {
