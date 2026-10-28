@@ -33,7 +33,6 @@ enum ZoomDefaults {
     }
     static let followEdgeInsetRatio = CGFloat(0.1)
     static var followSmoothness: CGFloat { CGFloat(AppSettings.default.zoom.followSmoothness) }
-    static let previewDimming = CGFloat(0.62)
     static let previewAnimationDuration = TimeInterval(0.15)
 }
 

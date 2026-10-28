@@ -173,6 +173,7 @@ final class InkView: NSView {
     private var toolSettingsObserverIdentifier: UUID?
     private var boardObserverIdentifier: UUID?
     private var presentationSourceRect: CGRect?
+    private var pressedShortcutDefinitions: [UInt16: ShortcutDefinition] = [:]
 
     override var acceptsFirstResponder: Bool { true }
 
@@ -548,6 +549,9 @@ final class InkView: NSView {
             super.keyDown(with: event)
             return
         }
+        if !event.isARepeat {
+            pressedShortcutDefinitions[event.keyCode] = definition
+        }
         if definition.command.isBoardPageNavigation,
            state.boardKind(on: displayUUID) == nil
         {
@@ -576,7 +580,7 @@ final class InkView: NSView {
 
     override func keyUp(with event: NSEvent) {
         if keyUpInterceptor?(event) == true { return }
-        guard let definition = ShortcutCatalog.matchingKeyUp(event, scope: .annotation) else {
+        guard let definition = pressedShortcutDefinitions.removeValue(forKey: event.keyCode) else {
             super.keyUp(with: event)
             return
         }

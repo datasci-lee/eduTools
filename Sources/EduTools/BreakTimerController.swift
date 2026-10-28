@@ -96,9 +96,11 @@ final class BreakTimerController: NSObject {
         observeSystemEvents()
         startDisplayRefreshTimer()
         settingsObserverIdentifier = resolvedSettingsStore.addObserver { [weak self] settings in
-            self?.resumeLabel.stringValue = settings.timer.breakMessage
-            self?.rootView.layer?.backgroundColor = settings.timer.breakBackgroundColor.nsColor.cgColor
-            self?.reloadMusicControls()
+            guard let self else { return }
+            let endDate = self.engine.phase == .inactive ? nil : self.engine.endDate
+            self.resumeLabel.stringValue = self.resumeText(endDate: endDate)
+            self.rootView.layer?.backgroundColor = settings.timer.breakBackgroundColor.nsColor.cgColor
+            self.reloadMusicControls()
         }
     }
 
@@ -485,14 +487,12 @@ final class BreakTimerController: NSObject {
         let remaining = engine.remaining(at: now)
         if engine.phase == .finished {
             remainingLabel.stringValue = "수업 재개"
-            resumeLabel.stringValue = "00:00"
+            resumeLabel.stringValue = resumeText(endDate: engine.endDate)
             remainingLabel.textColor = .systemRed
             progressView.accentColor = .systemRed
         } else {
             remainingLabel.stringValue = LessonTimerController.formattedDuration(remaining)
-            if let endDate = engine.endDate {
-                resumeLabel.stringValue = "\(Self.timeString(endDate))에 수업 재개"
-            }
+            resumeLabel.stringValue = resumeText(endDate: engine.endDate)
             let isNearEnd = remaining <= 60
             remainingLabel.textColor = isNearEnd ? .systemOrange : .labelColor
             progressView.accentColor = isNearEnd ? .systemOrange : .controlAccentColor
@@ -503,10 +503,19 @@ final class BreakTimerController: NSObject {
             : 0
         if didFinish {
             musicController.breakDidEnd()
-            TimerSound.playCompletion()
+            TimerSound.playCompletion(named: settingsStore.settings.timer.notificationSound)
         } else if engine.phase == .running, let endDate = engine.endDate {
             musicController.breakDidUpdate(now: now, endDate: endDate)
         }
+    }
+
+    private func resumeText(endDate: Date?) -> String {
+        let message = settingsStore.settings.timer.breakMessage.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard let endDate else { return message }
+        let time = Self.timeString(endDate)
+        return message.isEmpty ? time : "\(message) \(time)"
     }
 
     private func observeSystemEvents() {

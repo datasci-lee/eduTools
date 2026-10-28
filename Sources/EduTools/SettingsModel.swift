@@ -64,12 +64,66 @@ struct EraserGroupSettings: Codable, Equatable {
 }
 
 struct ZoomGroupSettings: Codable, Equatable {
+    static let defaultPreviewDimming = 0.62
+
     var startingMagnification: Double
     var maximumMagnification: Double
     var magnificationStep: Double
     var followMode: String
     var followSmoothness: Double
     var liveByDefault: Bool
+    var previewDimming: Double
+
+    init(
+        startingMagnification: Double,
+        maximumMagnification: Double,
+        magnificationStep: Double,
+        followMode: String,
+        followSmoothness: Double,
+        liveByDefault: Bool,
+        previewDimming: Double = ZoomGroupSettings.defaultPreviewDimming
+    ) {
+        self.startingMagnification = startingMagnification
+        self.maximumMagnification = maximumMagnification
+        self.magnificationStep = magnificationStep
+        self.followMode = followMode
+        self.followSmoothness = followSmoothness
+        self.liveByDefault = liveByDefault
+        self.previewDimming = previewDimming
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case startingMagnification
+        case maximumMagnification
+        case magnificationStep
+        case followMode
+        case followSmoothness
+        case liveByDefault
+        case previewDimming
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        startingMagnification = try container.decode(Double.self, forKey: .startingMagnification)
+        maximumMagnification = try container.decode(Double.self, forKey: .maximumMagnification)
+        magnificationStep = try container.decode(Double.self, forKey: .magnificationStep)
+        followMode = try container.decode(String.self, forKey: .followMode)
+        followSmoothness = try container.decode(Double.self, forKey: .followSmoothness)
+        liveByDefault = try container.decode(Bool.self, forKey: .liveByDefault)
+        previewDimming = try container.decodeIfPresent(Double.self, forKey: .previewDimming)
+            ?? Self.defaultPreviewDimming
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(startingMagnification, forKey: .startingMagnification)
+        try container.encode(maximumMagnification, forKey: .maximumMagnification)
+        try container.encode(magnificationStep, forKey: .magnificationStep)
+        try container.encode(followMode, forKey: .followMode)
+        try container.encode(followSmoothness, forKey: .followSmoothness)
+        try container.encode(liveByDefault, forKey: .liveByDefault)
+        try container.encode(previewDimming, forKey: .previewDimming)
+    }
 }
 
 struct BoardGroupSettings: Codable, Equatable {
@@ -169,7 +223,8 @@ struct AppSettings: Codable, Equatable {
             magnificationStep: 0.25,
             followMode: ZoomFollowMode.edge.rawValue,
             followSmoothness: 0.22,
-            liveByDefault: true
+            liveByDefault: true,
+            previewDimming: ZoomGroupSettings.defaultPreviewDimming
         ),
         board: BoardGroupSettings(
             whiteboardColor: SettingsColor(red: 1, green: 1, blue: 1),
@@ -250,14 +305,28 @@ enum SettingsValidator {
             throw SettingsValidationError.invalidValue("지우개 범위")
         }
 
-        guard (1.25...8).contains(settings.zoom.startingMagnification),
-              (1.25...8).contains(settings.zoom.maximumMagnification),
-              settings.zoom.startingMagnification <= settings.zoom.maximumMagnification,
-              settings.zoom.magnificationStep == 0.25 || settings.zoom.magnificationStep == 0.5,
-              ZoomFollowMode(rawValue: settings.zoom.followMode) != nil,
-              (0...1).contains(settings.zoom.followSmoothness)
+        guard (1.25...8).contains(settings.zoom.startingMagnification) else {
+            throw SettingsValidationError.invalidValue("시작 배율은 1.25~8배여야 합니다")
+        }
+        guard (1.25...8).contains(settings.zoom.maximumMagnification) else {
+            throw SettingsValidationError.invalidValue("최대 배율은 1.25~8배여야 합니다")
+        }
+        guard settings.zoom.startingMagnification <= settings.zoom.maximumMagnification else {
+            throw SettingsValidationError.invalidValue("최대 배율은 시작 배율보다 작을 수 없습니다")
+        }
+        guard settings.zoom.magnificationStep == 0.25
+                || settings.zoom.magnificationStep == 0.5
         else {
-            throw SettingsValidationError.invalidValue("줌 범위")
+            throw SettingsValidationError.invalidValue("배율 단계는 0.25 또는 0.5여야 합니다")
+        }
+        guard ZoomFollowMode(rawValue: settings.zoom.followMode) != nil else {
+            throw SettingsValidationError.invalidValue("따라가기 방식")
+        }
+        guard (0...1).contains(settings.zoom.followSmoothness) else {
+            throw SettingsValidationError.invalidValue("따라가기 부드러움은 0~1이어야 합니다")
+        }
+        guard (0...1).contains(settings.zoom.previewDimming) else {
+            throw SettingsValidationError.invalidValue("미리보기 회색 농도는 0~1이어야 합니다")
         }
 
         try validateColor(settings.board.whiteboardColor)
@@ -298,8 +367,31 @@ enum SettingsValidator {
     }
 }
 
+struct SettingsStoreIssue: Identifiable, Equatable {
+    enum Kind: Equatable {
+        case load
+        case save
+    }
+
+    let id = UUID()
+    let kind: Kind
+    let detail: String
+}
+
+private enum SettingsPersistenceError: LocalizedError {
+    case verificationFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .verificationFailed:
+            return "저장소에서 기록한 값을 다시 확인하지 못했습니다"
+        }
+    }
+}
+
 final class SettingsStore: ObservableObject {
     static let storageKey = "EduTools.settings.v1"
+    static let corruptStorageKey = "EduTools.settings.corrupt.v1"
 
     @Published var settings: AppSettings {
         didSet {
@@ -311,6 +403,8 @@ final class SettingsStore: ObservableObject {
         }
     }
     @Published private(set) var runtimeShortcutWarnings: [String: String] = [:]
+    @Published private(set) var updateErrorMessage: String?
+    @Published private(set) var pendingIssue: SettingsStoreIssue?
 
     private let defaults: UserDefaults
     private var observers: [UUID: (AppSettings) -> Void] = [:]
@@ -324,7 +418,23 @@ final class SettingsStore: ObservableObject {
                 settings = decoded
             } catch {
                 settings = .default
-                NSLog("EduTools: invalid stored settings; using defaults: %@", String(describing: error))
+                defaults.set(data, forKey: Self.corruptStorageKey)
+                let preserved = defaults.data(forKey: Self.corruptStorageKey) == data
+                if preserved {
+                    defaults.removeObject(forKey: Self.storageKey)
+                }
+                let preservationDetail = preserved
+                    ? "원본은 사용자 기본설정 키 \(Self.corruptStorageKey)에 보존했습니다."
+                    : "별도 키 보존에 실패해 원본을 기존 키에 유지했습니다."
+                pendingIssue = SettingsStoreIssue(
+                    kind: .load,
+                    detail: "저장 설정을 읽지 못해 기본값으로 시작합니다. \(error.localizedDescription) \(preservationDetail)"
+                )
+                NSLog(
+                    "EduTools: invalid stored settings; using defaults; preserved=%@: %@",
+                    preserved ? "yes" : "no",
+                    String(describing: error)
+                )
             }
         } else {
             settings = .default
@@ -336,13 +446,25 @@ final class SettingsStore: ObservableObject {
         settings = newSettings
     }
 
-    func update(_ change: (inout AppSettings) -> Void) {
+    @discardableResult
+    func update(
+        _ change: (inout AppSettings) -> Void
+    ) -> Result<Void, SettingsValidationError> {
         var candidate = settings
         change(&candidate)
         do {
             try apply(candidate)
-        } catch {
+            updateErrorMessage = nil
+            return .success(())
+        } catch let error as SettingsValidationError {
+            updateErrorMessage = error.localizedDescription
             NSLog("EduTools: rejected invalid settings update: %@", String(describing: error))
+            return .failure(error)
+        } catch {
+            let validationError = SettingsValidationError.invalidValue(error.localizedDescription)
+            updateErrorMessage = validationError.localizedDescription
+            NSLog("EduTools: rejected invalid settings update: %@", String(describing: error))
+            return .failure(validationError)
         }
     }
 
@@ -366,12 +488,29 @@ final class SettingsStore: ObservableObject {
         runtimeShortcutWarnings = warnings
     }
 
+    func clearUpdateError() {
+        updateErrorMessage = nil
+    }
+
+    func clearPendingIssue(id: UUID) {
+        guard pendingIssue?.id == id else { return }
+        pendingIssue = nil
+    }
+
     private func persist() {
         do {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys]
-            defaults.set(try encoder.encode(settings), forKey: Self.storageKey)
+            let data = try encoder.encode(settings)
+            defaults.set(data, forKey: Self.storageKey)
+            guard defaults.data(forKey: Self.storageKey) == data else {
+                throw SettingsPersistenceError.verificationFailed
+            }
         } catch {
+            pendingIssue = SettingsStoreIssue(
+                kind: .save,
+                detail: "설정을 저장하지 못했습니다. 현재 변경은 다시 실행하면 사라질 수 있습니다. \(error.localizedDescription)"
+            )
             NSLog("EduTools: failed to persist settings: %@", String(describing: error))
         }
     }

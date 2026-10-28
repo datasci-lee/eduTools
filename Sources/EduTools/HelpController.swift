@@ -159,6 +159,7 @@ final class HelpController: NSObject {
     private var sharingSettingsObserverIdentifier: UUID?
     private var screenObserver: NSObjectProtocol?
     private var pressedAt: TimeInterval?
+    private var activeShortcutKeyCode: UInt16?
     private var ignoresNextRelease = false
     private var isPinned = false
     private var previousApplication: NSRunningApplication?
@@ -203,7 +204,8 @@ final class HelpController: NSObject {
         show()
     }
 
-    func shortcutDidPress() {
+    func shortcutDidPress(keyCode: UInt16? = nil) {
+        activeShortcutKeyCode = keyCode
         if isVisible, isPinned {
             ignoresNextRelease = true
             close()
@@ -216,6 +218,7 @@ final class HelpController: NSObject {
     }
 
     func shortcutDidRelease() {
+        activeShortcutKeyCode = nil
         if ignoresNextRelease {
             ignoresNextRelease = false
             return
@@ -676,21 +679,21 @@ final class HelpController: NSObject {
 
     private func handleKeyDown(_ event: NSEvent) -> Bool {
         if let stepBack = ShortcutCatalog.definition(for: .stepBack)?.binding(in: .annotation),
-           event.keyCode == stepBack.keyCode {
+           stepBack.matches(event) {
             close()
             return true
         }
         if let help = ShortcutCatalog.definition(for: .showHelp)?.binding(in: .annotation),
            help.matches(event) {
-            shortcutDidPress()
+            shortcutDidPress(keyCode: event.keyCode)
             return true
         }
         return !isPinned
     }
 
     private func handleKeyUp(_ event: NSEvent) -> Bool {
-        guard let help = ShortcutCatalog.definition(for: .showHelp)?.binding(in: .annotation),
-              event.keyCode == help.keyCode
+        guard let activeShortcutKeyCode,
+              event.keyCode == activeShortcutKeyCode
         else {
             return false
         }

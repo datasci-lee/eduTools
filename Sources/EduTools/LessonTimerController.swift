@@ -701,7 +701,7 @@ final class LessonTimerController: NSObject, NSMenuDelegate {
 }
 
 enum TimerSound {
-    static func playCompletion(named name: String = AppSettings.default.timer.notificationSound) {
+    static func playCompletion(named name: String) {
         if let sound = NSSound(named: NSSound.Name(name)) {
             sound.play()
         } else {
