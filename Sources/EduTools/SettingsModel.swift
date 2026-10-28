@@ -61,6 +61,44 @@ enum PaletteStyle: String, Codable, CaseIterable, Hashable {
     }
 }
 
+enum RadialPaletteGlassStyle {
+    static let defaultOpacity = 0.62
+    static let minimumOpacity = 0.55
+    static let maximumOpacity = 0.90
+
+    static let primaryWhiteComponent: CGFloat = 0.10
+    static let disabledContentOpacity = 0.55
+    static let colorCellTintOpacity = 0.82
+    static let selectedTintOpacity = 0.72
+
+    static let primaryContentColor = NSColor(
+        calibratedWhite: primaryWhiteComponent,
+        alpha: 1
+    )
+    static let selectedContentColor = NSColor(calibratedWhite: 1, alpha: 1)
+    static let regularBorderColor = NSColor(
+        calibratedWhite: primaryWhiteComponent,
+        alpha: 0.28
+    )
+    static let focusOuterColor = NSColor(
+        calibratedWhite: primaryWhiteComponent,
+        alpha: 0.88
+    )
+    static let colorSelectionOuterColor = NSColor(
+        calibratedWhite: primaryWhiteComponent,
+        alpha: 0.90
+    )
+    static let colorCellBorderColor = NSColor(calibratedWhite: 1, alpha: 1)
+
+    // Pure-alpha composition model on black: a white tint at alpha a has encoded
+    // sRGB value a and relative luminance L = ((a + 0.055) / 1.055)^2.4.
+    // At a = 0.55, near-black 0.10 content yields about 5.22:1 contrast. Whether
+    // glassEffect applies the tint as pure alpha composition needs visual verification.
+    static func surfaceTintColor(opacity: Double) -> NSColor {
+        NSColor(calibratedWhite: 1, alpha: CGFloat(opacity))
+    }
+}
+
 struct ToolMemorySetting: Codable, Equatable {
     var colorIndex: Int
     var size: Double
@@ -141,6 +179,7 @@ struct ToolSettings: Codable, Equatable {
     var perToolMemory: PerToolMemorySettings
     var shapeRecognitionEnabled: Bool
     var paletteStyle: PaletteStyle
+    var paletteGlassOpacity: Double
 
     init(
         colors: [SettingsColor],
@@ -150,7 +189,8 @@ struct ToolSettings: Codable, Equatable {
         laserTrailDuration: Double,
         perToolMemory: PerToolMemorySettings = .default,
         shapeRecognitionEnabled: Bool,
-        paletteStyle: PaletteStyle = .radial
+        paletteStyle: PaletteStyle = .radial,
+        paletteGlassOpacity: Double = RadialPaletteGlassStyle.defaultOpacity
     ) {
         self.colors = colors
         self.highlighterOpacity = highlighterOpacity
@@ -160,6 +200,7 @@ struct ToolSettings: Codable, Equatable {
         self.perToolMemory = perToolMemory
         self.shapeRecognitionEnabled = shapeRecognitionEnabled
         self.paletteStyle = paletteStyle
+        self.paletteGlassOpacity = paletteGlassOpacity
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -171,6 +212,7 @@ struct ToolSettings: Codable, Equatable {
         case perToolMemory
         case shapeRecognitionEnabled
         case paletteStyle
+        case paletteGlassOpacity
     }
 
     private enum LegacySizeCodingKeys: String, CodingKey {
@@ -208,6 +250,10 @@ struct ToolSettings: Codable, Equatable {
         shapeRecognitionEnabled = try container.decode(Bool.self, forKey: .shapeRecognitionEnabled)
         paletteStyle = try container.decodeIfPresent(PaletteStyle.self, forKey: .paletteStyle)
             ?? .radial
+        paletteGlassOpacity = try container.decodeIfPresent(
+            Double.self,
+            forKey: .paletteGlassOpacity
+        ) ?? RadialPaletteGlassStyle.defaultOpacity
     }
 
     func encode(to encoder: Encoder) throws {
@@ -220,6 +266,7 @@ struct ToolSettings: Codable, Equatable {
         try container.encode(perToolMemory, forKey: .perToolMemory)
         try container.encode(shapeRecognitionEnabled, forKey: .shapeRecognitionEnabled)
         try container.encode(paletteStyle, forKey: .paletteStyle)
+        try container.encode(paletteGlassOpacity, forKey: .paletteGlassOpacity)
     }
 }
 
@@ -502,7 +549,10 @@ enum SettingsValidator {
         try validateColor(settings.tools.laserColor)
         guard (0.05...1).contains(settings.tools.highlighterOpacity),
               (2...50).contains(settings.tools.laserSize),
-              (0.1...10).contains(settings.tools.laserTrailDuration)
+              (0.1...10).contains(settings.tools.laserTrailDuration),
+              (RadialPaletteGlassStyle.minimumOpacity...RadialPaletteGlassStyle.maximumOpacity).contains(
+                    settings.tools.paletteGlassOpacity
+                )
         else {
             throw SettingsValidationError.invalidValue("도구 범위")
         }
