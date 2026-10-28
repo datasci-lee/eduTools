@@ -201,6 +201,15 @@ final class InkView: NSView {
     private enum MouseGestureButton: Equatable {
         case primary
         case secondary
+
+        var pressedMouseButtonsMask: Int {
+            switch self {
+            case .primary:
+                1 << 0
+            case .secondary:
+                1 << 1
+            }
+        }
     }
 
     private enum SelectionInteraction {
@@ -498,10 +507,13 @@ final class InkView: NSView {
     override func mouseDown(with event: NSEvent) {
         requestKeyFocus()
         guard state.isAnnotationModeEnabled else { return }
-        guard let gestureButton = mouseGestureButton(for: event.type),
-              activeMouseGestureButton == nil
-        else {
-            return
+        guard let gestureButton = mouseGestureButton(for: event.type) else { return }
+        if let owner = activeMouseGestureButton {
+            guard NSEvent.pressedMouseButtons & owner.pressedMouseButtonsMask == 0 else {
+                return
+            }
+            NSLog("EduTools: recovering stale mouse gesture ownership after a missing mouseUp")
+            finishActiveInteraction()
         }
         activeMouseGestureButton = gestureButton
 
@@ -664,7 +676,7 @@ final class InkView: NSView {
             scope: .annotation,
             displayUUID: displayUUID
         )
-        showEraserMode(state.eraserMode)
+        showEraserModeIfActive()
     }
 
     override func scrollWheel(with event: NSEvent) {
@@ -711,7 +723,7 @@ final class InkView: NSView {
         guard !event.isARepeat else { return }
         switch definition.command {
         case .selectOrCycleEraser, .toggleEraserTool:
-            showEraserMode(state.eraserMode)
+            showEraserModeIfActive()
         case .adjustWidth:
             refreshEraserCursorIfNeeded()
         default:
@@ -1415,6 +1427,11 @@ final class InkView: NSView {
     private func refreshEraserCursorIfNeeded() {
         guard state.currentTool == .eraser, let lastPointerLocation else { return }
         showEraserCursor(at: lastPointerLocation)
+    }
+
+    private func showEraserModeIfActive() {
+        guard state.currentTool == .eraser else { return }
+        showEraserMode(state.eraserMode)
     }
 
     private func showEraserMode(_ mode: EraserMode) {
