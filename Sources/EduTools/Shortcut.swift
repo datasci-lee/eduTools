@@ -922,14 +922,6 @@ enum ShortcutCatalog {
         }
     }
 
-    static func matchingKeyUp(_ event: NSEvent, scope: ShortcutScope) -> ShortcutDefinition? {
-        activeDefinitions.first { definition in
-            definition.bindings.contains { binding in
-                binding.scope == scope && binding.keyCode == event.keyCode
-            }
-        }
-    }
-
     static func definition(for command: AppCommand) -> ShortcutDefinition? {
         activeDefinitions.first { $0.command == command }
     }

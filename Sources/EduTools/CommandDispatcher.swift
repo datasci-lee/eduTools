@@ -63,7 +63,9 @@ final class AppCommandDispatcher {
     ) {
         if definition.command == .showHelp {
             guard !isRepeat else { return }
-            helpController?.shortcutDidPress()
+            helpController?.shortcutDidPress(
+                keyCode: definition.binding(in: scope)?.keyCode
+            )
             return
         }
         guard !isRepeat else { return }

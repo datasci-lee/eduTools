@@ -179,6 +179,7 @@ private final class ZoomView: NSView {
     private var trackingAreaReference: NSTrackingArea?
     private var renderedState: ZoomSessionState?
     private var messagePresentation = 0
+    private var pressedShortcutDefinitions: [UInt16: ShortcutDefinition] = [:]
 
     override var acceptsFirstResponder: Bool { true }
 
@@ -391,6 +392,9 @@ private final class ZoomView: NSView {
         guard let definition = ShortcutCatalog.matching(event, scope: .zoom) else {
             return false
         }
+        if !event.isARepeat {
+            pressedShortcutDefinitions[event.keyCode] = definition
+        }
         dispatcher.keyDown(
             definition: definition,
             scope: .zoom,
@@ -401,7 +405,7 @@ private final class ZoomView: NSView {
     }
 
     private func handleKeyUp(_ event: NSEvent) -> Bool {
-        guard let definition = ShortcutCatalog.matchingKeyUp(event, scope: .zoom) else {
+        guard let definition = pressedShortcutDefinitions.removeValue(forKey: event.keyCode) else {
             return false
         }
         dispatcher.keyUp(definition: definition)

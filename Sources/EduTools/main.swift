@@ -131,6 +131,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         dispatcher: AppCommandDispatcher,
         statusMenu: StatusMenu
     ) {
+        statusMenu.refreshShortcutBindings()
         hotkeyCenter?.invalidate()
         let hotkeyCenter = HotkeyCenter()
         self.hotkeyCenter = hotkeyCenter

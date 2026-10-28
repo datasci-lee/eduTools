@@ -2,6 +2,12 @@ import AppKit
 import Carbon
 
 final class StatusMenu: NSObject {
+    private struct ShortcutMenuItem {
+        let command: AppCommand
+        let scope: ShortcutScope
+        let item: NSMenuItem
+    }
+
     private let state: AppState
     private let dispatcher: AppCommandDispatcher
     private let settingsController: SettingsController
@@ -19,6 +25,7 @@ final class StatusMenu: NSObject {
     private var zoomObserverIdentifier: UUID?
     private var presenterEffectsObserverIdentifier: UUID?
     private var sharingSettingsObserverIdentifier: UUID?
+    private var shortcutMenuItems: [ShortcutMenuItem] = []
     private var hotkeyRegistrationFailed = false
     private var accessibilityTrusted = false
 
@@ -290,12 +297,31 @@ final class StatusMenu: NSObject {
         updatePresenterEffects()
     }
 
+    func refreshShortcutBindings() {
+        for entry in shortcutMenuItems {
+            updateShortcut(entry.command, scope: entry.scope, on: entry.item)
+        }
+    }
+
     private func applyShortcut(
         _ command: AppCommand,
         scope: ShortcutScope,
         to item: NSMenuItem
     ) {
+        shortcutMenuItems.append(
+            ShortcutMenuItem(command: command, scope: scope, item: item)
+        )
+        updateShortcut(command, scope: scope, on: item)
+    }
+
+    private func updateShortcut(
+        _ command: AppCommand,
+        scope: ShortcutScope,
+        on item: NSMenuItem
+    ) {
         guard let binding = ShortcutCatalog.definition(for: command)?.binding(in: scope) else {
+            item.keyEquivalent = ""
+            item.keyEquivalentModifierMask = []
             NSLog("EduTools: menu item has no shortcut definition for %@", String(describing: command))
             return
         }

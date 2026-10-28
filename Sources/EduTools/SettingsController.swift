@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Carbon
+import Combine
 import ServiceManagement
 import SwiftUI
 import UniformTypeIdentifiers
@@ -26,12 +27,20 @@ final class SettingsController: NSObject {
     private var settingsWindow: NSWindow?
     private var importWindow: NSWindow?
     private var permissionWindow: NSWindow?
+    private var settingsIssueCancellable: AnyCancellable?
 
     init(settingsStore: SettingsStore, defaults: UserDefaults = .standard) {
         self.settingsStore = settingsStore
         backupStore = SettingsBackupStore(defaults: defaults)
         self.defaults = defaults
         super.init()
+        settingsIssueCancellable = settingsStore.$pendingIssue
+            .compactMap { $0 }
+            .sink { [weak self] issue in
+                DispatchQueue.main.async {
+                    self?.presentSettingsIssue(issue)
+                }
+            }
     }
 
     func showSettings() {
@@ -343,6 +352,23 @@ final class SettingsController: NSObject {
         alert.addButton(withTitle: "확인")
         alert.runModal()
     }
+
+    private func presentSettingsIssue(_ issue: SettingsStoreIssue) {
+        guard settingsStore.pendingIssue?.id == issue.id else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        switch issue.kind {
+        case .load:
+            alert.messageText = "저장 설정을 읽지 못했습니다"
+        case .save:
+            alert.messageText = "설정을 저장하지 못했습니다"
+        }
+        alert.informativeText = issue.detail
+        alert.addButton(withTitle: "확인")
+        NSApp.activate()
+        alert.runModal()
+        settingsStore.clearPendingIssue(id: issue.id)
+    }
 }
 
 private final class SettingsExportOptionsView: NSStackView {
@@ -394,6 +420,23 @@ private struct SettingsRootView: View {
         }
         .padding(14)
         .frame(minWidth: 720, minHeight: 590)
+        .alert(
+            "설정을 적용할 수 없습니다",
+            isPresented: Binding(
+                get: { store.updateErrorMessage != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        store.clearUpdateError()
+                    }
+                }
+            )
+        ) {
+            Button("확인", role: .cancel) {
+                store.clearUpdateError()
+            }
+        } message: {
+            Text(store.updateErrorMessage ?? "설정 값을 확인하세요.")
+        }
     }
 
     private func binding<Value>(_ keyPath: WritableKeyPath<AppSettings, Value>) -> Binding<Value> {
@@ -516,6 +559,7 @@ private struct SettingsRootView: View {
                 Text("고정").tag("fixed")
             }
             slider("따라가기 부드러움", keyPath: \.zoom.followSmoothness, range: 0...1, step: 0.05)
+            slider("미리보기 회색 농도", keyPath: \.zoom.previewDimming, range: 0...1, step: 0.05)
             Toggle("라이브 줌을 기본값으로", isOn: binding(\.zoom.liveByDefault))
         }
         .padding()
@@ -808,18 +852,18 @@ private final class ShortcutRecorderButton: NSButton {
     }
 
     @objc private func beginRecording() {
+        if isRecording {
+            finishRecording(with: nil)
+            return
+        }
         isRecording = true
-        title = "키를 누르세요…"
+        title = "키 입력… (재클릭 취소)"
         window?.makeFirstResponder(self)
     }
 
     override func keyDown(with event: NSEvent) {
         guard isRecording else {
             super.keyDown(with: event)
-            return
-        }
-        if event.keyCode == UInt16(kVK_Escape) {
-            finishRecording(with: nil)
             return
         }
         guard let token = PortableShortcut.keyToken(for: event.keyCode) else {

@@ -808,8 +808,8 @@ final class AppState {
             ),
             followMode: ZoomFollowMode(rawValue: zoomSettings.followMode) ?? .edge,
             followSmoothness: CGFloat(zoomSettings.followSmoothness),
-            previewDimming: ZoomDefaults.previewDimming,
-            isFrozen: false,
+            previewDimming: CGFloat(zoomSettings.previewDimming),
+            isFrozen: !zoomSettings.liveByDefault,
             isPreviewing: false
         )
     }

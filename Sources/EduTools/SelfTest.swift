@@ -803,20 +803,24 @@ func runSelfTests() -> Int32 {
         "settings validation should reject a zoom value outside 1.25 through 8"
     )
 
-    var unknownKeyWasIgnored = false
+    var compatibleSettingsDecoded = false
     if let settingsJSON,
        var object = try? JSONSerialization.jsonObject(with: settingsJSON) as? [String: Any]
     {
         object["futureSetting"] = ["enabled": true]
+        if var zoom = object["zoom"] as? [String: Any] {
+            zoom.removeValue(forKey: "previewDimming")
+            object["zoom"] = zoom
+        }
         if let data = try? JSONSerialization.data(withJSONObject: object),
            let decoded = try? JSONDecoder().decode(AppSettings.self, from: data)
         {
-            unknownKeyWasIgnored = decoded == AppSettings.default
+            compatibleSettingsDecoded = decoded == AppSettings.default
         }
     }
     runner.expect(
-        unknownKeyWasIgnored,
-        "settings decoding should ignore unknown keys"
+        compatibleSettingsDecoded,
+        "settings decoding should ignore unknown keys and default a missing preview dimming value"
     )
 
     var computerSpecificSettings = AppSettings.default
