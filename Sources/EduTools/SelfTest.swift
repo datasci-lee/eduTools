@@ -95,6 +95,76 @@ func runSelfTests() -> Int32 {
         "every annotation shortcut should be connected to the command dispatcher"
     )
 
+    runner.expect(
+        AttrIconPure.widthLevel(value: 0, lowerBound: 1, upperBound: 12) == 1
+            && AttrIconPure.widthLevel(value: 1, lowerBound: 1, upperBound: 12) == 1
+            && AttrIconPure.widthLevel(value: 3.749, lowerBound: 1, upperBound: 12) == 1
+            && AttrIconPure.widthLevel(value: 3.75, lowerBound: 1, upperBound: 12) == 2
+            && AttrIconPure.widthLevel(value: 6.5, lowerBound: 1, upperBound: 12) == 3
+            && AttrIconPure.widthLevel(value: 9.25, lowerBound: 1, upperBound: 12) == 4
+            && AttrIconPure.widthLevel(value: 12, lowerBound: 1, upperBound: 12) == 4
+            && AttrIconPure.widthLevel(value: 13, lowerBound: 1, upperBound: 12) == 4
+            && AttrIconPure.widthLevel(value: 5, lowerBound: 5, upperBound: 5) == 2,
+        "attribute icon width levels should clamp values and preserve every quartile boundary"
+    )
+
+    let unknownAttrIconConditionRejected: Bool
+    do {
+        _ = try AttrIconPure.conditionMatches("fill", attributes: [:])
+        unknownAttrIconConditionRejected = false
+    } catch let error as AttrIconPure.ConditionError {
+        unknownAttrIconConditionRejected = error == .unknownAttribute("fill")
+    } catch {
+        unknownAttrIconConditionRejected = false
+    }
+    runner.expect(
+        (try? AttrIconPure.conditionMatches("fill", attributes: ["fill": "true"])) == true
+            && (try? AttrIconPure.conditionMatches("!trail", attributes: ["trail": "false"]))
+                == true
+            && (try? AttrIconPure.conditionMatches("trail", attributes: ["trail": "true"]))
+                == true
+            && (try? AttrIconPure.conditionMatches("mode=brush", attributes: ["mode": "brush"]))
+                == true
+            && (try? AttrIconPure.conditionMatches("mode=rect", attributes: ["mode": "rect"]))
+                == true
+            && (try? AttrIconPure.conditionMatches("mode=lasso", attributes: ["mode": "lasso"]))
+                == true
+            && (try? AttrIconPure.conditionMatches("mode!=brush", attributes: ["mode": "stroke"]))
+                == true
+            && (try? AttrIconPure.conditionMatches("fill", attributes: ["fill": "false"]))
+                == false
+            && (try? AttrIconPure.conditionMatches("!trail", attributes: ["trail": "true"]))
+                == false
+            && (try? AttrIconPure.conditionMatches("trail", attributes: ["trail": "false"]))
+                == false
+            && (try? AttrIconPure.conditionMatches("mode=brush", attributes: ["mode": "stroke"]))
+                == false
+            && (try? AttrIconPure.conditionMatches("mode!=brush", attributes: ["mode": "brush"]))
+                == false
+            && unknownAttrIconConditionRejected,
+        "attribute icon conditions should match booleans and values while rejecting unknown attributes"
+    )
+
+    let attrIconWhite = AttrIconColor(red: 1, green: 1, blue: 1)
+    let attrIconBlack = AttrIconColor(red: 0, green: 0, blue: 0)
+    let attrIconLightGray = AttrIconColor(red: 0.93, green: 0.93, blue: 0.93)
+    let attrIconBlackWhiteRatio = AttrIconPure.contrastRatio(attrIconBlack, attrIconWhite)
+    runner.expect(
+        abs(AttrIconPure.contrastRatio(attrIconWhite, attrIconWhite) - 1) < 0.000_001
+            && AttrIconPure.needsHalo(foreground: attrIconWhite, background: attrIconWhite)
+            && abs(AttrIconPure.contrastRatio(attrIconBlack, attrIconBlack) - 1) < 0.000_001
+            && AttrIconPure.needsHalo(foreground: attrIconBlack, background: attrIconBlack)
+            && abs(attrIconBlackWhiteRatio - 21) < 0.000_001
+            && !AttrIconPure.needsHalo(foreground: attrIconBlack, background: attrIconWhite)
+            && abs(AttrIconPure.contrastRatio(attrIconWhite, attrIconBlack)
+                - attrIconBlackWhiteRatio) < 0.000_001
+            && abs(AttrIconPure.contrastRatio(attrIconWhite, attrIconLightGray) - 1.169) < 0.001
+            && AttrIconPure.needsHalo(foreground: attrIconWhite, background: attrIconLightGray)
+            && abs(AttrIconPure.contrastRatio(attrIconBlack, attrIconLightGray) - 17.96) < 0.01
+            && !AttrIconPure.needsHalo(foreground: attrIconBlack, background: attrIconLightGray),
+        "attribute icon contrast should be symmetric and apply halos below the threshold"
+    )
+
     let displayedCommandC = KeystrokeDisplayFilter.displayString(
         keyCode: UInt16(kVK_ANSI_C),
         charactersIgnoringModifiers: "c",
