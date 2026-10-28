@@ -11,7 +11,7 @@ Oct 28, 2026 · @이경환
 | 항목 | 결정 |
 | --- | --- |
 | 대상 사용자 | 강의·수업을 진행하는 강사 (마우스, 트랙패드, 펜 태블릿 사용) |
-| 플랫폼 | macOS 26 이상. 이후 Windows 10/11로 확장 |
+| 플랫폼 | macOS 26 이상. 이후 **Windows 11 이상**으로 확장(Rust 로 별도 구현, Windows PC 에서 개발 — [`windows-plan.md`](windows-plan.md)) |
 | 언어/프레임워크 | Swift, AppKit, SwiftUI(설정), ScreenCaptureKit, Core Animation |
 | 앱 형태 | 메뉴바 상주 앱 (Dock 아이콘 없음) + 떠 있는 도구 팔레트 |
 | 배포 | Developer ID 서명·공증 후 직접 배포 (App Store는 이후 검토) |
@@ -259,7 +259,7 @@ iPad는 macOS **Sidecar**로 연결해 하나의 모니터처럼 다루고, Appl
 구현 요점
 
 - **탭 닫기(macOS)**: AppleScript로 크롬에서 앱이 열었던 주소의 탭만 찾아 닫음. 처음 한 번 **자동화(Apple Events) 권한** 허용이 필요. 권한이 없으면 미디어 키(일시정지)를 보내는 방식으로 대체
-- **Windows**: 기본 브라우저로 주소를 열고(`ShellExecute`), 종료 시 미디어 키(`VK_MEDIA_PLAY_PAUSE`)로 일시정지. 볼륨은 Core Audio API로 조절
+- **Windows**: `chrome.exe` 로 주소를 열고(없으면 `ShellExecute`), 종료 시 Windows 미디어 컨트롤(SMTC)로 Chrome 재생만 일시정지(탭은 닫지 않음; 토글인 미디어 키는 이미 멈춘 음악을 다시 틀 수 있어 쓰지 않음). 볼륨은 시스템 전체를 Core Audio(`IAudioEndpointVolume`)로 페이드
 - **예외 처리**: 크롬이 없으면 기본 브라우저로 열기. 다른 앱이 소리를 내는 중이면 미디어 키가 엉뚱한 앱을 멈출 수 있어, 가능하면 탭 닫기를 우선 사용
 - **하지 않는 것**: 크롬 로그인 정보(쿠키) 읽기, 앱 내부 웹 화면에서 구글 로그인, 광고 차단. 보안과 유튜브 약관 때문
 - Premium이 아닌 계정이면 광고가 나올 수 있다고 설정 화면에 안내
@@ -368,7 +368,7 @@ iPad는 macOS **Sidecar**로 연결해 하나의 모니터처럼 다루고, Appl
 
 - **지금 모드에 맞춘 내용**: 판서 모드면 도구·편집, 줌 모드면 배율·미리보기, 보드면 페이지 키를 먼저 보여주고, 나머지는 아래쪽에 표시. 제목에 현재 모드 표시
 - **기능별 카드**: 도구 / 편집 / 화면·보드·줌 / 타이머·기타 4개 묶음. 항목마다 아이콘 → 이름 → 오른쪽 끝에 키캡 모양 단축키
-- **아이콘**: 도구 팔레트와 같은 아이콘을 써서 두 화면이 연결되게. macOS는 SF Symbols, Windows는 Fluent 아이콘
+- **아이콘**: 도구 팔레트와 같은 아이콘을 써서 두 화면이 연결되게. 디자인 세트(`assets/icons/<키>.svg`)를 macOS·Windows 가 함께 쓰고, 디자인이 없는 키만 macOS 는 SF Symbols, Windows 는 Segoe Fluent 글리프로 대체([`icons.md`](icons.md))
 - **현재 상태 강조**: 지금 쓰는 도구는 강조색, 지우개는 현재 방식(부분/획/영역), 줌은 현재 배율을 함께 표시
 - **OS에 맞는 표기**: 같은 설정을 macOS는 `⌃⌥Z`, Windows는 `Ctrl+Alt+Z`로 표시
 - **사용자 설정 반영**: 설정에서 바꾼 단축키를 그대로 표시. 다른 앱과 충돌 경고가 있는 키는 ⚠ 표시
