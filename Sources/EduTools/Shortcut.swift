@@ -207,6 +207,7 @@ enum ShortcutGroup: Int, CaseIterable {
 
 enum AppCommand: Hashable {
     case toggleAnnotationMode
+    case togglePassThroughMode
     case toggleZoom
     case toggleSpotlight
     case toggleCursorHighlight
@@ -409,6 +410,17 @@ enum ShortcutCatalog {
                 modes: [.global],
                 command: .toggleAnnotationMode,
                 bindings: [global("AppMod+P")]
+            ),
+            ShortcutDefinition(
+                id: "annotation.pass-through",
+                name: "아래 화면 클릭(통과 모드)",
+                iconName: "cursorarrow.click",
+                group: .screenBoardZoom,
+                modes: [.annotation],
+                command: .togglePassThroughMode,
+                bindings: [
+                    .annotation(keyCode: kVK_ANSI_U, keyEquivalent: "u", keyCap: "U")
+                ]
             ),
             ShortcutDefinition(
                 id: "zoom.toggle",

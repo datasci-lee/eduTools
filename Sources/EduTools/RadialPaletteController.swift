@@ -159,6 +159,7 @@ private enum RadialPaletteCatalog {
                 .command(.useLaser),
                 .command(.toggleSpotlight),
                 .command(.selectTool(.cover)),
+                .command(.togglePassThroughMode),
                 .command(.toggleZoom),
                 .command(.toggleCursorHighlight),
             ]
@@ -649,6 +650,7 @@ final class RadialPaletteController: NSObject {
     private var restingCenter = CGPoint.zero
     private var currentDisplayUUID: String?
     private var annotationObserverIdentifier: UUID?
+    private var passThroughObserverIdentifier: UUID?
     private var toolObserverIdentifier: UUID?
     private var toolSettingsObserverIdentifier: UUID?
     private var visibilityObserverIdentifier: UUID?
@@ -718,6 +720,9 @@ final class RadialPaletteController: NSObject {
     private func observeStateAndScreens() {
         annotationObserverIdentifier = state.addAnnotationModeObserver { [weak self] _ in
             self?.updateVisibility()
+        }
+        passThroughObserverIdentifier = state.addPassThroughModeObserver { [weak self] _ in
+            self?.paletteView.redraw()
         }
         toolObserverIdentifier = state.addToolObserver { [weak self] _ in
             self?.synchronizePathWithCurrentTool()
@@ -1410,6 +1415,7 @@ final class RadialPaletteController: NSObject {
         switch entry.action {
         case .command(.toggleSpotlight): return state.isSpotlightEnabled
         case .command(.toggleCursorHighlight): return state.isCursorHighlightEnabled
+        case .command(.togglePassThroughMode): return state.isPassThroughModeEnabled
         case .command(.toggleZoom): return state.isZoomEnabled
         case let .command(.toggleBoard(kind)): return state.presentedBoard?.kind == kind
         case let .setPaletteStyle(style): return settingsStore.settings.tools.paletteStyle == style
@@ -1686,7 +1692,9 @@ final class RadialPaletteController: NSObject {
     ) {
         let cells = isExpanded ? layoutCells() : []
         let focusedIdentifier = showsKeyboardFocus ? keyboardFocus?.identifier : nil
-        let centerDefinition = centerDefinition()
+        let centerDefinition = state.isPassThroughModeEnabled
+            ? requiredDefinition(for: .togglePassThroughMode)
+            : centerDefinition()
         model.state = RadialPaletteRenderState(
             isExpanded: isExpanded,
             showsKeyCaps: showsKeyCaps,
@@ -1710,6 +1718,7 @@ final class RadialPaletteController: NSObject {
             centerShortcut: centerDefinition?.displayKeys ?? "",
             centerColor: centerColor(),
             centerStrokeWidth: centerStrokeWidth(),
+            centerIsPassThroughEnabled: state.isPassThroughModeEnabled,
             centerIsHovered: hoveredIdentifier == "palette.center",
             centerIsFocused: focusedIdentifier == "palette.center"
         )
@@ -1802,6 +1811,9 @@ final class RadialPaletteController: NSObject {
         }
         if let annotationObserverIdentifier {
             state.removeAnnotationModeObserver(annotationObserverIdentifier)
+        }
+        if let passThroughObserverIdentifier {
+            state.removePassThroughModeObserver(passThroughObserverIdentifier)
         }
         if let toolObserverIdentifier {
             state.removeToolObserver(toolObserverIdentifier)

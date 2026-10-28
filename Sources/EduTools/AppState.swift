@@ -1,6 +1,11 @@
 import AppKit
 import Foundation
 
+enum PassThroughDefaults {
+    static let initialClickTimeout: TimeInterval = 10
+    static let interactionIdleTimeout: TimeInterval = 3
+}
+
 enum DisplayDisconnectPolicy: String, CaseIterable {
     case archive
     case moveToPrimary
@@ -17,6 +22,7 @@ enum DisplayDisconnectPolicy: String, CaseIterable {
 
 final class AppState {
     typealias AnnotationModeObserver = (Bool) -> Void
+    typealias PassThroughModeObserver = (Bool) -> Void
     typealias ToolObserver = (InkTool) -> Void
     typealias ToolSettingsObserver = () -> Void
     typealias PaletteVisibilityObserver = (Bool) -> Void
@@ -32,6 +38,7 @@ final class AppState {
     }
 
     private var annotationModeObservers: [UUID: AnnotationModeObserver] = [:]
+    private var passThroughModeObservers: [UUID: PassThroughModeObserver] = [:]
     private var toolObservers: [UUID: ToolObserver] = [:]
     private var toolSettingsObservers: [UUID: ToolSettingsObserver] = [:]
     private var paletteVisibilityObservers: [UUID: PaletteVisibilityObserver] = [:]
@@ -52,6 +59,18 @@ final class AppState {
     private var settingsObserverIdentifier: UUID?
     private var zoomPreviewOrigin: (center: CGPoint, magnification: CGFloat)?
     private var lastColorTool = InkTool.pen
+    private var passThroughGlobalMonitor: Any?
+    private var passThroughTimeoutWorkItem: DispatchWorkItem?
+
+    private static let passThroughEventMask: NSEvent.EventTypeMask = [
+        .leftMouseDown,
+        .leftMouseUp,
+        .rightMouseDown,
+        .rightMouseUp,
+        .otherMouseDown,
+        .otherMouseUp,
+        .scrollWheel,
+    ]
 
     var archiveBeforeRemoval: ((Set<String>) -> Bool)?
 
@@ -103,11 +122,21 @@ final class AppState {
         didSet {
             guard oldValue != isAnnotationModeEnabled else { return }
             if !isAnnotationModeEnabled {
+                setPassThroughModeEnabled(false)
                 clearAllSelections()
                 dismissBoard()
             }
             for observer in annotationModeObservers.values {
                 observer(isAnnotationModeEnabled)
+            }
+        }
+    }
+
+    private(set) var isPassThroughModeEnabled = false {
+        didSet {
+            guard oldValue != isPassThroughModeEnabled else { return }
+            for observer in passThroughModeObservers.values {
+                observer(isPassThroughModeEnabled)
             }
         }
     }
@@ -267,6 +296,72 @@ final class AppState {
         isAnnotationModeEnabled = isEnabled
     }
 
+    func togglePassThroughMode() {
+        setPassThroughModeEnabled(!isPassThroughModeEnabled)
+    }
+
+    func setPassThroughModeEnabled(_ isEnabled: Bool) {
+        guard isPassThroughModeEnabled != isEnabled else { return }
+        if isEnabled {
+            guard isAnnotationModeEnabled, presentedBoard == nil else { return }
+            guard installPassThroughGlobalMonitor() else {
+                NSLog("EduTools: pass-through mode was not enabled because its global mouse monitor failed")
+                return
+            }
+            isPassThroughModeEnabled = true
+            schedulePassThroughTimeout(after: PassThroughDefaults.initialClickTimeout)
+        } else {
+            passThroughTimeoutWorkItem?.cancel()
+            passThroughTimeoutWorkItem = nil
+            removePassThroughGlobalMonitor()
+            isPassThroughModeEnabled = false
+        }
+    }
+
+    private func installPassThroughGlobalMonitor() -> Bool {
+        guard passThroughGlobalMonitor == nil else { return true }
+        guard let monitor = NSEvent.addGlobalMonitorForEvents(
+            matching: Self.passThroughEventMask,
+            handler: { [weak self] _ in
+                self?.passThroughInteractionDidOccur()
+            }
+        ) else {
+            return false
+        }
+        passThroughGlobalMonitor = monitor
+        return true
+    }
+
+    private func removePassThroughGlobalMonitor() {
+        guard let passThroughGlobalMonitor else { return }
+        NSEvent.removeMonitor(passThroughGlobalMonitor)
+        self.passThroughGlobalMonitor = nil
+    }
+
+    private func passThroughInteractionDidOccur() {
+        guard isPassThroughModeEnabled else { return }
+        schedulePassThroughTimeout(after: PassThroughDefaults.interactionIdleTimeout)
+    }
+
+    private func schedulePassThroughTimeout(after interval: TimeInterval) {
+        passThroughTimeoutWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.passThroughTimeoutDidFire()
+        }
+        passThroughTimeoutWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + interval, execute: workItem)
+    }
+
+    private func passThroughTimeoutDidFire() {
+        passThroughTimeoutWorkItem = nil
+        guard isPassThroughModeEnabled else { return }
+        if NSEvent.pressedMouseButtons != 0 {
+            schedulePassThroughTimeout(after: PassThroughDefaults.interactionIdleTimeout)
+            return
+        }
+        setPassThroughModeEnabled(false)
+    }
+
     func setAutoArchiveEnabled(_ isEnabled: Bool) {
         settingsStore.update { $0.general.autoArchiveEnabled = isEnabled }
     }
@@ -312,6 +407,7 @@ final class AppState {
         if presentedBoard?.kind == kind {
             presentedBoard = nil
         } else {
+            setPassThroughModeEnabled(false)
             presentedBoard = BoardPresentation(kind: kind, displayUUID: displayUUID)
         }
         notifyBoardObservers()
@@ -995,6 +1091,18 @@ final class AppState {
     }
 
     @discardableResult
+    func addPassThroughModeObserver(_ observer: @escaping PassThroughModeObserver) -> UUID {
+        let identifier = UUID()
+        passThroughModeObservers[identifier] = observer
+        observer(isPassThroughModeEnabled)
+        return identifier
+    }
+
+    func removePassThroughModeObserver(_ identifier: UUID) {
+        passThroughModeObservers.removeValue(forKey: identifier)
+    }
+
+    @discardableResult
     func addToolObserver(_ observer: @escaping ToolObserver) -> UUID {
         let identifier = UUID()
         toolObservers[identifier] = observer
@@ -1187,6 +1295,8 @@ final class AppState {
     }
 
     deinit {
+        passThroughTimeoutWorkItem?.cancel()
+        removePassThroughGlobalMonitor()
         if let settingsObserverIdentifier {
             settingsStore.removeObserver(settingsObserverIdentifier)
         }

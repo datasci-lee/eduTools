@@ -19,6 +19,7 @@ final class AppCommandDispatcher {
     static func supports(_ command: AppCommand) -> Bool {
         switch command {
         case .toggleAnnotationMode,
+             .togglePassThroughMode,
              .toggleZoom,
              .toggleSpotlight,
              .toggleCursorHighlight,
@@ -102,6 +103,9 @@ final class AppCommandDispatcher {
         case .toggleAnnotationMode:
             overlayController?.finishAllActiveInteractions()
             state.toggleAnnotationMode()
+        case .togglePassThroughMode:
+            overlayController?.finishAllActiveInteractions()
+            state.togglePassThroughMode()
         case .toggleZoom:
             zoomController?.toggleZoom()
         case .toggleSpotlight:
@@ -178,7 +182,10 @@ final class AppCommandDispatcher {
         case .toggleRadialPalette:
             radialPaletteController?.toggleExpansionFromKeyboard()
         case .stepBack:
-            if radialPaletteController?.collapseIfExpanded() == true {
+            if state.isPassThroughModeEnabled {
+                state.setPassThroughModeEnabled(false)
+                return
+            } else if radialPaletteController?.collapseIfExpanded() == true {
                 return
             } else if helpController?.isVisible == true {
                 helpController?.close()
