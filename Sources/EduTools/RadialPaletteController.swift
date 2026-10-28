@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import QuartzCore
 
 private final class RadialPalettePanel: NSPanel {
@@ -192,7 +193,7 @@ private enum RadialPaletteCatalog {
     }
 }
 
-private enum RadialPaletteRing {
+private enum RadialPaletteRing: Equatable {
     case group
     case entry
     case option
@@ -250,6 +251,163 @@ private enum RadialPaletteHitTarget {
     }
 }
 
+private enum RadialPaletteNavigationKey: Equatable {
+    case shallower
+    case deeper
+    case previous
+    case next
+}
+
+private enum RadialPaletteFocus: Equatable {
+    case center
+    case cell(String)
+
+    var identifier: String {
+        switch self {
+        case .center: return "palette.center"
+        case let .cell(identifier): return identifier
+        }
+    }
+}
+
+/// Returns a focus derived only from the currently rendered cells. Filtering preserves the
+/// `layoutCells()` order, so keyboard navigation cannot drift from the visual/catalog order.
+private func nextRadialPaletteFocus(
+    in cells: [RadialPaletteCell],
+    from current: RadialPaletteFocus,
+    for key: RadialPaletteNavigationKey
+) -> RadialPaletteFocus {
+    let enabledCells = cells.filter(\.isEnabled)
+
+    func selectedCell(in ring: RadialPaletteRing) -> RadialPaletteCell? {
+        enabledCells.first { $0.ring == ring && $0.isSelected }
+    }
+
+    func selectedToolCell() -> RadialPaletteCell? {
+        enabledCells.first { cell in
+            guard cell.ring == .entry, cell.isSelected,
+                  case let .entry(entry) = cell.action
+            else {
+                return false
+            }
+            return entry.inkTool != nil
+        }
+    }
+
+    func firstCell(in ring: RadialPaletteRing) -> RadialPaletteCell? {
+        enabledCells.first { $0.ring == ring }
+    }
+
+    func focus(for cell: RadialPaletteCell?) -> RadialPaletteFocus? {
+        cell.map { .cell($0.identifier) }
+    }
+
+    switch key {
+    case .shallower:
+        switch current {
+        case .center:
+            return .center
+        case let .cell(identifier):
+            guard let cell = enabledCells.first(where: { $0.identifier == identifier }) else {
+                return current
+            }
+            switch cell.ring {
+            case .group:
+                return .center
+            case .entry:
+                return focus(for: selectedCell(in: .group)) ?? current
+            case .option:
+                return focus(for: selectedToolCell()) ?? current
+            }
+        }
+
+    case .deeper:
+        switch current {
+        case .center:
+            return focus(for: selectedCell(in: .group)) ?? current
+        case let .cell(identifier):
+            guard let cell = enabledCells.first(where: { $0.identifier == identifier }) else {
+                return current
+            }
+            switch cell.ring {
+            case .group:
+                return focus(for: selectedToolCell() ?? firstCell(in: .entry)) ?? current
+            case .entry:
+                guard cell.isSelected,
+                      case let .entry(entry) = cell.action,
+                      entry.inkTool != nil
+                else {
+                    return current
+                }
+                return focus(for: firstCell(in: .option)) ?? current
+            case .option:
+                return current
+            }
+        }
+
+    case .previous, .next:
+        guard case let .cell(identifier) = current,
+              let currentCell = enabledCells.first(where: { $0.identifier == identifier })
+        else {
+            return current
+        }
+        let ringCells = enabledCells.filter { $0.ring == currentCell.ring }
+        guard ringCells.count > 1,
+              let index = ringCells.firstIndex(where: { $0.identifier == identifier })
+        else {
+            return current
+        }
+        let offset = key == .next ? 1 : -1
+        let targetIndex: Int
+        if currentCell.ring == .entry {
+            targetIndex = min(max(index + offset, 0), ringCells.count - 1)
+        } else {
+            targetIndex = (index + offset + ringCells.count) % ringCells.count
+        }
+        return .cell(ringCells[targetIndex].identifier)
+    }
+}
+
+private enum RadialPaletteTheme {
+    static let interactionBackground = color(0x000000, alpha: 0.001)
+    static let diskBackground = color(0xFFFFFF, alpha: 0.97)
+    static let diskBorder = color(0x667085)
+
+    static let cellBackground = color(0xE7EBF0)
+    static let cellBorder = color(0x667085)
+    static let hoverBackground = color(0xD6E4FF)
+    static let selectedBackground = color(0x1D4ED8)
+    static let selectedBorder = color(0xFFFFFF)
+    static let disabledBackground = color(0xF4F5F7)
+
+    static let primaryContent = color(0x172033)
+    static let disabledContent = color(0x596273)
+    static let selectedContent = color(0xFFFFFF)
+
+    static let colorCellBorder = color(0x263244)
+    static let hoverBorder = color(0x1D4ED8)
+    static let selectionOuter = color(0x101828)
+    static let selectionInner = color(0xFFFFFF)
+    static let focusOuter = color(0x101828)
+    static let focusInner = color(0xFFFFFF)
+
+    static let chipBackground = color(0xFFFFFF, alpha: 0.98)
+    static let chipBorder = color(0x667085)
+    static let chipContent = color(0x172033)
+
+    private static func color(_ rgb: Int, alpha: CGFloat = 1) -> NSColor {
+        let red = CGFloat((rgb >> 16) & 0xFF) / 255
+        let green = CGFloat((rgb >> 8) & 0xFF) / 255
+        let blue = CGFloat(rgb & 0xFF) / 255
+        return NSColor(
+            srgbRed: red,
+            green: green,
+            blue: blue,
+            alpha: alpha
+        )
+    }
+}
+
 private enum RadialPaletteMetrics {
     static let collapsedDiameter: CGFloat = 44
     static let expandedDiameter: CGFloat = 280
@@ -267,6 +425,16 @@ private enum RadialPaletteMetrics {
     static let tooltipGap: CGFloat = 8
     static let propertyLabelFontSize: CGFloat = 9.5
     static let propertyLabelPadding: CGFloat = 6
+    static let diskStrokeWidth: CGFloat = 0.8
+    static let cellStrokeWidth: CGFloat = 0.8
+    static let colorCellStrokeWidth: CGFloat = 1.1
+    static let hoverStrokeWidth: CGFloat = 1.8
+    static let selectedStrokeWidth: CGFloat = 1.2
+    static let colorSelectionOuterWidth: CGFloat = 4.2
+    static let colorSelectionInnerWidth: CGFloat = 1.8
+    static let focusOuterWidth: CGFloat = 6
+    static let focusInnerWidth: CGFloat = 2.4
+    static let chipStrokeWidth: CGFloat = 0.8
     static let writingWidths: [CGFloat] = [1, 3, 5, 8, 12]
     static let highlighterWidths: [CGFloat] = [6, 12, 18, 24, 30]
     static let textSizes: [CGFloat] = [16, 24, 36, 48, 72]
@@ -297,10 +465,12 @@ private final class RadialPaletteTooltip {
 
         let root = NSView(frame: .zero)
         root.wantsLayer = true
-        root.layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.96).cgColor
+        root.layer?.backgroundColor = RadialPaletteTheme.chipBackground.cgColor
+        root.layer?.borderColor = RadialPaletteTheme.chipBorder.cgColor
+        root.layer?.borderWidth = RadialPaletteMetrics.chipStrokeWidth
         root.layer?.cornerRadius = 7
         label.font = .systemFont(ofSize: 12, weight: .medium)
-        label.textColor = .labelColor
+        label.textColor = RadialPaletteTheme.chipContent
         label.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(label)
         NSLayoutConstraint.activate([
@@ -426,6 +596,10 @@ private final class RadialPaletteView: NSView {
         controller?.drawPalette(in: self, hoveredIdentifier: hoveredTargetIdentifier)
     }
 
+    func clearHoverForKeyboardNavigation() {
+        hoveredTargetIdentifier = nil
+    }
+
     override func mouseDown(with event: NSEvent) {
         guard let controller else { return }
         pressedTargetIdentifier = nil
@@ -526,6 +700,9 @@ final class RadialPaletteController: NSObject {
     private var selectedEntryIdentifier: String?
     private var isExpanded = false
     private var showsKeyCaps = false
+    private var keyboardFocus: RadialPaletteFocus?
+    private var showsKeyboardFocus = false
+    private var consumedPaletteKeyCodes: Set<UInt16> = []
     private var restingCenter = CGPoint.zero
     private var currentDisplayUUID: String?
     private var annotationObserverIdentifier: UUID?
@@ -586,7 +763,7 @@ final class RadialPaletteController: NSObject {
 
         paletteView.controller = self
         paletteView.wantsLayer = true
-        paletteView.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.001).cgColor
+        paletteView.layer?.backgroundColor = RadialPaletteTheme.interactionBackground.cgColor
         panel.contentView = paletteView
         applyPanelFrame()
     }
@@ -642,11 +819,152 @@ final class RadialPaletteController: NSObject {
         if let keyMonitor = NSEvent.addLocalMonitorForEvents(
             matching: [.flagsChanged, .keyDown, .keyUp],
             handler: { [weak self] event in
-                self?.handleModifierEvent(event)
+                guard let self else { return event }
+                if self.consumePaletteKeyboardEvent(event) {
+                    self.handleModifierEvent(event)
+                    return nil
+                }
+                self.handleModifierEvent(event)
                 return event
             }
         ) {
             eventMonitors.append(keyMonitor)
+        }
+    }
+
+    private func consumePaletteKeyboardEvent(_ event: NSEvent) -> Bool {
+        if event.type == .keyUp,
+           consumedPaletteKeyCodes.remove(event.keyCode) != nil
+        {
+            return true
+        }
+
+        guard event.type == .keyDown,
+              isExpanded,
+              panel.isVisible,
+              !isTextInputActive,
+              event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
+              let input = paletteKeyboardInput(for: event.keyCode)
+        else {
+            return false
+        }
+
+        consumedPaletteKeyCodes.insert(event.keyCode)
+        switch input {
+        case let .navigate(key):
+            navigatePalette(with: key)
+        case .activate:
+            if !event.isARepeat {
+                activateKeyboardFocus()
+            }
+        }
+        return true
+    }
+
+    private enum PaletteKeyboardInput {
+        case navigate(RadialPaletteNavigationKey)
+        case activate
+    }
+
+    private func paletteKeyboardInput(for keyCode: UInt16) -> PaletteKeyboardInput? {
+        switch Int(keyCode) {
+        case kVK_UpArrow: return .navigate(.shallower)
+        case kVK_DownArrow: return .navigate(.deeper)
+        case kVK_LeftArrow: return .navigate(.previous)
+        case kVK_RightArrow: return .navigate(.next)
+        case kVK_Return, kVK_ANSI_KeypadEnter, kVK_Space: return .activate
+        default: return nil
+        }
+    }
+
+    private var isTextInputActive: Bool {
+        NSApp.keyWindow?.firstResponder is NSTextView
+    }
+
+    private func navigatePalette(with key: RadialPaletteNavigationKey) {
+        var cells = layoutCells()
+        let current = validKeyboardFocus(in: cells) ?? initialKeyboardFocus(in: cells)
+        guard let current else { return }
+
+        if key == .deeper,
+           let cell = cell(for: current, in: cells),
+           case let .entry(entry) = cell.action,
+           entry.inkTool != nil,
+           selectedEntryIdentifier != entry.identifier,
+           !optionGroups(for: entry).isEmpty
+        {
+            // Selecting a tool here is intentionally the same dispatcher-backed action as a click.
+            activate(entry)
+            cells = layoutCells()
+        }
+        let next = nextRadialPaletteFocus(in: cells, from: current, for: key)
+
+        if (key == .previous || key == .next),
+           next != current,
+           let cell = cell(for: next, in: cells),
+           case .group = cell.action
+        {
+            activate(.cell(cell))
+            cells = layoutCells()
+        }
+
+        keyboardFocus = next
+        showsKeyboardFocus = true
+        paletteView.clearHoverForKeyboardNavigation()
+        paletteView.redraw()
+        showKeyboardFocusHint(in: cells)
+    }
+
+    private func initialKeyboardFocus(in cells: [RadialPaletteCell]) -> RadialPaletteFocus? {
+        let selectedToolCell = cells.first { cell in
+            guard cell.isEnabled, cell.ring == .entry, cell.isSelected,
+                  case let .entry(entry) = cell.action
+            else {
+                return false
+            }
+            return entry.inkTool != nil
+        }
+        if let selectedToolCell {
+            return .cell(selectedToolCell.identifier)
+        }
+        return cells.first { $0.isEnabled && $0.ring == .group && $0.isSelected }
+            .map { .cell($0.identifier) }
+    }
+
+    private func validKeyboardFocus(in cells: [RadialPaletteCell]) -> RadialPaletteFocus? {
+        guard let keyboardFocus else { return nil }
+        switch keyboardFocus {
+        case .center:
+            return .center
+        case let .cell(identifier):
+            return cells.contains { $0.isEnabled && $0.identifier == identifier }
+                ? keyboardFocus
+                : nil
+        }
+    }
+
+    private func cell(
+        for focus: RadialPaletteFocus,
+        in cells: [RadialPaletteCell]
+    ) -> RadialPaletteCell? {
+        guard case let .cell(identifier) = focus else { return nil }
+        return cells.first { $0.identifier == identifier }
+    }
+
+    private func activateKeyboardFocus() {
+        guard let focus = validKeyboardFocus(in: layoutCells()) else { return }
+        showsKeyboardFocus = true
+        paletteView.clearHoverForKeyboardNavigation()
+        switch focus {
+        case .center:
+            activate(.center)
+        case .cell:
+            guard let cell = cell(for: focus, in: layoutCells()) else { return }
+            activate(.cell(cell))
+        }
+        if isExpanded {
+            paletteView.redraw()
+            showKeyboardFocusHint(in: layoutCells())
         }
     }
 
@@ -724,12 +1042,14 @@ final class RadialPaletteController: NSObject {
         // A hint shown while collapsed is placed beside the small disc and would sit on the rings.
         tooltip.hide()
         synchronizePathWithCurrentTool()
+        resetKeyboardNavigation()
         isExpanded = true
         applyPanelFrame()
         paletteView.redraw()
     }
 
     private func collapse() {
+        resetKeyboardNavigation()
         guard isExpanded else {
             tooltip.hide()
             return
@@ -738,6 +1058,11 @@ final class RadialPaletteController: NSObject {
         tooltip.hide()
         applyPanelFrame()
         paletteView.redraw()
+    }
+
+    private func resetKeyboardNavigation() {
+        keyboardFocus = nil
+        showsKeyboardFocus = false
     }
 
     fileprivate func activate(_ target: RadialPaletteHitTarget) {
@@ -774,21 +1099,14 @@ final class RadialPaletteController: NSObject {
     }
 
     fileprivate func hover(_ target: RadialPaletteHitTarget?, at screenPoint: CGPoint) {
+        if showsKeyboardFocus {
+            showsKeyboardFocus = false
+            paletteView.redraw()
+        }
         guard let target else {
             tooltip.hide()
             return
         }
-        let name: String
-        let shortcut: String
-        switch target {
-        case .center:
-            name = state.currentTool.displayName
-            shortcut = centerDefinition()?.displayKeys ?? ""
-        case let .cell(cell):
-            name = cell.name
-            shortcut = cell.shortcut
-        }
-        let text = shortcut.isEmpty ? name : "\(name)  \(shortcut)"
         let direction: CGVector
         switch target {
         case .center where isExpanded:
@@ -802,10 +1120,48 @@ final class RadialPaletteController: NSObject {
             let angle = (cell.startAngle + cell.endAngle) / 2
             direction = CGVector(dx: sin(angle), dy: cos(angle))
         }
+        showHint(for: target, preferredDirection: direction)
+    }
+
+    private func showKeyboardFocusHint(in cells: [RadialPaletteCell]) {
+        guard isExpanded, panel.isVisible, showsKeyboardFocus, let keyboardFocus else { return }
+        let target: RadialPaletteHitTarget
+        let direction: CGVector
+        switch keyboardFocus {
+        case .center:
+            target = .center
+            direction = CGVector(dx: 1, dy: 0)
+        case .cell:
+            guard let cell = cell(for: keyboardFocus, in: cells) else {
+                tooltip.hide()
+                return
+            }
+            target = .cell(cell)
+            let angle = (cell.startAngle + cell.endAngle) / 2
+            direction = CGVector(dx: sin(angle), dy: cos(angle))
+        }
+        showHint(for: target, preferredDirection: direction)
+    }
+
+    private func showHint(
+        for target: RadialPaletteHitTarget,
+        preferredDirection: CGVector
+    ) {
+        let name: String
+        let shortcut: String
+        switch target {
+        case .center:
+            name = state.currentTool.displayName
+            shortcut = centerDefinition()?.displayKeys ?? ""
+        case let .cell(cell):
+            name = cell.name
+            shortcut = cell.shortcut
+        }
+        let text = shortcut.isEmpty ? name : "\(name)  \(shortcut)"
         tooltip.show(
             text: text,
             paletteCenter: displayedCenter,
-            preferredDirection: direction,
+            preferredDirection: preferredDirection,
             paletteRadius: isExpanded
                 ? RadialPaletteMetrics.expandedDiameter / 2
                 : RadialPaletteMetrics.centerRadius
@@ -1345,9 +1701,10 @@ final class RadialPaletteController: NSObject {
     fileprivate func drawPalette(in view: NSView, hoveredIdentifier: String?) {
         guard let rootLayer = view.layer else { return }
         rootLayer.sublayers?.forEach { $0.removeFromSuperlayer() }
-        rootLayer.backgroundColor = NSColor.black.withAlphaComponent(0.001).cgColor
+        rootLayer.backgroundColor = RadialPaletteTheme.interactionBackground.cgColor
         let center = CGPoint(x: view.bounds.midX, y: view.bounds.midY)
         let scale = panel.backingScaleFactor
+        let focusedIdentifier = showsKeyboardFocus ? keyboardFocus?.identifier : nil
 
         if isExpanded {
             let disk = CAShapeLayer()
@@ -1360,12 +1717,20 @@ final class RadialPaletteController: NSObject {
                 ),
                 transform: nil
             )
-            disk.fillColor = NSColor.black.withAlphaComponent(0.5).cgColor
+            disk.fillColor = RadialPaletteTheme.diskBackground.cgColor
+            disk.strokeColor = RadialPaletteTheme.diskBorder.cgColor
+            disk.lineWidth = RadialPaletteMetrics.diskStrokeWidth
             rootLayer.addSublayer(disk)
 
             let cells = layoutCells()
             for cell in cells {
-                addCellLayer(cell, center: center, hoveredIdentifier: hoveredIdentifier, to: rootLayer)
+                addCellLayer(
+                    cell,
+                    center: center,
+                    hoveredIdentifier: hoveredIdentifier,
+                    focusedIdentifier: focusedIdentifier,
+                    to: rootLayer
+                )
             }
             addPropertyLabels(for: cells, center: center, scale: scale, to: rootLayer)
         }
@@ -1373,6 +1738,7 @@ final class RadialPaletteController: NSObject {
         addCenterLayer(
             center: center,
             isHovered: hoveredIdentifier == "palette.center",
+            isFocused: focusedIdentifier == "palette.center",
             scale: scale,
             to: rootLayer
         )
@@ -1382,40 +1748,68 @@ final class RadialPaletteController: NSObject {
         _ cell: RadialPaletteCell,
         center: CGPoint,
         hoveredIdentifier: String?,
+        focusedIdentifier: String?,
         to rootLayer: CALayer
     ) {
         let layer = CAShapeLayer()
-        layer.path = sectorPath(
+        let path = sectorPath(
             center: center,
             innerRadius: cell.innerRadius,
             outerRadius: cell.outerRadius,
             startAngle: cell.startAngle,
             endAngle: cell.endAngle
         )
+        layer.path = path
+        let isHovered = cell.identifier == hoveredIdentifier
+        let isFocused = cell.identifier == focusedIdentifier
         let fillColor: NSColor
         if !cell.isEnabled {
-            fillColor = NSColor.systemGray.withAlphaComponent(0.28)
+            fillColor = RadialPaletteTheme.disabledBackground
         } else if let color = cell.color {
-            fillColor = color.withAlphaComponent(0.88)
-        } else if cell.identifier == hoveredIdentifier {
-            fillColor = NSColor.controlAccentColor.withAlphaComponent(0.72)
+            fillColor = color.withAlphaComponent(1)
+        } else if isHovered {
+            fillColor = RadialPaletteTheme.hoverBackground
         } else if cell.isSelected {
-            fillColor = NSColor.controlAccentColor.withAlphaComponent(0.58)
+            fillColor = RadialPaletteTheme.selectedBackground
         } else {
-            fillColor = NSColor(calibratedWhite: 0.15, alpha: 0.82)
+            fillColor = RadialPaletteTheme.cellBackground
         }
         layer.fillColor = fillColor.cgColor
-        if cell.color != nil, cell.isSelected {
-            layer.strokeColor = NSColor.white.withAlphaComponent(0.96).cgColor
-            layer.lineWidth = 3.2
-        } else if cell.color != nil, cell.identifier == hoveredIdentifier {
-            layer.strokeColor = NSColor.controlAccentColor.withAlphaComponent(0.96).cgColor
-            layer.lineWidth = 2
+        if isHovered {
+            layer.strokeColor = RadialPaletteTheme.hoverBorder.cgColor
+            layer.lineWidth = RadialPaletteMetrics.hoverStrokeWidth
+        } else if cell.color != nil {
+            layer.strokeColor = RadialPaletteTheme.colorCellBorder.cgColor
+            layer.lineWidth = RadialPaletteMetrics.colorCellStrokeWidth
+        } else if cell.isSelected {
+            layer.strokeColor = RadialPaletteTheme.selectedBorder.cgColor
+            layer.lineWidth = RadialPaletteMetrics.selectedStrokeWidth
         } else {
-            layer.strokeColor = NSColor.white.withAlphaComponent(0.12).cgColor
-            layer.lineWidth = 0.6
+            layer.strokeColor = RadialPaletteTheme.cellBorder.cgColor
+            layer.lineWidth = RadialPaletteMetrics.cellStrokeWidth
         }
         rootLayer.addSublayer(layer)
+
+        if cell.color != nil, cell.isSelected, !isHovered {
+            addDoubleOutline(
+                path: path,
+                outerColor: RadialPaletteTheme.selectionOuter,
+                outerWidth: RadialPaletteMetrics.colorSelectionOuterWidth,
+                innerColor: RadialPaletteTheme.selectionInner,
+                innerWidth: RadialPaletteMetrics.colorSelectionInnerWidth,
+                to: rootLayer
+            )
+        }
+        if isFocused {
+            addDoubleOutline(
+                path: path,
+                outerColor: RadialPaletteTheme.focusOuter,
+                outerWidth: RadialPaletteMetrics.focusOuterWidth,
+                innerColor: RadialPaletteTheme.focusInner,
+                innerWidth: RadialPaletteMetrics.focusInnerWidth,
+                to: rootLayer
+            )
+        }
 
         let angle = (cell.startAngle + cell.endAngle) / 2
         let radius = (cell.innerRadius + cell.outerRadius) / 2
@@ -1425,31 +1819,54 @@ final class RadialPaletteController: NSObject {
             return
         }
 
+        let contentColor: NSColor
+        if !cell.isEnabled {
+            contentColor = RadialPaletteTheme.disabledContent
+        } else if cell.color != nil {
+            contentColor = textColor(for: fillColor)
+        } else if cell.isSelected, !isHovered {
+            contentColor = RadialPaletteTheme.selectedContent
+        } else {
+            contentColor = RadialPaletteTheme.primaryContent
+        }
+
         switch cell.ring {
         case .group:
             if let iconName = cell.iconName {
-                addSymbol(iconName, at: CGPoint(x: position.x, y: position.y + 4), size: 13, to: rootLayer)
+                addSymbol(
+                    iconName,
+                    at: CGPoint(x: position.x, y: position.y + 4),
+                    size: 13,
+                    color: contentColor,
+                    to: rootLayer
+                )
             }
             addText(
                 cell.shortLabel,
                 at: CGPoint(x: position.x, y: position.y - 9),
                 size: 7.5,
-                color: cell.isEnabled ? .labelColor : .disabledControlTextColor,
+                color: contentColor,
                 to: rootLayer
             )
         case .entry:
             if let iconName = cell.iconName {
-                addSymbol(iconName, at: position, size: 14, to: rootLayer)
+                addSymbol(iconName, at: position, size: 14, color: contentColor, to: rootLayer)
             }
         case .option:
             if let iconName = cell.iconName {
-                addSymbol(iconName, at: CGPoint(x: position.x, y: position.y + 3), size: 10, to: rootLayer)
+                addSymbol(
+                    iconName,
+                    at: CGPoint(x: position.x, y: position.y + 3),
+                    size: 10,
+                    color: contentColor,
+                    to: rootLayer
+                )
             }
             addText(
                 cell.shortLabel,
                 at: CGPoint(x: position.x, y: position.y - (cell.iconName == nil ? 0 : 7)),
                 size: 8,
-                color: textColor(for: fillColor),
+                color: contentColor,
                 to: rootLayer
             )
         }
@@ -1505,21 +1922,18 @@ final class RadialPaletteController: NSObject {
                         + RadialPaletteMetrics.optionOuterRadius) / 2,
                 angle: angle
             )
-            if !fitsGroupArc {
-                addPropertyLabelBackground(
-                    at: position,
-                    textWidth: textWidth,
-                    font: font,
-                    to: rootLayer
-                )
-            }
+            addPropertyLabelBackground(
+                at: position,
+                textWidth: textWidth,
+                font: font,
+                to: rootLayer
+            )
             addText(
                 group.name,
                 at: position,
                 size: RadialPaletteMetrics.propertyLabelFontSize,
                 weight: .semibold,
-                // The palette disc is always dark, so a system label color (dark in light mode) vanishes on it.
-                color: fitsGroupArc ? NSColor.white.withAlphaComponent(0.85) : .labelColor,
+                color: RadialPaletteTheme.chipContent,
                 to: rootLayer
             )
         }
@@ -1546,18 +1960,21 @@ final class RadialPaletteController: NSObject {
             cornerHeight: height / 2,
             transform: nil
         )
-        background.fillColor = NSColor(calibratedWhite: 0.08, alpha: 0.92).cgColor
+        background.fillColor = RadialPaletteTheme.chipBackground.cgColor
+        background.strokeColor = RadialPaletteTheme.chipBorder.cgColor
+        background.lineWidth = RadialPaletteMetrics.chipStrokeWidth
         rootLayer.addSublayer(background)
     }
 
     private func addCenterLayer(
         center: CGPoint,
         isHovered: Bool,
+        isFocused: Bool,
         scale: CGFloat,
         to rootLayer: CALayer
     ) {
         let centerLayer = CAShapeLayer()
-        centerLayer.path = CGPath(
+        let path = CGPath(
             ellipseIn: CGRect(
                 x: center.x - RadialPaletteMetrics.centerRadius,
                 y: center.y - RadialPaletteMetrics.centerRadius,
@@ -1566,17 +1983,35 @@ final class RadialPaletteController: NSObject {
             ),
             transform: nil
         )
+        centerLayer.path = path
         centerLayer.fillColor = (isHovered
-            ? NSColor.controlAccentColor.withAlphaComponent(0.64)
-            : NSColor(calibratedWhite: 0.12, alpha: 0.94)).cgColor
+            ? RadialPaletteTheme.hoverBackground
+            : RadialPaletteTheme.diskBackground).cgColor
         centerLayer.strokeColor = centerColor().cgColor
         centerLayer.lineWidth = centerStrokeWidth()
         rootLayer.addSublayer(centerLayer)
 
+        if isFocused {
+            addDoubleOutline(
+                path: path,
+                outerColor: RadialPaletteTheme.focusOuter,
+                outerWidth: RadialPaletteMetrics.focusOuterWidth,
+                innerColor: RadialPaletteTheme.focusInner,
+                innerWidth: RadialPaletteMetrics.focusInnerWidth,
+                to: rootLayer
+            )
+        }
+
         if showsKeyCaps, let shortcut = centerDefinition()?.displayKeys, !shortcut.isEmpty {
             addKeyCap(shortcut, at: center, to: rootLayer)
         } else if let iconName = centerDefinition()?.iconName {
-            addSymbol(iconName, at: center, size: 18, to: rootLayer)
+            addSymbol(
+                iconName,
+                at: center,
+                size: 18,
+                color: RadialPaletteTheme.primaryContent,
+                to: rootLayer
+            )
         }
         _ = scale
     }
@@ -1606,6 +2041,29 @@ final class RadialPaletteController: NSObject {
         case .select, .cover: value = 2
         }
         return min(max(value / 3, 2), 6)
+    }
+
+    private func addDoubleOutline(
+        path: CGPath,
+        outerColor: NSColor,
+        outerWidth: CGFloat,
+        innerColor: NSColor,
+        innerWidth: CGFloat,
+        to rootLayer: CALayer
+    ) {
+        let outer = CAShapeLayer()
+        outer.path = path
+        outer.fillColor = nil
+        outer.strokeColor = outerColor.cgColor
+        outer.lineWidth = outerWidth
+        rootLayer.addSublayer(outer)
+
+        let inner = CAShapeLayer()
+        inner.path = path
+        inner.fillColor = nil
+        inner.strokeColor = innerColor.cgColor
+        inner.lineWidth = innerWidth
+        rootLayer.addSublayer(inner)
     }
 
     private func sectorPath(
@@ -1659,6 +2117,7 @@ final class RadialPaletteController: NSObject {
         _ name: String,
         at position: CGPoint,
         size: CGFloat,
+        color: NSColor,
         to rootLayer: CALayer
     ) {
         guard let image = NSImage(
@@ -1671,12 +2130,22 @@ final class RadialPaletteController: NSObject {
         else {
             return
         }
-        let layer = CALayer()
-        layer.frame = CGRect(x: position.x - size / 2, y: position.y - size / 2, width: size, height: size)
-        layer.contents = cgImage
-        layer.contentsGravity = .resizeAspect
-        layer.contentsScale = panel.backingScaleFactor
-        rootLayer.addSublayer(layer)
+        let mask = CALayer()
+        mask.frame = CGRect(origin: .zero, size: CGSize(width: size, height: size))
+        mask.contents = cgImage
+        mask.contentsGravity = .resizeAspect
+        mask.contentsScale = panel.backingScaleFactor
+
+        let colorLayer = CALayer()
+        colorLayer.frame = CGRect(
+            x: position.x - size / 2,
+            y: position.y - size / 2,
+            width: size,
+            height: size
+        )
+        colorLayer.backgroundColor = color.cgColor
+        colorLayer.mask = mask
+        rootLayer.addSublayer(colorLayer)
     }
 
     private func addText(
@@ -1727,19 +2196,29 @@ final class RadialPaletteController: NSObject {
             cornerHeight: 5,
             transform: nil
         )
-        background.fillColor = NSColor.windowBackgroundColor.withAlphaComponent(0.94).cgColor
-        background.strokeColor = NSColor.separatorColor.cgColor
-        background.lineWidth = 0.7
+        background.fillColor = RadialPaletteTheme.chipBackground.cgColor
+        background.strokeColor = RadialPaletteTheme.chipBorder.cgColor
+        background.lineWidth = RadialPaletteMetrics.chipStrokeWidth
         rootLayer.addSublayer(background)
-        addText(text, at: position, size: 8.5, color: .labelColor, to: rootLayer)
+        addText(
+            text,
+            at: position,
+            size: 8.5,
+            color: RadialPaletteTheme.chipContent,
+            to: rootLayer
+        )
     }
 
     private func textColor(for background: NSColor) -> NSColor {
-        guard let rgb = background.usingColorSpace(.deviceRGB) else { return .labelColor }
+        guard let rgb = background.usingColorSpace(.sRGB) else {
+            return RadialPaletteTheme.primaryContent
+        }
         let luminance = 0.2126 * rgb.redComponent
             + 0.7152 * rgb.greenComponent
             + 0.0722 * rgb.blueComponent
-        return luminance > 0.55 ? .black : .white
+        return luminance > 0.55
+            ? RadialPaletteTheme.primaryContent
+            : RadialPaletteTheme.selectedContent
     }
 
     deinit {
