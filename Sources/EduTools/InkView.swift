@@ -683,7 +683,9 @@ final class InkView: NSView {
             }
             return
         }
-        guard definition.command == .showHelp else {
+        guard definition.command == .showHelp
+            || definition.command == .togglePassThroughMode
+        else {
             super.keyUp(with: event)
             return
         }
