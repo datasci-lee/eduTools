@@ -43,6 +43,7 @@ final class AppCommandDispatcher {
              .saveCurrentContent,
              .copyCurrentImage,
              .togglePalette,
+             .toggleRadialPalette,
              .stepBack,
              .showHelp,
              .adjustZoom,
@@ -80,6 +81,15 @@ final class AppCommandDispatcher {
             zoomController?.finishPreview()
         default:
             break
+        }
+    }
+
+    func shouldConsume(_ command: AppCommand) -> Bool {
+        switch command {
+        case .toggleRadialPalette:
+            return radialPaletteController?.canToggleExpansionFromKeyboard == true
+        default:
+            return true
         }
     }
 
@@ -165,6 +175,8 @@ final class AppCommandDispatcher {
             exportController?.copyCurrentImage()
         case .togglePalette:
             state.togglePaletteVisibility()
+        case .toggleRadialPalette:
+            radialPaletteController?.toggleExpansionFromKeyboard()
         case .stepBack:
             if radialPaletteController?.collapseIfExpanded() == true {
                 return

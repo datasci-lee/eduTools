@@ -636,6 +636,10 @@ final class InkView: NSView {
             super.keyDown(with: event)
             return
         }
+        guard dispatcher.shouldConsume(definition.command) else {
+            super.keyDown(with: event)
+            return
+        }
         if !event.isARepeat {
             pressedShortcutDefinitions[event.keyCode] = definition
         }

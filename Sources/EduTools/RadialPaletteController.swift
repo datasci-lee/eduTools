@@ -720,6 +720,10 @@ final class RadialPaletteController: NSObject {
         CGPoint(x: panel.frame.midX, y: panel.frame.midY)
     }
 
+    var canToggleExpansionFromKeyboard: Bool {
+        settingsStore.settings.tools.paletteStyle == .radial
+    }
+
     init(
         state: AppState,
         dispatcher: AppCommandDispatcher,
@@ -1037,6 +1041,19 @@ final class RadialPaletteController: NSObject {
         return true
     }
 
+    func toggleExpansionFromKeyboard() {
+        guard canToggleExpansionFromKeyboard else { return }
+        if isExpanded {
+            collapse()
+            return
+        }
+        if !state.isPaletteVisible {
+            state.togglePaletteVisibility()
+        }
+        expand()
+        showInitialKeyboardFocus()
+    }
+
     private func expand() {
         guard !isExpanded else { return }
         // A hint shown while collapsed is placed beside the small disc and would sit on the rings.
@@ -1063,6 +1080,15 @@ final class RadialPaletteController: NSObject {
     private func resetKeyboardNavigation() {
         keyboardFocus = nil
         showsKeyboardFocus = false
+    }
+
+    private func showInitialKeyboardFocus() {
+        let cells = layoutCells()
+        keyboardFocus = initialKeyboardFocus(in: cells)
+        showsKeyboardFocus = keyboardFocus != nil
+        paletteView.clearHoverForKeyboardNavigation()
+        paletteView.redraw()
+        showKeyboardFocusHint(in: cells)
     }
 
     fileprivate func activate(_ target: RadialPaletteHitTarget) {
