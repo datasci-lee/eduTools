@@ -335,8 +335,11 @@ final class StatusMenu: NSObject {
 
         let symbolName = isEnabled ? "pencil.circle.fill" : "pencil"
         let description = isEnabled ? "판서 모드 켜짐" : "판서 모드 꺼짐"
-        let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: description)
-        image?.isTemplate = true
+        let image = AppIcon.image(
+            key: isEnabled ? AppIcon.Key.statusAnnotationOn : AppIcon.Key.statusAnnotationOff,
+            fallbackSystemName: symbolName,
+            accessibilityDescription: description
+        )
         statusItem.button?.image = image
         statusItem.button?.toolTip = description
     }

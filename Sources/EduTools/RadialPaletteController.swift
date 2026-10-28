@@ -90,6 +90,7 @@ private struct RadialPaletteEntry {
 
 private struct RadialPaletteGroupDefinition {
     let id: RadialPaletteGroupID
+    let iconKey: String
     let name: String
     let iconName: String
     let isEnabled: Bool
@@ -100,6 +101,7 @@ private enum RadialPaletteCatalog {
     static let groups: [RadialPaletteGroupDefinition] = [
         RadialPaletteGroupDefinition(
             id: .writing,
+            iconKey: "group.writing",
             name: "작성",
             iconName: "pencil.and.outline",
             isEnabled: true,
@@ -111,6 +113,7 @@ private enum RadialPaletteCatalog {
         ),
         RadialPaletteGroupDefinition(
             id: .shapes,
+            iconKey: "group.shapes",
             name: "도형",
             iconName: "square.on.circle",
             isEnabled: true,
@@ -122,6 +125,7 @@ private enum RadialPaletteCatalog {
         ),
         RadialPaletteGroupDefinition(
             id: .erasing,
+            iconKey: "group.erasing",
             name: "지우기",
             iconName: "eraser",
             isEnabled: true,
@@ -134,6 +138,7 @@ private enum RadialPaletteCatalog {
         ),
         RadialPaletteGroupDefinition(
             id: .boardAndSettings,
+            iconKey: "group.board",
             name: "보드·설정",
             iconName: "rectangle.on.rectangle",
             isEnabled: true,
@@ -152,6 +157,7 @@ private enum RadialPaletteCatalog {
         ),
         RadialPaletteGroupDefinition(
             id: .presenting,
+            iconKey: "group.presenting",
             name: "발표",
             iconName: "person.fill.viewfinder",
             isEnabled: true,
@@ -166,12 +172,19 @@ private enum RadialPaletteCatalog {
         ),
         RadialPaletteGroupDefinition(
             id: .favorites,
+            iconKey: "group.favorites",
             name: "즐겨찾기",
             iconName: "star.fill",
             isEnabled: false,
             entries: []
         ),
     ]
+
+    static var iconKeys: Set<String> {
+        Set(groups.flatMap { group in
+            [group.iconKey] + group.entries.map(\.identifier)
+        })
+    }
 
     static func definition(for id: RadialPaletteGroupID) -> RadialPaletteGroupDefinition {
         guard let definition = groups.first(where: { $0.id == id }) else {
@@ -203,6 +216,7 @@ private struct RadialPaletteOption {
     let identifier: String
     let name: String
     let shortLabel: String
+    let iconKey: String?
     let iconName: String?
     let color: NSColor?
     let shortcut: String
@@ -226,6 +240,7 @@ private struct RadialPaletteCell {
     let ring: RadialPaletteRing
     let geometry: RadialPaletteSectorGeometry
     let name: String
+    let iconKey: String?
     let iconName: String?
     let shortLabel: String
     let shortcut: String
@@ -627,6 +642,8 @@ private final class RadialPaletteView: NSView {
 }
 
 final class RadialPaletteController: NSObject {
+    static var iconKeys: Set<String> { RadialPaletteCatalog.iconKeys }
+
     private enum DefaultsKey {
         static let positions = "EduTools.radialPalette.positions"
         static let displayUUID = "EduTools.radialPalette.displayUUID"
@@ -1316,6 +1333,7 @@ final class RadialPaletteController: NSObject {
                             - RadialPaletteMetrics.sectorGap
                     ),
                     name: group.name,
+                    iconKey: group.iconKey,
                     iconName: group.iconName,
                     shortLabel: group.name,
                     shortcut: "",
@@ -1349,6 +1367,7 @@ final class RadialPaletteController: NSObject {
                             endAngle: cellEnd
                         ),
                         name: entry.name,
+                        iconKey: entry.identifier,
                         iconName: entry.iconName,
                         shortLabel: "",
                         shortcut: entry.shortcut,
@@ -1383,6 +1402,7 @@ final class RadialPaletteController: NSObject {
                                 endAngle: cellEnd
                             ),
                             name: option.name,
+                            iconKey: option.iconKey,
                             iconName: option.iconName,
                             shortLabel: option.shortLabel,
                             shortcut: option.shortcut,
@@ -1496,6 +1516,7 @@ final class RadialPaletteController: NSObject {
                 identifier: "ink.color.\(index)",
                 name: definition.name,
                 shortLabel: String(index + 1),
+                iconKey: nil,
                 iconName: nil,
                 color: state.colorPresets[index],
                 shortcut: definition.displayKeys,
@@ -1519,6 +1540,7 @@ final class RadialPaletteController: NSObject {
                 identifier: "\(idPrefix).\(label)",
                 name: "\(propertyName) \(label)",
                 shortLabel: label,
+                iconKey: nil,
                 iconName: nil,
                 color: nil,
                 shortcut: "",
@@ -1536,6 +1558,7 @@ final class RadialPaletteController: NSObject {
                 identifier: "highlighter.opacity.\(percent)",
                 name: "투명도 \(percent)%",
                 shortLabel: "\(percent)",
+                iconKey: nil,
                 iconName: nil,
                 color: nil,
                 shortcut: "",
@@ -1558,6 +1581,7 @@ final class RadialPaletteController: NSObject {
                 identifier: "\(idPrefix).\(value)",
                 name: "\(name) \(value ? "켬" : "끔")",
                 shortLabel: value ? "켬" : "끔",
+                iconKey: value ? AppIcon.Key.optionOn : AppIcon.Key.optionOff,
                 iconName: value ? "checkmark" : "xmark",
                 color: nil,
                 shortcut: "",
@@ -1575,6 +1599,9 @@ final class RadialPaletteController: NSObject {
                 identifier: "arrow.style.\(style.rawValue)",
                 name: style.displayName,
                 shortLabel: style.displayName,
+                iconKey: style == .single
+                    ? AppIcon.Key.optionArrowSingle
+                    : AppIcon.Key.optionArrowDouble,
                 iconName: style == .single ? "arrow.right" : "arrow.left.and.right",
                 color: nil,
                 shortcut: "",
@@ -1592,6 +1619,7 @@ final class RadialPaletteController: NSObject {
                 identifier: "eraser.mode.\(shortLabel)",
                 name: mode.displayName,
                 shortLabel: shortLabel,
+                iconKey: nil,
                 iconName: nil,
                 color: nil,
                 shortcut: "",
@@ -1606,6 +1634,7 @@ final class RadialPaletteController: NSObject {
                 identifier: "eraser.size.\(index)",
                 name: "지우개 크기 \(label)",
                 shortLabel: label,
+                iconKey: nil,
                 iconName: nil,
                 color: nil,
                 shortcut: "",
@@ -1618,6 +1647,9 @@ final class RadialPaletteController: NSObject {
                 identifier: "eraser.area.\(shape == .rectangle ? "rectangle" : "lasso")",
                 name: shape.displayName,
                 shortLabel: shape.displayName,
+                iconKey: shape == .rectangle
+                    ? AppIcon.Key.optionAreaRectangle
+                    : AppIcon.Key.optionAreaLasso,
                 iconName: shape == .rectangle ? "rectangle.dashed" : "lasso",
                 color: nil,
                 shortcut: "",
@@ -1640,6 +1672,7 @@ final class RadialPaletteController: NSObject {
                 identifier: "laser.color.\(index)",
                 name: definition.name,
                 shortLabel: String(index + 1),
+                iconKey: nil,
                 iconName: nil,
                 color: color,
                 shortcut: "",
@@ -1657,6 +1690,7 @@ final class RadialPaletteController: NSObject {
                 identifier: "laser.trail.\(label)",
                 name: "레이저 꼬리 \(label)초",
                 shortLabel: label,
+                iconKey: nil,
                 iconName: nil,
                 color: nil,
                 shortcut: "",
@@ -1703,7 +1737,9 @@ final class RadialPaletteController: NSObject {
                     id: cell.identifier,
                     ring: cell.ring,
                     geometry: cell.geometry,
+                    iconKey: cell.iconKey,
                     iconName: cell.iconName,
+                    accessibilityLabel: cell.name,
                     shortLabel: cell.shortLabel,
                     shortcut: cell.shortcut,
                     color: cell.color,
@@ -1714,7 +1750,9 @@ final class RadialPaletteController: NSObject {
                 )
             },
             propertyLabels: renderPropertyLabels(for: cells),
+            centerIconKey: centerDefinition?.id,
             centerIconName: centerDefinition?.iconName,
+            centerAccessibilityLabel: centerDefinition?.name,
             centerShortcut: centerDefinition?.displayKeys ?? "",
             centerColor: centerColor(),
             centerStrokeWidth: centerStrokeWidth(),

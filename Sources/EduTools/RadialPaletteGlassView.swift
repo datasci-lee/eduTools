@@ -66,7 +66,9 @@ struct RadialPaletteRenderCell: Identifiable {
     let id: String
     let ring: RadialPaletteRing
     let geometry: RadialPaletteSectorGeometry
+    let iconKey: String?
     let iconName: String?
+    let accessibilityLabel: String
     let shortLabel: String
     let shortcut: String
     let color: NSColor?
@@ -88,7 +90,9 @@ struct RadialPaletteRenderState {
     let showsKeyCaps: Bool
     let cells: [RadialPaletteRenderCell]
     let propertyLabels: [RadialPaletteRenderPropertyLabel]
+    let centerIconKey: String?
     let centerIconName: String?
+    let centerAccessibilityLabel: String?
     let centerShortcut: String
     let centerColor: NSColor
     let centerStrokeWidth: CGFloat
@@ -101,7 +105,9 @@ struct RadialPaletteRenderState {
         showsKeyCaps: false,
         cells: [],
         propertyLabels: [],
+        centerIconKey: nil,
         centerIconName: nil,
+        centerAccessibilityLabel: nil,
         centerShortcut: "",
         centerColor: .clear,
         centerStrokeWidth: 2,
@@ -250,14 +256,19 @@ struct RadialPaletteGlassView: View {
     @ViewBuilder
     private func cellContent(_ cell: RadialPaletteRenderCell) -> some View {
         let contentColor = contentColor(for: cell)
+        let icon = iconImage(for: cell)
         switch cell.ring {
         case .group:
             ZStack {
-                if let iconName = cell.iconName {
-                    Image(systemName: iconName)
-                        .font(.system(size: 13, weight: .medium))
+                if let icon {
+                    Image(nsImage: icon)
+                        .renderingMode(.template)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 13, height: 13)
                         .foregroundStyle(contentColor)
                         .offset(y: -4)
+                        .accessibilityLabel(Text(cell.accessibilityLabel))
                 }
                 Text(cell.shortLabel)
                     .font(.system(size: 7.5, weight: .medium))
@@ -265,25 +276,43 @@ struct RadialPaletteGlassView: View {
                     .offset(y: 9)
             }
         case .entry:
-            if let iconName = cell.iconName {
-                Image(systemName: iconName)
-                    .font(.system(size: 14, weight: .medium))
+            if let icon {
+                Image(nsImage: icon)
+                    .renderingMode(.template)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 14, height: 14)
                     .foregroundStyle(contentColor)
+                    .accessibilityLabel(Text(cell.accessibilityLabel))
             }
         case .option:
             ZStack {
-                if let iconName = cell.iconName {
-                    Image(systemName: iconName)
-                        .font(.system(size: 10, weight: .medium))
+                if let icon {
+                    Image(nsImage: icon)
+                        .renderingMode(.template)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 10, height: 10)
                         .foregroundStyle(contentColor)
                         .offset(y: -3)
+                        .accessibilityLabel(Text(cell.accessibilityLabel))
                 }
                 Text(cell.shortLabel)
                     .font(.system(size: 8, weight: .medium))
                     .foregroundStyle(contentColor)
-                    .offset(y: cell.iconName == nil ? 0 : 7)
+                    .offset(y: icon == nil ? 0 : 7)
             }
         }
+    }
+
+    private func iconImage(for cell: RadialPaletteRenderCell) -> NSImage? {
+        guard let iconKey = cell.iconKey, let iconName = cell.iconName else { return nil }
+        return AppIcon.image(
+            key: iconKey,
+            fallbackSystemName: iconName,
+            selected: cell.isSelected,
+            accessibilityDescription: cell.accessibilityLabel
+        )
     }
 
     private func propertyLabel(
@@ -337,10 +366,22 @@ struct RadialPaletteGlassView: View {
 
             if state.showsKeyCaps, !state.centerShortcut.isEmpty {
                 keyCap(state.centerShortcut)
-            } else if let iconName = state.centerIconName {
-                Image(systemName: iconName)
-                    .font(.system(size: 18, weight: .medium))
+            } else if let iconKey = state.centerIconKey,
+                      let iconName = state.centerIconName,
+                      let icon = AppIcon.image(
+                          key: iconKey,
+                          fallbackSystemName: iconName,
+                          selected: true,
+                          accessibilityDescription: state.centerAccessibilityLabel
+                      )
+            {
+                Image(nsImage: icon)
+                    .renderingMode(.template)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 18, height: 18)
                     .foregroundStyle(state.centerIsPassThroughEnabled ? .white : .primary)
+                    .accessibilityLabel(Text(state.centerAccessibilityLabel ?? iconKey))
             }
         }
         .frame(

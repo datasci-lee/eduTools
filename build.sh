@@ -15,6 +15,8 @@ MODULE_CACHE_DIR="$DIST_DIR/module-cache"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 EXECUTABLE_DIR="$APP_BUNDLE/Contents/MacOS"
 RESOURCES_DIR="$APP_BUNDLE/Contents/Resources"
+ICON_ASSETS_DIR="$ROOT_DIR/assets/icons"
+BUNDLED_ICONS_DIR="$RESOURCES_DIR/Icons"
 ICON_SOURCE="$BUILD_DIR/IconGenerator.swift"
 ICON_GENERATOR="$BUILD_DIR/icon-generator"
 ICONSET_DIR="$BUILD_DIR/$APP_NAME.iconset"
@@ -278,6 +280,16 @@ if ! "$ICONUTIL" -c icns "$ICONSET_DIR" -o "$RESOURCES_DIR/$APP_NAME.icns"; then
     /bin/cp "$GENERATED_ICNS" "$RESOURCES_DIR/$APP_NAME.icns"
 fi
 test -s "$RESOURCES_DIR/$APP_NAME.icns"
+
+mkdir -p "$BUNDLED_ICONS_DIR"
+icon_asset_count=0
+shopt -s nullglob
+for icon_asset in "$ICON_ASSETS_DIR"/*.svg "$ICON_ASSETS_DIR"/*.pdf; do
+    /bin/cp "$icon_asset" "$BUNDLED_ICONS_DIR/"
+    icon_asset_count=$((icon_asset_count + 1))
+done
+shopt -u nullglob
+echo "Copied $icon_asset_count icon asset(s) to $BUNDLED_ICONS_DIR"
 
 cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
