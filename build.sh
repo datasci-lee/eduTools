@@ -66,6 +66,7 @@ for arch in "${ARCHITECTURES[@]}"; do
         -framework CoreImage \
         -framework CoreMedia \
         -framework CoreVideo \
+        -framework IOKit \
         -framework QuartzCore \
         -framework ScreenCaptureKit \
         -framework ServiceManagement \

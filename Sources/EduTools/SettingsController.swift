@@ -64,7 +64,7 @@ final class SettingsController: NSObject {
         let rootView = SettingsRootView(store: settingsStore, actions: actions)
         let hostingController = NSHostingController(rootView: rootView)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 780, height: 660),
+            contentRect: NSRect(x: 0, y: 0, width: 980, height: 700),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
@@ -419,10 +419,12 @@ private struct SettingsRootView: View {
             zoomTab.tabItem { Label("줌", systemImage: "plus.magnifyingglass") }
             boardTab.tabItem { Label("보드", systemImage: "rectangle.fill") }
             timerTab.tabItem { Label("타이머", systemImage: "timer") }
+            DisplayPresetsSettingsView(store: store)
+                .tabItem { Label("화면", systemImage: "display.2") }
             shortcutsTab.tabItem { Label("단축키", systemImage: "keyboard") }
         }
         .padding(14)
-        .frame(minWidth: 720, minHeight: 590)
+        .frame(minWidth: 900, minHeight: 620)
         .alert(
             "설정을 적용할 수 없습니다",
             isPresented: Binding(
