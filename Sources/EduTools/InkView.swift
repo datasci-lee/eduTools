@@ -1404,6 +1404,8 @@ final class InkView: NSView {
         bitmap.size = drawingBounds.size
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = graphicsContext
+        // The context was created from a pixel-sized rep, so its CTM is in pixels; map points to pixels.
+        graphicsContext.cgContext.scaleBy(x: scale, y: scale)
         graphicsContext.cgContext.translateBy(x: -drawingBounds.minX, y: -drawingBounds.minY)
         draw(stroke: stroke, samples: samples, in: graphicsContext.cgContext)
         graphicsContext.flushGraphics()
