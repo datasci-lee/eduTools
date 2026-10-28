@@ -513,6 +513,17 @@ private struct SettingsRootView: View {
                 }
             }
             .pickerStyle(.segmented)
+            VStack(alignment: .leading, spacing: 4) {
+                slider(
+                    "팔레트 불투명도",
+                    keyPath: \.tools.paletteGlassOpacity,
+                    range: RadialPaletteGlassStyle.minimumOpacity...RadialPaletteGlassStyle.maximumOpacity,
+                    step: 0.01
+                )
+                Text("낮을수록 투명, 어두운 화면에서는 읽기 어려울 수 있음")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section("색상 프리셋") {
                 HStack {
                     ForEach(store.settings.tools.colors.indices, id: \.self) { index in

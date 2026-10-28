@@ -1184,6 +1184,7 @@ func runSelfTests() -> Int32 {
             tools["highlighterWidth"] = memory.highlighter.size
             tools["textFontSize"] = memory.text.size
             tools.removeValue(forKey: "perToolMemory")
+            tools.removeValue(forKey: "paletteGlassOpacity")
             object["tools"] = tools
         }
         if let data = try? JSONSerialization.data(withJSONObject: object),
