@@ -17,6 +17,8 @@ EXECUTABLE_DIR="$APP_BUNDLE/Contents/MacOS"
 RESOURCES_DIR="$APP_BUNDLE/Contents/Resources"
 ICON_ASSETS_DIR="$ROOT_DIR/assets/icons"
 BUNDLED_ICONS_DIR="$RESOURCES_DIR/Icons"
+ATTR_ICON_ASSETS_DIR="$ROOT_DIR/assets/symbols/attr"
+BUNDLED_ATTR_ICONS_DIR="$BUNDLED_ICONS_DIR/Attr"
 ICON_SOURCE="$BUILD_DIR/IconGenerator.swift"
 ICON_GENERATOR="$BUILD_DIR/icon-generator"
 ICONSET_DIR="$BUILD_DIR/$APP_NAME.iconset"
@@ -290,6 +292,21 @@ for icon_asset in "$ICON_ASSETS_DIR"/*.svg "$ICON_ASSETS_DIR"/*.pdf; do
 done
 shopt -u nullglob
 echo "Copied $icon_asset_count icon asset(s) to $BUNDLED_ICONS_DIR"
+
+mkdir -p "$BUNDLED_ATTR_ICONS_DIR"
+attr_icon_asset_count=0
+shopt -s nullglob
+for attr_icon_asset in "$ATTR_ICON_ASSETS_DIR"/svg/*.svg; do
+    /bin/cp "$attr_icon_asset" "$BUNDLED_ATTR_ICONS_DIR/"
+    attr_icon_asset_count=$((attr_icon_asset_count + 1))
+done
+shopt -u nullglob
+attr_manifest_copied=0
+if [[ -f "$ATTR_ICON_ASSETS_DIR/manifest.json" ]]; then
+    /bin/cp "$ATTR_ICON_ASSETS_DIR/manifest.json" "$BUNDLED_ATTR_ICONS_DIR/manifest.json"
+    attr_manifest_copied=1
+fi
+echo "Copied $attr_icon_asset_count attr icon layer(s) and $attr_manifest_copied manifest to $BUNDLED_ATTR_ICONS_DIR"
 
 cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

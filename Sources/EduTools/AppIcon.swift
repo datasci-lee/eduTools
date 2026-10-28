@@ -63,6 +63,50 @@ enum AppIcon {
         return image
     }
 
+    static func image(
+        key: String,
+        fallbackSystemName: String,
+        selected: Bool = false,
+        attributeConfiguration: AttrIconConfiguration,
+        pointSize: CGFloat,
+        uiColor: NSColor,
+        visualState: AttrIconVisualState,
+        accessibilityDescription: String? = nil
+    ) -> NSImage? {
+        let backgroundColor = estimatedAttributeBackgroundColor(
+            selected: visualState.isSelected
+        )
+        if let image = AttrIcon.image(
+            configuration: attributeConfiguration,
+            pointSize: pointSize,
+            uiColor: uiColor,
+            backgroundColor: backgroundColor,
+            visualState: visualState,
+            accessibilityDescription: accessibilityDescription
+        ) {
+            return image
+        }
+
+        guard let fallback = image(
+            key: key,
+            fallbackSystemName: fallbackSystemName,
+            selected: selected,
+            accessibilityDescription: accessibilityDescription
+        ), let color = AttrIcon.colorComponents(uiColor)
+        else {
+            return nil
+        }
+        let size = NSSize(width: pointSize, height: pointSize)
+        let tinted = AttrIcon.tintedImage(base: fallback, size: size, color: color)
+        tinted.isTemplate = false
+        tinted.accessibilityDescription = accessibilityDescription
+        return tinted
+    }
+
+    static func effectiveAppearanceDidChange() {
+        AttrIcon.effectiveAppearanceDidChange()
+    }
+
     static func hasCustomAsset(key: String, selected: Bool = false) -> Bool {
         if selected, assetURL(named: "\(key).selected") != nil {
             return true
@@ -202,5 +246,14 @@ enum AppIcon {
         }
         image.isTemplate = true
         return image
+    }
+
+    /// Liquid Glass reveals an unknown desktop color, so attribute contrast uses this approximation.
+    private static func estimatedAttributeBackgroundColor(selected: Bool) -> NSColor {
+        if selected {
+            return .controlAccentColor
+        }
+        let match = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua])
+        return NSColor(calibratedWhite: match == .darkAqua ? 0.18 : 0.93, alpha: 1)
     }
 }

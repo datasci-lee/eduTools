@@ -64,6 +64,7 @@ final class PaletteController: NSObject {
     private var visibilityObserverIdentifier: UUID?
     private var boardObserverIdentifier: UUID?
     private var paletteStyleObserverIdentifier: UUID?
+    private var appearanceObservation: NSKeyValueObservation?
     private var notificationObservers: [NSObjectProtocol] = []
     private var orientation: Orientation
     private var isApplyingFrame = false
@@ -262,6 +263,11 @@ final class PaletteController: NSObject {
         paletteStyleObserverIdentifier = settingsStore.addObserver { [weak self] _ in
             self?.updateVisibility()
         }
+        appearanceObservation = NSApp.observe(\.effectiveAppearance, options: [.new]) {
+            [weak self] _, _ in
+            AppIcon.effectiveAppearanceDidChange()
+            self?.updateSelection()
+        }
 
         notificationObservers.append(
             NotificationCenter.default.addObserver(
@@ -313,7 +319,7 @@ final class PaletteController: NSObject {
             let isSelected = tool == state.currentTool
             button.state = isSelected ? .on : .off
             button.contentTintColor = isSelected ? .controlAccentColor : .labelColor
-            updateIcon(for: button, selected: isSelected)
+            updateToolIcon(for: button, tool: tool, selected: isSelected)
         }
         for (index, button) in colorButtons.enumerated() {
             if state.colorPresets.indices.contains(index) {
@@ -383,6 +389,33 @@ final class PaletteController: NSObject {
             key: definition.id,
             fallbackSystemName: definition.iconName,
             selected: selected,
+            accessibilityDescription: definition.name
+        )
+    }
+
+    private func updateToolIcon(for button: NSButton, tool: InkTool, selected: Bool) {
+        guard let definition = definition(for: button) else { return }
+        guard let configuration = AttrIcon.configuration(
+            for: tool,
+            state: state,
+            settings: settingsStore.settings
+        ) else {
+            updateIcon(for: button, selected: selected)
+            return
+        }
+        button.image = AppIcon.image(
+            key: definition.id,
+            fallbackSystemName: definition.iconName,
+            selected: selected,
+            attributeConfiguration: configuration,
+            pointSize: 18,
+            uiColor: selected ? .controlAccentColor : .labelColor,
+            visualState: AttrIconVisualState(
+                isSelected: selected,
+                isEnabled: button.isEnabled,
+                isHovered: false,
+                isPassThrough: false
+            ),
             accessibilityDescription: definition.name
         )
     }
@@ -526,6 +559,7 @@ final class PaletteController: NSObject {
     }
 
     deinit {
+        appearanceObservation?.invalidate()
         if let annotationObserverIdentifier {
             state.removeAnnotationModeObserver(annotationObserverIdentifier)
         }

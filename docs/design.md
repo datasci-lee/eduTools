@@ -154,6 +154,25 @@ Oct 28, 2026 · @이경환
 
 펼친 지름은 280pt이며 원 전체가 현재 화면의 `visibleFrame` 안에 들어오도록 일시적으로 이동합니다. 접으면 저장된 중심 위치로 돌아옵니다. 원형 패널과 힌트는 화면 공유에서 제외합니다.
 
+### 도구 속성 아이콘
+
+원형 중심·2링 도구 칸·가로 팔레트 도구 버튼은 `assets/symbols/attr/manifest.json`의 레이어 규칙으로 현재 또는 도구별 마지막 설정을 합성합니다. 일반 아이콘 키와 단축키 표, 명령 실행 경로는 그대로 사용하며, 매니페스트나 레이어를 읽지 못하면 사유를 한 번 로그하고 일반 아이콘으로 돌아갑니다. 선택·화면 가리개처럼 매니페스트에 없는 도구와 1링·3링·도움말·메뉴바는 일반 아이콘을 유지합니다.
+
+| manifest 도구 | 앱 도구 | 속성 입력 |
+| --- | --- | --- |
+| `tool.pen` | `.pen` | `perToolMemory.pen` 색·크기 |
+| `tool.highlighter` | `.highlighter` | `perToolMemory.highlighter` 색·크기 |
+| `tool.text` | `.text` | `perToolMemory.text` 색·글자 크기 |
+| `tool.arrow` | `.arrow` | `perToolMemory.arrow` 색·크기, `arrowStyle`의 single/double |
+| `tool.rect` | `.rectangle` | `perToolMemory.rectangle` 색·크기, 채움 없음 |
+| `tool.circle` | `.ellipse` | `perToolMemory.ellipse` 색·크기, 채움 없음 |
+| `tool.eraser` | `.eraser` | 지름, partial→brush·stroke→stroke·area rectangle/lasso→rect/lasso |
+| `tool.laser` | `.laser` | `laserColor`, 꼬리 켬 |
+
+두께 단계는 `1 + min(3, floor(4t))`, `t = clamp((size - lo) / (hi - lo), 0, 1)`로 계산하고 `hi == lo`이면 2단계로 둡니다. 범위는 3링 정본인 `RadialPaletteMetrics.writingWidths`·`highlighterWidths`·`textSizes`의 최솟값과 최댓값, 지우개는 설정의 `presetDiameters` 최솟값과 최댓값을 사용합니다.
+
+`attr` 레이어와 바로 뒤 배경의 WCAG 상대휘도 명암비가 1.8 미만이면 `.fill`이 아닌 레이어를 0.5pt씩 사방으로 먼저 그려 1pt halo를 만듭니다. 밝은 배경은 검정 55%, 어두운 배경은 흰색 70%입니다. Liquid Glass 뒤 실제 화면색은 알 수 없으므로 선택 칸은 시스템 강조색, 그 밖은 시스템 모양에 따라 흰색 0.93 또는 0.18로 **근사**합니다. 설정·호버·선택·통과 모드·시스템 모양이 바뀌면 키+속성+렌더 상태 캐시 키로 이미지를 다시 선택하거나 합성합니다.
+
 ## 멀티 모니터·iPad(Apple Pencil) 지원
 
 iPad는 macOS **Sidecar**로 연결해 하나의 모니터처럼 다루고, Apple Pencil 입력은 펜 태블릿과 같은 경로로 받습니다. 따라서 별도 iPad 앱 없이 MVP에서 바로 지원할 수 있습니다.

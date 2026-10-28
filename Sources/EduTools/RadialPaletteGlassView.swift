@@ -68,6 +68,7 @@ struct RadialPaletteRenderCell: Identifiable {
     let geometry: RadialPaletteSectorGeometry
     let iconKey: String?
     let iconName: String?
+    let attributeConfiguration: AttrIconConfiguration?
     let accessibilityLabel: String
     let shortLabel: String
     let shortcut: String
@@ -92,6 +93,7 @@ struct RadialPaletteRenderState {
     let propertyLabels: [RadialPaletteRenderPropertyLabel]
     let centerIconKey: String?
     let centerIconName: String?
+    let centerAttributeConfiguration: AttrIconConfiguration?
     let centerAccessibilityLabel: String?
     let centerShortcut: String
     let centerColor: NSColor
@@ -107,6 +109,7 @@ struct RadialPaletteRenderState {
         propertyLabels: [],
         centerIconKey: nil,
         centerIconName: nil,
+        centerAttributeConfiguration: nil,
         centerAccessibilityLabel: nil,
         centerShortcut: "",
         centerColor: .clear,
@@ -262,7 +265,9 @@ struct RadialPaletteGlassView: View {
             ZStack {
                 if let icon {
                     Image(nsImage: icon)
-                        .renderingMode(.template)
+                        .renderingMode(
+                            cell.attributeConfiguration == nil ? .template : .original
+                        )
                         .resizable()
                         .scaledToFit()
                         .frame(width: 13, height: 13)
@@ -278,7 +283,7 @@ struct RadialPaletteGlassView: View {
         case .entry:
             if let icon {
                 Image(nsImage: icon)
-                    .renderingMode(.template)
+                    .renderingMode(cell.attributeConfiguration == nil ? .template : .original)
                     .resizable()
                     .scaledToFit()
                     .frame(width: 14, height: 14)
@@ -289,7 +294,9 @@ struct RadialPaletteGlassView: View {
             ZStack {
                 if let icon {
                     Image(nsImage: icon)
-                        .renderingMode(.template)
+                        .renderingMode(
+                            cell.attributeConfiguration == nil ? .template : .original
+                        )
                         .resizable()
                         .scaledToFit()
                         .frame(width: 10, height: 10)
@@ -307,6 +314,23 @@ struct RadialPaletteGlassView: View {
 
     private func iconImage(for cell: RadialPaletteRenderCell) -> NSImage? {
         guard let iconKey = cell.iconKey, let iconName = cell.iconName else { return nil }
+        if let configuration = cell.attributeConfiguration {
+            return AppIcon.image(
+                key: iconKey,
+                fallbackSystemName: iconName,
+                selected: cell.isSelected,
+                attributeConfiguration: configuration,
+                pointSize: 14,
+                uiColor: contentNSColor(for: cell),
+                visualState: AttrIconVisualState(
+                    isSelected: cell.isSelected,
+                    isEnabled: cell.isEnabled,
+                    isHovered: cell.isHovered,
+                    isPassThrough: false
+                ),
+                accessibilityDescription: cell.accessibilityLabel
+            )
+        }
         return AppIcon.image(
             key: iconKey,
             fallbackSystemName: iconName,
@@ -366,22 +390,19 @@ struct RadialPaletteGlassView: View {
 
             if state.showsKeyCaps, !state.centerShortcut.isEmpty {
                 keyCap(state.centerShortcut)
-            } else if let iconKey = state.centerIconKey,
-                      let iconName = state.centerIconName,
-                      let icon = AppIcon.image(
-                          key: iconKey,
-                          fallbackSystemName: iconName,
-                          selected: true,
-                          accessibilityDescription: state.centerAccessibilityLabel
-                      )
+            } else if let icon = centerIconImage(for: state)
             {
                 Image(nsImage: icon)
-                    .renderingMode(.template)
+                    .renderingMode(
+                        state.centerAttributeConfiguration == nil ? .template : .original
+                    )
                     .resizable()
                     .scaledToFit()
                     .frame(width: 18, height: 18)
                     .foregroundStyle(state.centerIsPassThroughEnabled ? .white : .primary)
-                    .accessibilityLabel(Text(state.centerAccessibilityLabel ?? iconKey))
+                    .accessibilityLabel(
+                        Text(state.centerAccessibilityLabel ?? state.centerIconKey ?? "도구")
+                    )
             }
         }
         .frame(
@@ -425,6 +446,45 @@ struct RadialPaletteGlassView: View {
             return .white
         }
         return .primary
+    }
+
+    private func contentNSColor(for cell: RadialPaletteRenderCell) -> NSColor {
+        if !cell.isEnabled {
+            return NSColor.secondaryLabelColor.withAlphaComponent(0.7)
+        }
+        if cell.isSelected, cell.color == nil {
+            return .white
+        }
+        return .labelColor
+    }
+
+    private func centerIconImage(for state: RadialPaletteRenderState) -> NSImage? {
+        guard let iconKey = state.centerIconKey, let iconName = state.centerIconName else {
+            return nil
+        }
+        if let configuration = state.centerAttributeConfiguration {
+            return AppIcon.image(
+                key: iconKey,
+                fallbackSystemName: iconName,
+                selected: true,
+                attributeConfiguration: configuration,
+                pointSize: 18,
+                uiColor: state.centerIsPassThroughEnabled ? .white : .labelColor,
+                visualState: AttrIconVisualState(
+                    isSelected: state.centerIsPassThroughEnabled,
+                    isEnabled: true,
+                    isHovered: state.centerIsHovered,
+                    isPassThrough: state.centerIsPassThroughEnabled
+                ),
+                accessibilityDescription: state.centerAccessibilityLabel
+            )
+        }
+        return AppIcon.image(
+            key: iconKey,
+            fallbackSystemName: iconName,
+            selected: true,
+            accessibilityDescription: state.centerAccessibilityLabel
+        )
     }
 
     private func baseBorderColor(for cell: RadialPaletteRenderCell) -> Color {
