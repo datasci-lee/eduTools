@@ -117,10 +117,7 @@ private final class LaserRenderer {
     private func redrawTrail() {
         let path = CGMutablePath()
         for trail in trails where trail.count > 1 {
-            path.move(to: trail[0].location)
-            for point in trail.dropFirst() {
-                path.addLine(to: point.location)
-            }
+            path.addPath(InkGeometry.laserTrailPath(trail.map(\.location)))
         }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
