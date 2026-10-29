@@ -24,12 +24,27 @@ private enum RadialPaletteEntryAction {
     case command(AppCommand)
     case openSettings
     case setPaletteStyle(PaletteStyle)
+    case saveFavorite
+    case applyFavorite(index: Int, favorite: FavoriteTool)
 }
 
 private struct RadialPaletteEntry {
     let action: RadialPaletteEntryAction
     let fallbackName: String?
     let fallbackIconName: String?
+    let isEnabled: Bool
+
+    init(
+        action: RadialPaletteEntryAction,
+        fallbackName: String?,
+        fallbackIconName: String?,
+        isEnabled: Bool = true
+    ) {
+        self.action = action
+        self.fallbackName = fallbackName
+        self.fallbackIconName = fallbackIconName
+        self.isEnabled = isEnabled
+    }
 
     static func command(_ command: AppCommand) -> RadialPaletteEntry {
         RadialPaletteEntry(action: .command(command), fallbackName: nil, fallbackIconName: nil)
@@ -49,6 +64,32 @@ private struct RadialPaletteEntry {
         )
     }
 
+    static func saveFavorite(name: String, isEnabled: Bool) -> RadialPaletteEntry {
+        RadialPaletteEntry(
+            action: .saveFavorite,
+            fallbackName: name,
+            fallbackIconName: "plus",
+            isEnabled: isEnabled
+        )
+    }
+
+    static func favorite(
+        _ favorite: FavoriteTool,
+        index: Int,
+        name: String
+    ) -> RadialPaletteEntry {
+        guard let tool = favorite.inkTool,
+              let sourceEntry = RadialPaletteCatalog.path(for: tool)?.entry
+        else {
+            preconditionFailure("A valid favorite tool is missing from the radial palette catalog")
+        }
+        return RadialPaletteEntry(
+            action: .applyFavorite(index: index, favorite: favorite),
+            fallbackName: name,
+            fallbackIconName: sourceEntry.iconName
+        )
+    }
+
     var definition: ShortcutDefinition? {
         guard case let .command(command) = action else { return nil }
         return ShortcutCatalog.definition(for: command)
@@ -61,6 +102,8 @@ private struct RadialPaletteEntry {
         switch action {
         case .openSettings: return "palette.settings"
         case let .setPaletteStyle(style): return "palette.style.\(style.rawValue)"
+        case .saveFavorite: return "palette.favorite.save"
+        case let .applyFavorite(index, _): return "palette.favorite.\(index)"
         case .command:
             preconditionFailure("A palette command is missing from ShortcutCatalog")
         }
@@ -85,6 +128,11 @@ private struct RadialPaletteEntry {
         case .command(.selectOrCycleEraser): return .eraser
         default: return nil
         }
+    }
+
+    var favorite: FavoriteTool? {
+        guard case let .applyFavorite(_, favorite) = action else { return nil }
+        return favorite
     }
 }
 
@@ -175,7 +223,7 @@ private enum RadialPaletteCatalog {
             iconKey: "group.favorites",
             name: "즐겨찾기",
             iconName: "star.fill",
-            isEnabled: false,
+            isEnabled: true,
             entries: []
         ),
     ]
@@ -590,6 +638,13 @@ private final class RadialPaletteView: NSView {
         }
     }
 
+    override func rightMouseDown(with event: NSEvent) {
+        guard let controller else { return }
+        let location = convert(event.locationInWindow, from: nil)
+        guard let target = controller.hitTarget(at: location, in: bounds) else { return }
+        _ = controller.removeFavorite(for: target)
+    }
+
     override func mouseDragged(with event: NSEvent) {
         guard pressedTargetIdentifier == "palette.center", controller != nil else { return }
         let current = NSEvent.mouseLocation
@@ -623,6 +678,9 @@ private final class RadialPaletteView: NSView {
         guard let target = controller.hitTarget(at: location, in: bounds),
               target.identifier == pressedIdentifier
         else {
+            return
+        }
+        if event.modifierFlags.contains(.option), controller.removeFavorite(for: target) {
             return
         }
         controller.activate(target)
@@ -677,6 +735,7 @@ final class RadialPaletteController: NSObject {
     private var showsKeyCaps = false
     private var keyboardFocus: RadialPaletteFocus?
     private var showsKeyboardFocus = false
+    private var isApplyingFavorite = false
     private var consumedPaletteKeyCodes: Set<UInt16> = []
     private var restingCenter = CGPoint.zero
     private var currentDisplayUUID: String?
@@ -759,8 +818,11 @@ final class RadialPaletteController: NSObject {
             self?.paletteView.redraw()
         }
         toolObserverIdentifier = state.addToolObserver { [weak self] _ in
-            self?.synchronizePathWithCurrentTool()
-            self?.paletteView.redraw()
+            guard let self else { return }
+            if !self.isApplyingFavorite {
+                self.synchronizePathWithCurrentTool()
+            }
+            self.paletteView.redraw()
         }
         toolSettingsObserverIdentifier = state.addToolSettingsObserver { [weak self] in
             self?.paletteView.redraw()
@@ -1104,7 +1166,53 @@ final class RadialPaletteController: NSObject {
             openSettings()
         case let .setPaletteStyle(style):
             settingsStore.update { $0.tools.paletteStyle = style }
+        case .saveFavorite:
+            saveCurrentFavorite()
+        case let .applyFavorite(_, favorite):
+            isApplyingFavorite = true
+            defer { isApplyingFavorite = false }
+            if state.applyFavorite(favorite) {
+                selectedEntryIdentifier = entry.identifier
+            }
         }
+    }
+
+    private func saveCurrentFavorite() {
+        guard let favorite = state.currentFavoriteSnapshot() else { return }
+        settingsStore.update { settings in
+            guard settings.tools.favorites.count < FavoritesDefaults.maximumCount,
+                  !settings.tools.favorites.contains(favorite)
+            else {
+                return
+            }
+            settings.tools.favorites.append(favorite)
+        }
+    }
+
+    @discardableResult
+    fileprivate func removeFavorite(for target: RadialPaletteHitTarget) -> Bool {
+        guard case let .cell(cell) = target,
+              case let .entry(entry) = cell.action,
+              case let .applyFavorite(index, favorite) = entry.action
+        else {
+            return false
+        }
+        var didRemove = false
+        let removed = settingsStore.update { settings in
+            guard settings.tools.favorites.indices.contains(index),
+                  settings.tools.favorites[index] == favorite
+            else {
+                return
+            }
+            settings.tools.favorites.remove(at: index)
+            didRemove = true
+        }
+        guard case .success = removed, didRemove else { return false }
+        selectedEntryIdentifier = nil
+        keyboardFocus = .cell("entry.palette.favorite.save")
+        tooltip.hide()
+        paletteView.redraw()
+        return true
     }
 
     fileprivate func hover(_ target: RadialPaletteHitTarget?, at screenPoint: CGPoint) {
@@ -1332,6 +1440,72 @@ final class RadialPaletteController: NSObject {
         return nil
     }
 
+    private func entries(for group: RadialPaletteGroupDefinition) -> [RadialPaletteEntry] {
+        guard group.id == .favorites else { return group.entries }
+
+        let favorites = settingsStore.settings.tools.favorites
+        let current = state.currentFavoriteSnapshot()
+        let isFull = favorites.count >= FavoritesDefaults.maximumCount
+        let isDuplicate = current.map(favorites.contains) == true
+        let saveStatus: String
+        if current == nil {
+            saveStatus = "현재 도구 저장 불가"
+        } else if isFull {
+            saveStatus = "최대 \(FavoritesDefaults.maximumCount)개"
+        } else if isDuplicate {
+            saveStatus = "이미 저장됨"
+        } else {
+            saveStatus = ""
+        }
+        let statusSuffix = saveStatus.isEmpty ? "" : " (\(saveStatus))"
+        let saveEntry = RadialPaletteEntry.saveFavorite(
+            name: "지금 설정 저장\(statusSuffix) · 저장한 칸을 우클릭하면 삭제됩니다",
+            isEnabled: current != nil && !isFull && !isDuplicate
+        )
+        return [saveEntry] + favorites.enumerated().map { index, favorite in
+            .favorite(favorite, index: index, name: favoriteDescription(favorite))
+        }
+    }
+
+    private func favoriteDescription(_ favorite: FavoriteTool) -> String {
+        guard let tool = favorite.inkTool else { return favorite.tool }
+        var parts = [tool.displayName]
+        if let colorIndex = favorite.colorIndex {
+            parts.append("색 \(colorIndex + 1)")
+        }
+        switch tool {
+        case .text:
+            parts.append("크기 \(formattedFavoriteValue(favorite.size))")
+        case .eraser:
+            parts.append("크기 \(formattedFavoriteValue(favorite.size))")
+            if let mode = favorite.decodedEraserMode,
+               let areaShape = favorite.decodedEraserAreaShape
+            {
+                switch mode {
+                case .partial: parts.append("부분 지우개")
+                case .stroke: parts.append("획 지우개")
+                case .area: parts.append("영역 지우개(\(areaShape.displayName))")
+                }
+            }
+        case .laser:
+            parts.append("꼬리 \(formattedFavoriteValue(favorite.size))초")
+        case .arrow:
+            parts.append("굵기 \(formattedFavoriteValue(favorite.size))")
+            if let style = favorite.decodedArrowStyle {
+                parts.append("\(style.displayName) 화살표")
+            }
+        case .pen, .highlighter, .rectangle, .ellipse:
+            parts.append("굵기 \(formattedFavoriteValue(favorite.size))")
+        case .select, .cover:
+            break
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func formattedFavoriteValue(_ value: Double) -> String {
+        value.rounded() == value ? String(Int(value)) : String(format: "%.1f", value)
+    }
+
     private func layoutCells() -> [RadialPaletteCell] {
         guard isExpanded else { return [] }
         var cells: [RadialPaletteCell] = []
@@ -1365,13 +1539,14 @@ final class RadialPaletteController: NSObject {
         }
 
         let group = RadialPaletteCatalog.definition(for: selectedGroup)
-        if !group.entries.isEmpty {
-            let count = CGFloat(group.entries.count)
+        let groupEntries = entries(for: group)
+        if !groupEntries.isEmpty {
+            let count = CGFloat(groupEntries.count)
             let span = min(max(count * 24 * .pi / 180, 72 * .pi / 180), 200 * .pi / 180)
             let slice = span / count
             let groupCenter = CGFloat(group.id.rawValue) * groupSlice
             let start = groupCenter - span / 2
-            for (index, entry) in group.entries.enumerated() {
+            for (index, entry) in groupEntries.enumerated() {
                 let cellStart = start + CGFloat(index) * slice + RadialPaletteMetrics.sectorGap
                 let cellEnd = start + CGFloat(index + 1) * slice - RadialPaletteMetrics.sectorGap
                 cells.append(
@@ -1392,7 +1567,7 @@ final class RadialPaletteController: NSObject {
                         propertyName: nil,
                         color: nil,
                         isSelected: entryIsSelected(entry),
-                        isEnabled: true,
+                        isEnabled: entry.isEnabled,
                         action: .entry(entry)
                     )
                 )
@@ -1441,12 +1616,15 @@ final class RadialPaletteController: NSObject {
 
     private func selectedEntry() -> RadialPaletteEntry? {
         guard let selectedEntryIdentifier else { return nil }
-        return RadialPaletteCatalog.definition(for: selectedGroup).entries.first {
+        return entries(for: RadialPaletteCatalog.definition(for: selectedGroup)).first {
             $0.identifier == selectedEntryIdentifier
         }
     }
 
     private func entryIsSelected(_ entry: RadialPaletteEntry) -> Bool {
+        if let favorite = entry.favorite {
+            return state.currentFavoriteSnapshot() == favorite
+        }
         if let tool = entry.inkTool {
             return state.currentTool == tool
         }
@@ -1795,9 +1973,16 @@ final class RadialPaletteController: NSObject {
     private func attributeConfiguration(
         for cell: RadialPaletteCell
     ) -> AttrIconConfiguration? {
-        guard case let .entry(entry) = cell.action, let tool = entry.inkTool else {
+        guard case let .entry(entry) = cell.action else {
             return nil
         }
+        if let favorite = entry.favorite {
+            return AttrIcon.configuration(
+                for: favorite,
+                settings: settingsStore.settings
+            )
+        }
+        guard let tool = entry.inkTool else { return nil }
         return AttrIcon.configuration(
             for: tool,
             state: state,
