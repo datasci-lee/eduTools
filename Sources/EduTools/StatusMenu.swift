@@ -1,7 +1,7 @@
 import AppKit
 import Carbon
 
-final class StatusMenu: NSObject {
+final class StatusMenu: NSObject, NSMenuDelegate {
     private struct ShortcutMenuItem {
         let command: AppCommand
         let scope: ShortcutScope
@@ -10,6 +10,7 @@ final class StatusMenu: NSObject {
 
     private let state: AppState
     private let dispatcher: AppCommandDispatcher
+    private let displayApplier: DisplayApplier
     private let settingsController: SettingsController
     private let statusItem: NSStatusItem
     private let modeItem: NSMenuItem
@@ -20,6 +21,7 @@ final class StatusMenu: NSObject {
     private let keystrokeDisplayItem: NSMenuItem
     private let helpSharingItem: NSMenuItem
     private let lessonTimerItem: NSMenuItem
+    private let displayConfigurationMenu: NSMenu
     private var observerIdentifier: UUID?
     private var toolObserverIdentifier: UUID?
     private var zoomObserverIdentifier: UUID?
@@ -32,10 +34,12 @@ final class StatusMenu: NSObject {
     init(
         state: AppState,
         dispatcher: AppCommandDispatcher,
+        displayApplier: DisplayApplier,
         settingsController: SettingsController
     ) {
         self.state = state
         self.dispatcher = dispatcher
+        self.displayApplier = displayApplier
         self.settingsController = settingsController
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         modeItem = NSMenuItem(title: "판서 모드", action: nil, keyEquivalent: "")
@@ -50,6 +54,7 @@ final class StatusMenu: NSObject {
             keyEquivalent: ""
         )
         lessonTimerItem = NSMenuItem(title: "수업 타이머 시작", action: nil, keyEquivalent: "")
+        displayConfigurationMenu = NSMenu(title: "화면 구성")
         super.init()
 
         modeItem.target = self
@@ -76,6 +81,20 @@ final class StatusMenu: NSObject {
         keystrokeDisplayItem.target = self
         keystrokeDisplayItem.action = #selector(toggleKeystrokeDisplay(_:))
         menu.addItem(keystrokeDisplayItem)
+
+        let displayConfigurationItem = NSMenuItem(
+            title: "화면 구성",
+            action: nil,
+            keyEquivalent: ""
+        )
+        displayConfigurationItem.image = NSImage(
+            systemSymbolName: "display.2",
+            accessibilityDescription: "화면 구성"
+        )
+        displayConfigurationMenu.delegate = self
+        displayConfigurationMenu.autoenablesItems = false
+        displayConfigurationItem.submenu = displayConfigurationMenu
+        menu.addItem(displayConfigurationItem)
         menu.addItem(.separator())
 
         let coverItem = NSMenuItem(
@@ -303,6 +322,44 @@ final class StatusMenu: NSObject {
         }
     }
 
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu === displayConfigurationMenu else { return }
+        menu.removeAllItems()
+        let entries = displayApplier.menuEntries()
+        if entries.isEmpty {
+            let emptyItem = NSMenuItem(
+                title: "프리셋 없음 — 설정에서 추가",
+                action: nil,
+                keyEquivalent: ""
+            )
+            emptyItem.isEnabled = false
+            menu.addItem(emptyItem)
+        } else {
+            for entry in entries {
+                let title = entry.disabledReason.map { "\(entry.name) — \($0)" }
+                    ?? entry.name
+                let item = NSMenuItem(
+                    title: title,
+                    action: #selector(applyDisplayPreset(_:)),
+                    keyEquivalent: ""
+                )
+                item.target = self
+                item.representedObject = entry.index
+                item.state = entry.isCurrent ? .on : .off
+                item.isEnabled = entry.isEnabled
+                menu.addItem(item)
+            }
+        }
+        menu.addItem(.separator())
+        let settingsItem = NSMenuItem(
+            title: "화면 구성 설정…",
+            action: #selector(showDisplaySettings(_:)),
+            keyEquivalent: ""
+        )
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+    }
+
     private func applyShortcut(
         _ command: AppCommand,
         scope: ShortcutScope,
@@ -369,6 +426,18 @@ final class StatusMenu: NSObject {
 
     @objc private func toggleKeystrokeDisplay(_ sender: Any?) {
         dispatcher.execute(.toggleKeystrokeDisplay, scope: .global)
+    }
+
+    @objc private func applyDisplayPreset(_ sender: NSMenuItem) {
+        guard let index = sender.representedObject as? Int else {
+            NSLog("EduTools: display preset menu item has no preset index")
+            return
+        }
+        dispatcher.execute(.applyDisplayPreset(index), scope: .global)
+    }
+
+    @objc private func showDisplaySettings(_ sender: Any?) {
+        settingsController.showDisplaySettings()
     }
 
     @objc private func selectCoverTool(_ sender: Any?) {

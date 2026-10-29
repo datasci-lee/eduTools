@@ -11,6 +11,7 @@ final class AppCommandDispatcher {
     weak var zoomController: ZoomController?
     weak var presenterEffectsController: PresenterEffectsController?
     weak var exportController: ExportController?
+    weak var displayApplier: DisplayApplier?
 
     init(state: AppState) {
         self.state = state
@@ -25,6 +26,7 @@ final class AppCommandDispatcher {
              .toggleCursorHighlight,
              .toggleKeystrokeDisplay,
              .toggleHelpSharing,
+             .applyDisplayPreset,
              .toggleLessonTimer,
              .showBreakTimerSetup,
              .toggleBoard,
@@ -139,6 +141,8 @@ final class AppCommandDispatcher {
             presenterEffectsController?.toggleKeystrokeDisplay()
         case .toggleHelpSharing:
             state.toggleHelpSharing()
+        case let .applyDisplayPreset(index):
+            displayApplier?.applyPreset(at: index)
         case .toggleLessonTimer:
             timerCoordinator?.toggleLessonTimer()
         case .showBreakTimerSetup:

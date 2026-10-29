@@ -213,6 +213,7 @@ enum AppCommand: Hashable {
     case toggleCursorHighlight
     case toggleKeystrokeDisplay
     case toggleHelpSharing
+    case applyDisplayPreset(Int)
     case toggleLessonTimer
     case showBreakTimerSetup
     case toggleBoard(BoardKind)
@@ -939,6 +940,20 @@ enum ShortcutCatalog {
                 ]
             ),
         ]
+
+        for index in 0..<DisplayPresetDefaults.maximumPresetCount {
+            result.append(
+                ShortcutDefinition(
+                    id: "display.preset.\(index + 1)",
+                    name: "화면 구성 \(index + 1) 적용",
+                    iconName: "display.2",
+                    group: .screenBoardZoom,
+                    modes: [.global],
+                    command: .applyDisplayPreset(index),
+                    bindings: []
+                )
+            )
+        }
 
         let colorKeyCodes = [
             kVK_ANSI_1,

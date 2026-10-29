@@ -9,6 +9,8 @@ final class ArchiveController {
     private var workspaceObservers: [NSObjectProtocol] = []
     private var offeredDisplayUUIDs: Set<String> = []
     private var disconnectedDataByDisplayUUID: [String: Data] = [:]
+    private var isDisplayPresetRestorationDeferred = false
+    private var deferredRestoreDisplayUUIDs: Set<String> = []
 
     init(
         state: AppState,
@@ -32,6 +34,7 @@ final class ArchiveController {
 
     func displayWasRemoved(_ displayUUID: String, primaryDisplayUUID: String?) {
         offeredDisplayUUIDs.remove(displayUUID)
+        deferredRestoreDisplayUUIDs.remove(displayUUID)
         guard state.hasRestorableScreenState(for: displayUUID) else { return }
         switch state.displayDisconnectPolicy {
         case .archive:
@@ -65,6 +68,11 @@ final class ArchiveController {
         }
         let inMemoryData = disconnectedDataByDisplayUUID[displayUUID]
         guard inMemoryData != nil || fileManager.fileExists(atPath: url.path) else { return }
+        if isDisplayPresetRestorationDeferred {
+            deferredRestoreDisplayUUIDs.insert(displayUUID)
+            return
+        }
+        deferredRestoreDisplayUUIDs.remove(displayUUID)
         offeredDisplayUUIDs.insert(displayUUID)
 
         let shouldRestore: Bool
@@ -81,10 +89,84 @@ final class ArchiveController {
         }
         guard shouldRestore else { return }
 
+        _ = restoreStoredDisconnectedDisplay(
+            displayUUID,
+            url: url,
+            inMemoryData: inMemoryData
+        )
+    }
+
+    func archiveDisconnectedDisplaysForPreset(_ displayUUIDs: Set<String>) -> Set<String>? {
+        var archivedDisplayUUIDs: Set<String> = []
+        for displayUUID in displayUUIDs.sorted() {
+            let hadRestorableState = state.hasRestorableScreenState(for: displayUUID)
+            guard storeDisconnectedDisplay(displayUUID) else {
+                restoreDisplaysArchivedForFailedPreset(archivedDisplayUUIDs)
+                return nil
+            }
+            if hadRestorableState {
+                archivedDisplayUUIDs.insert(displayUUID)
+            }
+        }
+        return archivedDisplayUUIDs
+    }
+
+    func restoreDisplaysArchivedForFailedPreset(_ displayUUIDs: Set<String>) {
+        for displayUUID in displayUUIDs.sorted() {
+            guard let url = disconnectedArchiveURL(for: displayUUID) else { continue }
+            let inMemoryData = disconnectedDataByDisplayUUID[displayUUID]
+            guard inMemoryData != nil || fileManager.fileExists(atPath: url.path) else {
+                continue
+            }
+            _ = restoreStoredDisconnectedDisplay(
+                displayUUID,
+                url: url,
+                inMemoryData: inMemoryData
+            )
+        }
+    }
+
+    func setDisplayPresetRestorationDeferred(
+        _ isDeferred: Bool,
+        resumePending: Bool = true
+    ) {
+        isDisplayPresetRestorationDeferred = isDeferred
+        guard !isDeferred,
+              resumePending,
+              !deferredRestoreDisplayUUIDs.isEmpty
+        else {
+            return
+        }
+
+        do {
+            let independentDisplayUUIDs = Set(try OnlineDisplayProvider.current().compactMap {
+                $0.currentMirrorMasterID == nil ? $0.uuid : nil
+            })
+            for displayUUID in deferredRestoreDisplayUUIDs
+                .intersection(independentDisplayUUIDs)
+                .sorted()
+            {
+                restoreDisconnectedDisplayIfNeeded(displayUUID)
+            }
+        } catch {
+            NSLog(
+                "EduTools: deferred display restore requests remain pending because displays could not be read: %@",
+                error.localizedDescription
+            )
+        }
+    }
+
+    @discardableResult
+    private func restoreStoredDisconnectedDisplay(
+        _ displayUUID: String,
+        url: URL,
+        inMemoryData: Data?
+    ) -> Bool {
         do {
             let data = try inMemoryData ?? Data(contentsOf: url)
             try state.restoreScreenInk(from: data, to: displayUUID)
             disconnectedDataByDisplayUUID.removeValue(forKey: displayUUID)
+            deferredRestoreDisplayUUIDs.remove(displayUUID)
             do {
                 try fileManager.removeItem(at: url)
             } catch {
@@ -94,11 +176,13 @@ final class ArchiveController {
                     error.localizedDescription
                 )
             }
+            return true
         } catch {
             reportFailure(
                 title: "이전 판서를 복원하지 못했습니다",
                 message: error.localizedDescription
             )
+            return false
         }
     }
 
