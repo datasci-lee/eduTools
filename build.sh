@@ -420,6 +420,7 @@ echo "Built $APP_BUNDLE"
 
 if [[ "$COMMAND" == "test" ]]; then
     "$EXECUTABLE_DIR/$APP_NAME" --selftest
+    "$ROOT_DIR/scripts/test.sh" unit integration
 fi
 
 if [[ "$COMMAND" == "dmg" ]]; then
