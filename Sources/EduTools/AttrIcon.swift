@@ -158,6 +158,20 @@ struct AttrIconVisualState: Hashable {
     )
 }
 
+enum AttrIconToolCatalog {
+    // The only app-tool-to-manifest-name table. Manifest layers remain entirely data-driven.
+    static let manifestKeyByTool: [InkTool: String] = [
+        .pen: "tool.pen",
+        .highlighter: "tool.highlighter",
+        .text: "tool.text",
+        .arrow: "tool.arrow",
+        .rectangle: "tool.rect",
+        .ellipse: "tool.circle",
+        .eraser: "tool.eraser",
+        .laser: "tool.laser",
+    ]
+}
+
 enum AttrIcon {
     private struct Manifest: Decodable {
         let grid: Int
@@ -208,17 +222,18 @@ enum AttrIcon {
         case unavailable
     }
 
-    // The only app-tool-to-manifest-name table. Manifest layers remain entirely data-driven.
-    static let manifestKeyByTool: [InkTool: String] = [
-        .pen: "tool.pen",
-        .highlighter: "tool.highlighter",
-        .text: "tool.text",
-        .arrow: "tool.arrow",
-        .rectangle: "tool.rect",
-        .ellipse: "tool.circle",
-        .eraser: "tool.eraser",
-        .laser: "tool.laser",
-    ]
+    private struct Snapshot {
+        let tool: InkTool
+        let color: NSColor?
+        let size: Double
+        let arrowStyle: ArrowStyle?
+        let eraserMode: EraserMode?
+        let eraserAreaShape: EraserAreaShape?
+    }
+
+    static var manifestKeyByTool: [InkTool: String] {
+        AttrIconToolCatalog.manifestKeyByTool
+    }
 
     private static var repository = loadRepository()
     private static var renderedImages: [RenderCacheKey: NSImage] = [:]
@@ -230,31 +245,67 @@ enum AttrIcon {
         state: AppState,
         settings: AppSettings
     ) -> AttrIconConfiguration? {
+        if let favorite = state.favoriteSnapshot(for: tool) {
+            return configuration(for: favorite, settings: settings)
+        }
+        guard tool == .laser else { return nil }
+        return configuration(
+            for: Snapshot(
+                tool: .laser,
+                color: state.laserColor,
+                size: state.laserTrailDuration,
+                arrowStyle: nil,
+                eraserMode: nil,
+                eraserAreaShape: nil
+            ),
+            settings: settings
+        )
+    }
+
+    static func configuration(
+        for favorite: FavoriteTool,
+        settings: AppSettings
+    ) -> AttrIconConfiguration? {
+        guard favorite.isValid(colorPresetCount: settings.tools.colors.count),
+              let tool = favorite.inkTool
+        else {
+            return nil
+        }
+        let color = favorite.colorIndex.map { settings.tools.colors[$0].nsColor }
+        return configuration(
+            for: Snapshot(
+                tool: tool,
+                color: color,
+                size: favorite.size,
+                arrowStyle: favorite.decodedArrowStyle,
+                eraserMode: favorite.decodedEraserMode,
+                eraserAreaShape: favorite.decodedEraserAreaShape
+            ),
+            settings: settings
+        )
+    }
+
+    private static func configuration(
+        for snapshot: Snapshot,
+        settings: AppSettings
+    ) -> AttrIconConfiguration? {
+        let tool = snapshot.tool
         guard let toolKey = manifestKeyByTool[tool] else { return nil }
 
-        func rememberedColor() -> AttrIconColor? {
-            guard let index = state.selectedColorIndex(for: tool),
-                  state.colorPresets.indices.contains(index)
-            else {
+        func snapshotColor() -> AttrIconColor? {
+            guard let color = snapshot.color, let components = colorComponents(color) else {
                 logOnce(
-                    "invalid-color-index.\(toolKey)",
-                    "attr icon \(toolKey) has no valid remembered color; using the general icon"
+                    "invalid-snapshot-color.\(toolKey)",
+                    "attr icon \(toolKey) has no valid snapshot color; using the general icon"
                 )
                 return nil
             }
-            return colorComponents(state.colorPresets[index])
+            return components
         }
 
-        func rememberedWidth(in range: ClosedRange<CGFloat>) -> String? {
-            guard let value = state.width(for: tool) else {
-                logOnce(
-                    "missing-width.\(toolKey)",
-                    "attr icon \(toolKey) has no remembered width; using the general icon"
-                )
-                return nil
-            }
-            return String(AttrIconPure.widthLevel(
-                value: Double(value),
+        func snapshotWidth(in range: ClosedRange<CGFloat>) -> String {
+            String(AttrIconPure.widthLevel(
+                value: snapshot.size,
                 lowerBound: Double(range.lowerBound),
                 upperBound: Double(range.upperBound)
             ))
@@ -262,29 +313,20 @@ enum AttrIcon {
 
         switch tool {
         case .pen, .arrow, .rectangle, .ellipse:
-            guard let color = rememberedColor(),
-                  let width = rememberedWidth(
-                      in: requiredRange(RadialPaletteMetrics.writingWidths)
-                  )
-            else {
-                return nil
-            }
+            guard let color = snapshotColor() else { return nil }
+            let width = snapshotWidth(in: requiredRange(RadialPaletteMetrics.writingWidths))
             var attributes = ["width": width]
             if tool == .arrow {
-                attributes["heads"] = state.arrowStyle.rawValue
+                guard let arrowStyle = snapshot.arrowStyle else { return nil }
+                attributes["heads"] = arrowStyle.rawValue
             } else if tool == .rectangle || tool == .ellipse {
                 attributes["fill"] = "false"
             }
             return AttrIconConfiguration(toolKey: toolKey, attributes: attributes, color: color)
 
         case .highlighter:
-            guard let color = rememberedColor(),
-                  let width = rememberedWidth(
-                      in: requiredRange(RadialPaletteMetrics.highlighterWidths)
-                  )
-            else {
-                return nil
-            }
+            guard let color = snapshotColor() else { return nil }
+            let width = snapshotWidth(in: requiredRange(RadialPaletteMetrics.highlighterWidths))
             return AttrIconConfiguration(
                 toolKey: toolKey,
                 attributes: ["width": width],
@@ -292,11 +334,8 @@ enum AttrIcon {
             )
 
         case .text:
-            guard let color = rememberedColor(),
-                  let width = rememberedWidth(in: requiredRange(RadialPaletteMetrics.textSizes))
-            else {
-                return nil
-            }
+            guard let color = snapshotColor() else { return nil }
+            let width = snapshotWidth(in: requiredRange(RadialPaletteMetrics.textSizes))
             return AttrIconConfiguration(
                 toolKey: toolKey,
                 attributes: ["width": width],
@@ -314,16 +353,21 @@ enum AttrIcon {
                 return nil
             }
             let width = AttrIconPure.widthLevel(
-                value: Double(state.eraserDiameter),
+                value: snapshot.size,
                 lowerBound: lowerBound,
                 upperBound: upperBound
             )
+            guard let eraserMode = snapshot.eraserMode,
+                  let eraserAreaShape = snapshot.eraserAreaShape
+            else {
+                return nil
+            }
             let mode: String
-            switch state.eraserMode {
+            switch eraserMode {
             case .partial: mode = "brush"
             case .stroke: mode = "stroke"
             case .area:
-                mode = state.eraserAreaShape == .rectangle ? "rect" : "lasso"
+                mode = eraserAreaShape == .rectangle ? "rect" : "lasso"
             }
             return AttrIconConfiguration(
                 toolKey: toolKey,
@@ -332,13 +376,7 @@ enum AttrIcon {
             )
 
         case .laser:
-            guard let color = colorComponents(state.laserColor) else {
-                logOnce(
-                    "invalid-laser-color.\(toolKey)",
-                    "attr icon \(toolKey) has no RGB color; using the general icon"
-                )
-                return nil
-            }
+            guard let color = snapshotColor() else { return nil }
             return AttrIconConfiguration(
                 toolKey: toolKey,
                 attributes: ["trail": "true"],
