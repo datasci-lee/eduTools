@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "below-lower-bound",
+      "input": { "value": 0, "lowerBound": 1, "upperBound": 12 },
+      "expected": 1
+    },
+    {
+      "name": "lower-bound",
+      "input": { "value": 1, "lowerBound": 1, "upperBound": 12 },
+      "expected": 1
+    },
+    {
+      "name": "below-first-quartile",
+      "input": { "value": 3.749, "lowerBound": 1, "upperBound": 12 },
+      "expected": 1
+    },
+    {
+      "name": "first-quartile",
+      "input": { "value": 3.75, "lowerBound": 1, "upperBound": 12 },
+      "expected": 2
+    },
+    {
+      "name": "second-quartile",
+      "input": { "value": 6.5, "lowerBound": 1, "upperBound": 12 },
+      "expected": 3
+    },
+    {
+      "name": "third-quartile",
+      "input": { "value": 9.25, "lowerBound": 1, "upperBound": 12 },
+      "expected": 4
+    },
+    {
+      "name": "upper-bound",
+      "input": { "value": 12, "lowerBound": 1, "upperBound": 12 },
+      "expected": 4
+    },
+    {
+      "name": "above-upper-bound",
+      "input": { "value": 13, "lowerBound": 1, "upperBound": 12 },
+      "expected": 4
+    },
+    {
+      "name": "collapsed-range",
+      "input": { "value": 5, "lowerBound": 5, "upperBound": 5 },
+      "expected": 2
+    }
+  ]
+}

@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "true-boolean",
+      "input": { "expression": "fill", "attributes": { "fill": "true" } },
+      "expected": { "matches": true }
+    },
+    {
+      "name": "negated-false-boolean",
+      "input": { "expression": "!trail", "attributes": { "trail": "false" } },
+      "expected": { "matches": true }
+    },
+    {
+      "name": "true-trail-boolean",
+      "input": { "expression": "trail", "attributes": { "trail": "true" } },
+      "expected": { "matches": true }
+    },
+    {
+      "name": "brush-value",
+      "input": { "expression": "mode=brush", "attributes": { "mode": "brush" } },
+      "expected": { "matches": true }
+    },
+    {
+      "name": "rectangle-value",
+      "input": { "expression": "mode=rect", "attributes": { "mode": "rect" } },
+      "expected": { "matches": true }
+    },
+    {
+      "name": "lasso-value",
+      "input": { "expression": "mode=lasso", "attributes": { "mode": "lasso" } },
+      "expected": { "matches": true }
+    },
+    {
+      "name": "different-value",
+      "input": { "expression": "mode!=brush", "attributes": { "mode": "stroke" } },
+      "expected": { "matches": true }
+    },
+    {
+      "name": "false-boolean",
+      "input": { "expression": "fill", "attributes": { "fill": "false" } },
+      "expected": { "matches": false }
+    },
+    {
+      "name": "negated-true-boolean",
+      "input": { "expression": "!trail", "attributes": { "trail": "true" } },
+      "expected": { "matches": false }
+    },
+    {
+      "name": "false-trail-boolean",
+      "input": { "expression": "trail", "attributes": { "trail": "false" } },
+      "expected": { "matches": false }
+    },
+    {
+      "name": "value-mismatch",
+      "input": { "expression": "mode=brush", "attributes": { "mode": "stroke" } },
+      "expected": { "matches": false }
+    },
+    {
+      "name": "different-value-mismatch",
+      "input": { "expression": "mode!=brush", "attributes": { "mode": "brush" } },
+      "expected": { "matches": false }
+    },
+    {
+      "name": "unknown-attribute",
+      "input": { "expression": "fill", "attributes": {} },
+      "expected": { "unknownAttribute": "fill" }
+    }
+  ]
+}
