@@ -264,6 +264,7 @@ final class InkView: NSView {
     private var boardObserverIdentifier: UUID?
     private var presentationSourceRect: CGRect?
     private var pressedShortcutDefinitions: [UInt16: ShortcutDefinition] = [:]
+    private var renderedPressureMinimumWidthRatio: CGFloat
 
     override var acceptsFirstResponder: Bool { true }
 
@@ -290,6 +291,7 @@ final class InkView: NSView {
         self.displayUUID = displayUUID
         self.requestKeyFocus = requestKeyFocus
         self.pressedMouseButtons = pressedMouseButtons
+        renderedPressureMinimumWidthRatio = state.pressureMinimumWidthRatio
         super.init(frame: frameRect)
 
         wantsLayer = true
@@ -342,7 +344,11 @@ final class InkView: NSView {
             self.laserRenderer.color = self.state.laserColor
             self.laserRenderer.radius = self.state.laserSize
             self.laserRenderer.trailDuration = self.state.laserTrailDuration
-            self.rebuildCompletedLayers()
+            let pressureMinimumWidthRatio = self.state.pressureMinimumWidthRatio
+            if self.renderedPressureMinimumWidthRatio != pressureMinimumWidthRatio {
+                self.renderedPressureMinimumWidthRatio = pressureMinimumWidthRatio
+                self.rebuildCompletedLayers()
+            }
         }
         boardObserverIdentifier = state.addBoardObserver { [weak self] in
             guard let self else { return }
@@ -1799,7 +1805,10 @@ final class InkView: NSView {
 
         guard samples.count > 1 else {
             guard let sample = samples.first else { return }
-            let width = effectiveWidth(for: stroke, pressure: sample.pressure)
+            let width = stroke.effectiveWidth(
+                pressure: sample.pressure,
+                minimumRatio: state.pressureMinimumWidthRatio
+            )
             let rect = CGRect(
                 x: sample.location.x - width / 2,
                 y: sample.location.y - width / 2,
@@ -1836,7 +1845,10 @@ final class InkView: NSView {
         let color = displayColor(for: stroke.color)
         guard samples.count > 1 else {
             guard let sample = samples.first else { return }
-            let width = effectiveWidth(for: stroke, pressure: sample.pressure)
+            let width = stroke.effectiveWidth(
+                pressure: sample.pressure,
+                minimumRatio: state.pressureMinimumWidthRatio
+            )
             let shape = CAShapeLayer()
             let rect = CGRect(
                 x: sample.location.x - width / 2,
@@ -1910,9 +1922,9 @@ final class InkView: NSView {
             let normal = length > 0
                 ? CGPoint(x: -tangent.y / length, y: tangent.x / length)
                 : .zero
-            let halfWidth = effectiveWidth(
-                for: stroke,
-                pressure: samples[index].pressure
+            let halfWidth = stroke.effectiveWidth(
+                pressure: samples[index].pressure,
+                minimumRatio: state.pressureMinimumWidthRatio
             ) / 2
             leftEdge.append(
                 CGPoint(
@@ -1939,7 +1951,10 @@ final class InkView: NSView {
         path.closeSubpath()
 
         for sample in [samples[0], samples[samples.count - 1]] {
-            let width = effectiveWidth(for: stroke, pressure: sample.pressure)
+            let width = stroke.effectiveWidth(
+                pressure: sample.pressure,
+                minimumRatio: state.pressureMinimumWidthRatio
+            )
             path.addEllipse(
                 in: CGRect(
                     x: sample.location.x - width / 2,
@@ -1950,11 +1965,6 @@ final class InkView: NSView {
             )
         }
         return path
-    }
-
-    private func effectiveWidth(for stroke: InkStroke, pressure: CGFloat) -> CGFloat {
-        guard stroke.usesPressure else { return stroke.width }
-        return stroke.width * (0.2 + 0.8 * pressure)
     }
 
     private func inkPoint(for event: NSEvent) -> InkPoint {

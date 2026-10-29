@@ -210,6 +210,7 @@ final class AppState {
     }
 
     private(set) var highlighterOpacity = CGFloat(AppSettings.default.tools.highlighterOpacity)
+    private(set) var pressureMinimumWidthRatio: CGFloat = InkDefaults.pressureMinimumWidthRatio
     private(set) var laserColor = AppSettings.default.tools.laserColor.nsColor
     private(set) var laserSize = CGFloat(AppSettings.default.tools.laserSize)
     private(set) var laserTrailDuration = AppSettings.default.tools.laserTrailDuration
@@ -1028,7 +1029,8 @@ final class AppState {
             strokes: before,
             gesture: gesture,
             settings: settings,
-            canvasSize: canvasSize
+            canvasSize: canvasSize,
+            pressureMinimumWidthRatio: pressureMinimumWidthRatio
         )
         return replaceStrokes(after, on: displayUUID)
     }
@@ -1495,6 +1497,7 @@ final class AppState {
         showsHelpInSharing = settings.help.showsHelpInSharing
 
         highlighterOpacity = CGFloat(settings.tools.highlighterOpacity)
+        pressureMinimumWidthRatio = CGFloat(settings.tools.pressureMinimumWidthRatio)
         laserColor = settings.tools.laserColor.nsColor
         laserSize = CGFloat(settings.tools.laserSize)
         laserTrailDuration = settings.tools.laserTrailDuration

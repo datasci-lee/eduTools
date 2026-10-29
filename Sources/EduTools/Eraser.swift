@@ -12,7 +12,8 @@ enum EraserEngine {
         strokes: [InkStroke],
         gesture: EraserGesture,
         settings: EraserSettings,
-        canvasSize: CGSize
+        canvasSize: CGSize,
+        pressureMinimumWidthRatio: CGFloat = InkDefaults.pressureMinimumWidthRatio
     ) -> [InkStroke] {
         guard canvasSize.width > 0, canvasSize.height > 0 else {
             NSLog("EduTools: eraser ignored a gesture because the canvas has no size")
@@ -25,7 +26,8 @@ enum EraserEngine {
                 strokes,
                 along: points,
                 settings: settings,
-                canvasSize: canvasSize
+                canvasSize: canvasSize,
+                pressureMinimumWidthRatio: pressureMinimumWidthRatio
             )
         case let (.stroke, .sweep(points)):
             return eraseWholeStrokes(
@@ -58,7 +60,8 @@ enum EraserEngine {
         _ strokes: [InkStroke],
         along eraserPoints: [CGPoint],
         settings: EraserSettings,
-        canvasSize: CGSize
+        canvasSize: CGSize,
+        pressureMinimumWidthRatio: CGFloat
     ) -> [InkStroke] {
         guard !eraserPoints.isEmpty else { return strokes }
         let radius = settings.diameter / 2
@@ -75,7 +78,8 @@ enum EraserEngine {
                       of: stroke,
                       along: eraserPoints,
                       radius: radius,
-                      canvasSize: canvasSize
+                      canvasSize: canvasSize,
+                      pressureMinimumWidthRatio: pressureMinimumWidthRatio
                   )
             else {
                 result.append(stroke)
@@ -90,7 +94,8 @@ enum EraserEngine {
         of stroke: InkStroke,
         along eraserPoints: [CGPoint],
         radius: CGFloat,
-        canvasSize: CGSize
+        canvasSize: CGSize,
+        pressureMinimumWidthRatio: CGFloat
     ) -> [InkStroke]? {
         if stroke.content != .freehand {
             let itemPoints = InkItemGeometry.screenPoints(for: stroke, canvasSize: canvasSize)
@@ -111,7 +116,10 @@ enum EraserEngine {
 
         for point in samples {
             let screenPoint = InkGeometry.screenPoint(from: point.location, in: canvasSize)
-            let strokeRadius = effectiveWidth(of: stroke, pressure: point.pressure) / 2
+            let strokeRadius = stroke.effectiveWidth(
+                pressure: point.pressure,
+                minimumRatio: pressureMinimumWidthRatio
+            ) / 2
             if distance(from: screenPoint, to: eraserPoints) <= radius + strokeRadius {
                 removedPoint = true
                 if !currentGroup.isEmpty {
@@ -252,10 +260,6 @@ enum EraserEngine {
             }
         }
         return result
-    }
-
-    private static func effectiveWidth(of stroke: InkStroke, pressure: CGFloat) -> CGFloat {
-        stroke.usesPressure ? stroke.width * (0.2 + 0.8 * pressure) : stroke.width
     }
 
     private static func bounds(of points: [CGPoint]) -> CGRect {
