@@ -642,8 +642,8 @@ enum SettingsValidator {
             throw SettingsValidationError.invalidValue("타이머 범위")
         }
 
-        for (identifier, portable) in settings.shortcuts.overrides {
-            guard !identifier.isEmpty, PortableShortcut(serialized: portable) != nil else {
+        for identifier in settings.shortcuts.overrides.keys {
+            guard !identifier.isEmpty else {
                 throw SettingsValidationError.invalidValue("단축키 \(identifier)")
             }
         }

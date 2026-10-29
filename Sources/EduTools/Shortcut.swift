@@ -260,6 +260,23 @@ enum ShortcutScope: String, Hashable {
 }
 
 struct ShortcutBinding {
+    enum CreationError: Error, CustomStringConvertible {
+        case invalidPortableString
+        case globalRequiresAppModifier
+        case localForbidsAppModifier
+
+        var description: String {
+            switch self {
+            case .invalidPortableString:
+                return "portable shortcut could not be parsed"
+            case .globalRequiresAppModifier:
+                return "global scope requires AppMod"
+            case .localForbidsAppModifier:
+                return "non-global scope does not allow AppMod"
+            }
+        }
+    }
+
     let scope: ShortcutScope
     let keyCode: UInt16
     let modifiers: NSEvent.ModifierFlags
@@ -272,20 +289,16 @@ struct ShortcutBinding {
         _ serialized: String,
         appModifier: AppModifierSetting = .controlOption
     ) -> ShortcutBinding? {
-        guard let shortcut = Shortcut(serialized: serialized, appModifier: appModifier) else {
+        switch make(
+            scope: .global,
+            portableString: serialized,
+            appModifier: appModifier
+        ) {
+        case let .success(binding):
+            return binding
+        case .failure:
             return nil
         }
-        return ShortcutBinding(
-            scope: .global,
-            keyCode: UInt16(shortcut.keyCode),
-            modifiers: PortableShortcut(serialized: serialized)?.eventModifiers(
-                appModifier: appModifier
-            ) ?? [],
-            keyEquivalent: shortcut.keyEquivalent,
-            keyCap: shortcut.displayString,
-            serializedGlobalShortcut: serialized,
-            portableString: serialized
-        )
     }
 
     static func annotation(
@@ -328,15 +341,22 @@ struct ShortcutBinding {
         )
     }
 
-    func replacing(
+    static func make(
+        scope: ShortcutScope,
         portableString: String,
         appModifier: AppModifierSetting
-    ) -> ShortcutBinding? {
-        guard let portable = PortableShortcut(serialized: portableString) else { return nil }
-        if scope == .global, !portable.usesAppModifier { return nil }
-        if scope != .global, portable.usesAppModifier { return nil }
+    ) -> Result<ShortcutBinding, CreationError> {
+        guard let portable = PortableShortcut(serialized: portableString) else {
+            return .failure(.invalidPortableString)
+        }
+        if scope == .global, !portable.usesAppModifier {
+            return .failure(.globalRequiresAppModifier)
+        }
+        if scope != .global, portable.usesAppModifier {
+            return .failure(.localForbidsAppModifier)
+        }
         let modifiers = portable.eventModifiers(appModifier: appModifier)
-        return ShortcutBinding(
+        return .success(ShortcutBinding(
             scope: scope,
             keyCode: portable.key.keyCode,
             modifiers: modifiers,
@@ -344,7 +364,23 @@ struct ShortcutBinding {
             keyCap: portable.displayString(appModifier: appModifier),
             serializedGlobalShortcut: scope == .global ? portable.serialized : nil,
             portableString: portable.serialized
-        )
+        ))
+    }
+
+    func replacing(
+        portableString: String,
+        appModifier: AppModifierSetting
+    ) -> ShortcutBinding? {
+        switch Self.make(
+            scope: scope,
+            portableString: portableString,
+            appModifier: appModifier
+        ) {
+        case let .success(binding):
+            return binding
+        case .failure:
+            return nil
+        }
     }
 
     var uniquenessKey: String {
@@ -367,6 +403,18 @@ struct ShortcutDefinition {
     let command: AppCommand
     let bindings: [ShortcutBinding]
 
+    var assignableScopes: [ShortcutScope] {
+        guard bindings.isEmpty else { return [] }
+        let mappings: [(AppMode, ShortcutScope)] = [
+            (.global, .global),
+            (.annotation, .annotation),
+            (.zoom, .zoom),
+        ]
+        return mappings.compactMap { mode, scope in
+            modes.contains(mode) ? scope : nil
+        }
+    }
+
     var displayKeys: String {
         var seen: Set<String> = []
         return bindings.compactMap { binding in
@@ -380,9 +428,23 @@ struct ShortcutDefinition {
 }
 
 enum ShortcutCatalog {
+    private struct InvalidOverrideLog: Hashable {
+        enum Reason: Hashable {
+            case invalidKeyFormat
+            case unknownDefinition(String)
+            case unknownScope(String)
+            case disallowedScope(scope: String, definitionID: String)
+            case bindingCreationFailed(String)
+        }
+
+        let key: String
+        let reason: Reason
+    }
+
     private static var settingsProvider: () -> ShortcutGroupSettings = {
         AppSettings.default.shortcuts
     }
+    private static var loggedInvalidOverrides: Set<InvalidOverrideLog> = []
 
     static func configure(settingsStore: SettingsStore) {
         settingsProvider = { [weak settingsStore] in
@@ -910,21 +972,34 @@ enum ShortcutCatalog {
     }
 
     static func resolvedDefinitions(for settings: ShortcutGroupSettings) -> [ShortcutDefinition] {
-        definitions.map { definition in
+        logInvalidOverrideKeys(in: settings)
+        return definitions.map { definition in
             let bindings = definition.bindings.compactMap { binding -> ShortcutBinding? in
                 let key = overrideKey(definitionID: definition.id, scope: binding.scope)
-                let portable = settings.overrides[key] ?? binding.portableString
-                guard let resolved = binding.replacing(
-                    portableString: portable,
-                    appModifier: settings.appModifier
-                ) else {
-                    NSLog("EduTools: ignored invalid shortcut override for %@", key)
-                    return binding.replacing(
+                if let portable = settings.overrides[key] {
+                    return resolvedOverrideBinding(
+                        scope: binding.scope,
+                        portableString: portable,
+                        appModifier: settings.appModifier,
+                        key: key
+                    ) ?? binding.replacing(
                         portableString: binding.portableString,
                         appModifier: settings.appModifier
                     )
                 }
-                return resolved
+                return binding.replacing(
+                    portableString: binding.portableString,
+                    appModifier: settings.appModifier
+                )
+            } + definition.assignableScopes.compactMap { scope -> ShortcutBinding? in
+                let key = overrideKey(definitionID: definition.id, scope: scope)
+                guard let portable = settings.overrides[key] else { return nil }
+                return resolvedOverrideBinding(
+                    scope: scope,
+                    portableString: portable,
+                    appModifier: settings.appModifier,
+                    key: key
+                )
             }
             return ShortcutDefinition(
                 id: definition.id,
@@ -934,6 +1009,106 @@ enum ShortcutCatalog {
                 modes: definition.modes,
                 command: definition.command,
                 bindings: bindings
+            )
+        }
+    }
+
+    private static func resolvedOverrideBinding(
+        scope: ShortcutScope,
+        portableString: String,
+        appModifier: AppModifierSetting,
+        key: String
+    ) -> ShortcutBinding? {
+        switch ShortcutBinding.make(
+            scope: scope,
+            portableString: portableString,
+            appModifier: appModifier
+        ) {
+        case let .success(binding):
+            return binding
+        case let .failure(error):
+            logOnce(
+                InvalidOverrideLog(
+                    key: key,
+                    reason: .bindingCreationFailed(error.description)
+                )
+            )
+            return nil
+        }
+    }
+
+    private static func logInvalidOverrideKeys(in settings: ShortcutGroupSettings) {
+        for key in settings.overrides.keys.sorted() {
+            let components = key.split(separator: "|", omittingEmptySubsequences: false)
+            guard components.count == 2 else {
+                logOnce(InvalidOverrideLog(key: key, reason: .invalidKeyFormat))
+                continue
+            }
+            let definitionID = String(components[0])
+            guard let definition = definitions.first(where: { $0.id == definitionID }) else {
+                logOnce(
+                    InvalidOverrideLog(
+                        key: key,
+                        reason: .unknownDefinition(definitionID)
+                    )
+                )
+                continue
+            }
+            let scopeValue = String(components[1])
+            guard let scope = ShortcutScope(rawValue: scopeValue) else {
+                logOnce(
+                    InvalidOverrideLog(
+                        key: key,
+                        reason: .unknownScope(scopeValue)
+                    )
+                )
+                continue
+            }
+            let hasDefaultBinding = definition.bindings.contains { $0.scope == scope }
+            guard hasDefaultBinding || definition.assignableScopes.contains(scope) else {
+                logOnce(
+                    InvalidOverrideLog(
+                        key: key,
+                        reason: .disallowedScope(
+                            scope: scopeValue,
+                            definitionID: definitionID
+                        )
+                    )
+                )
+                continue
+            }
+        }
+    }
+
+    private static func logOnce(_ entry: InvalidOverrideLog) {
+        guard loggedInvalidOverrides.insert(entry).inserted else { return }
+        switch entry.reason {
+        case .invalidKeyFormat:
+            NSLog("EduTools: ignored shortcut override %@: invalid key format", entry.key)
+        case let .unknownDefinition(definitionID):
+            NSLog(
+                "EduTools: ignored shortcut override %@: unknown definition %@",
+                entry.key,
+                definitionID
+            )
+        case let .unknownScope(scopeValue):
+            NSLog(
+                "EduTools: ignored shortcut override %@: unknown scope %@",
+                entry.key,
+                scopeValue
+            )
+        case let .disallowedScope(scopeValue, definitionID):
+            NSLog(
+                "EduTools: ignored shortcut override %@: scope %@ is not allowed for %@",
+                entry.key,
+                scopeValue,
+                definitionID
+            )
+        case let .bindingCreationFailed(description):
+            NSLog(
+                "EduTools: ignored invalid shortcut override for %@: %@",
+                entry.key,
+                description
             )
         }
     }
