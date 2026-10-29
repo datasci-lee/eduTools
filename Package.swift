@@ -30,6 +30,12 @@ let package = Package(
       path: "Tests/IntegrationTests",
       swiftSettings: [.swiftLanguageMode(.v5)]
     ),
+    .testTarget(
+      name: "GUITests",
+      dependencies: ["EduTools", "TestSupport"],
+      path: "Tests/GUITests",
+      swiftSettings: [.swiftLanguageMode(.v5)]
+    ),
   ],
   swiftLanguageModes: [.v5]
 )

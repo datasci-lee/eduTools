@@ -80,4 +80,4 @@
 | settings export should include display presets but exclude computer-specific switches and paths | 1310 | — | T1 | 남음(S1c) |
 | known avoided global shortcuts should be reported as conflicts | 1321 | — | T1 | 남음(S1c) |
 | settings backups should rotate to the most recent five entries | 1334 | — | T2 | S2 |
-| synthetic enter and exit events should guard device queries and the event-kind table should remain complete | 1362 | — | T3 | S3 |
+| synthetic enter and exit events should guard device queries and the event-kind table should remain complete | 1362 | `UnitTests.PointerEventsTests/pointingDeviceQueryPermissionMatchesEventKind(_:)`<br>`GUITests.PointerEnterExitTests/enterAndExitAvoidPointingDeviceQueries()` | T1 + T3 | 이관 |

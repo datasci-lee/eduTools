@@ -11,7 +11,7 @@ private final class RadialPaletteTooltipPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-private enum RadialPaletteGroupID: Int, CaseIterable {
+enum RadialPaletteGroupID: Int, CaseIterable {
     case writing
     case shapes
     case erasing
@@ -20,7 +20,7 @@ private enum RadialPaletteGroupID: Int, CaseIterable {
     case favorites
 }
 
-private enum RadialPaletteEntryAction {
+enum RadialPaletteEntryAction {
     case command(AppCommand)
     case openSettings
     case showDisplayPresets
@@ -29,7 +29,7 @@ private enum RadialPaletteEntryAction {
     case applyFavorite(index: Int, favorite: FavoriteTool)
 }
 
-private struct RadialPaletteEntry {
+struct RadialPaletteEntry {
     let action: RadialPaletteEntryAction
     let fallbackName: String?
     let fallbackIconKey: String?
@@ -277,7 +277,7 @@ enum RadialPaletteRing: Equatable {
     case option
 }
 
-private struct RadialPaletteOption {
+struct RadialPaletteOption {
     let identifier: String
     let name: String
     let shortLabel: String
@@ -319,7 +319,7 @@ private struct RadialPaletteOptionGroup {
     let options: [RadialPaletteOption]
 }
 
-private struct RadialPaletteCell {
+struct RadialPaletteCell {
     enum Action {
         case group(RadialPaletteGroupID)
         case entry(RadialPaletteEntry)
@@ -346,7 +346,7 @@ private struct RadialPaletteCell {
     var endAngle: CGFloat { geometry.endAngle }
 }
 
-private enum RadialPaletteHitTarget {
+enum RadialPaletteHitTarget {
     case center
     case cell(RadialPaletteCell)
 
@@ -358,14 +358,14 @@ private enum RadialPaletteHitTarget {
     }
 }
 
-private enum RadialPaletteNavigationKey: Equatable {
+enum RadialPaletteNavigationKey: Equatable {
     case shallower
     case deeper
     case previous
     case next
 }
 
-private enum RadialPaletteFocus: Equatable {
+enum RadialPaletteFocus: Equatable {
     case center
     case cell(String)
 
@@ -379,7 +379,7 @@ private enum RadialPaletteFocus: Equatable {
 
 /// Returns a focus derived only from the currently rendered cells. Filtering preserves the
 /// `layoutCells()` order, so keyboard navigation cannot drift from the visual/catalog order.
-private func nextRadialPaletteFocus(
+func nextRadialPaletteFocus(
     in cells: [RadialPaletteCell],
     from current: RadialPaletteFocus,
     for key: RadialPaletteNavigationKey,
@@ -816,6 +816,8 @@ final class RadialPaletteController: NSObject {
         CGPoint(x: panel.frame.midX, y: panel.frame.midY)
     }
 
+    var window: NSWindow { panel }
+
     var canToggleExpansionFromKeyboard: Bool {
         settingsStore.settings.tools.paletteStyle == .radial
     }
@@ -948,7 +950,7 @@ final class RadialPaletteController: NSObject {
         }
     }
 
-    private func consumePaletteKeyboardEvent(_ event: NSEvent) -> Bool {
+    func consumePaletteKeyboardEvent(_ event: NSEvent) -> Bool {
         if event.type == .keyUp,
            consumedPaletteKeyCodes.remove(event.keyCode) != nil
         {
@@ -1220,7 +1222,7 @@ final class RadialPaletteController: NSObject {
         showKeyboardFocusHint(in: cells)
     }
 
-    fileprivate func activate(_ target: RadialPaletteHitTarget) {
+    func activate(_ target: RadialPaletteHitTarget) {
         switch target {
         case .center:
             isExpanded ? collapse() : expand()
@@ -1517,7 +1519,7 @@ final class RadialPaletteController: NSObject {
         NSScreen.screens.first { $0.frame.contains(point) }
     }
 
-    fileprivate func hitTarget(at point: CGPoint, in bounds: CGRect) -> RadialPaletteHitTarget? {
+    func hitTarget(at point: CGPoint, in bounds: CGRect) -> RadialPaletteHitTarget? {
         let center = CGPoint(x: bounds.midX, y: bounds.midY)
         let delta = CGPoint(x: point.x - center.x, y: point.y - center.y)
         let radius = hypot(delta.x, delta.y)
@@ -1599,7 +1601,7 @@ final class RadialPaletteController: NSObject {
         value.rounded() == value ? String(Int(value)) : String(format: "%.1f", value)
     }
 
-    private func layoutCells() -> [RadialPaletteCell] {
+    func layoutCells() -> [RadialPaletteCell] {
         guard isExpanded else { return [] }
         var cells: [RadialPaletteCell] = []
         let groupSlice = 2 * CGFloat.pi / CGFloat(RadialPaletteCatalog.groups.count)

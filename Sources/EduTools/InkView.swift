@@ -233,6 +233,7 @@ final class InkView: NSView {
     private let dispatcher: AppCommandDispatcher
     private let displayUUID: String
     private let requestKeyFocus: () -> Void
+    private let pressedMouseButtons: () -> Int
     private let boardBackgroundLayer = CALayer()
     private let boardPatternLayer = CAShapeLayer()
     private let transformedInkLayer = CALayer()
@@ -281,12 +282,14 @@ final class InkView: NSView {
         state: AppState,
         dispatcher: AppCommandDispatcher,
         displayUUID: String,
-        requestKeyFocus: @escaping () -> Void
+        requestKeyFocus: @escaping () -> Void,
+        pressedMouseButtons: @escaping () -> Int = { NSEvent.pressedMouseButtons }
     ) {
         self.state = state
         self.dispatcher = dispatcher
         self.displayUUID = displayUUID
         self.requestKeyFocus = requestKeyFocus
+        self.pressedMouseButtons = pressedMouseButtons
         super.init(frame: frameRect)
 
         wantsLayer = true
@@ -525,7 +528,7 @@ final class InkView: NSView {
         guard state.isAnnotationModeEnabled else { return }
         guard let gestureButton = mouseGestureButton(for: event.type) else { return }
         if let owner = activeMouseGestureButton {
-            guard NSEvent.pressedMouseButtons & owner.pressedMouseButtonsMask == 0 else {
+            guard pressedMouseButtons() & owner.pressedMouseButtonsMask == 0 else {
                 return
             }
             NSLog("EduTools: recovering stale mouse gesture ownership after a missing mouseUp")

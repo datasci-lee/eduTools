@@ -1,12 +1,13 @@
 # EduTools 시험 빠른 시작
 
-앱 번들은 기존 `build.sh`가 만들고, SwiftPM은 시험 전용으로 사용한다. S1에서는 헤드리스 T1 단위 시험과 T2 통합 시험 기반만 제공한다.
+앱 번들은 기존 `build.sh`가 만들고, SwiftPM은 시험 전용으로 사용한다. 헤드리스 T1·T2와 사용자 맥의 WindowServer에서 실행하는 T3 GUI 시험을 제공한다.
 
 ## 실행
 
 ```bash
 scripts/test.sh unit
 scripts/test.sh integration
+scripts/test.sh gui
 scripts/test.sh unit --filter 'ShortcutTests'
 scripts/test.sh unit --coverage
 scripts/test.sh all --xunit .build/test-results.xml
@@ -14,7 +15,7 @@ scripts/test.sh all --xunit .build/test-results.xml
 scripts/verify-bundle.sh [--app <path>] [--dmg <path>]
 ```
 
-`unit integration`처럼 두 계층을 함께 지정할 수도 있다. `--filter` 정규식은 선택된 시험 타깃의 전체 시험 ID에서 검색한다. `--coverage`는 시험 파일을 제외한 `EduTools` 소스별 `llvm-cov report` 표를 마지막에 출력한다. `./build.sh test`는 universal 앱 빌드와 남은 SelfTest를 먼저 실행한 다음 단위·통합 시험을 실행한다.
+`unit integration`처럼 두 계층을 함께 지정할 수도 있다. `--filter` 정규식은 선택된 시험 타깃의 전체 시험 ID에서 검색한다. `--coverage`는 시험 파일을 제외한 `EduTools` 소스별 `llvm-cov report` 표를 마지막에 출력한다. `gui`는 사용자 맥의 WindowServer 전용이며 연결이 없으면 `UNRUNNABLE`과 종료코드 3을 반환한다. `all`과 `./build.sh test`는 GUI를 포함하지 않고 단위·통합 시험만 실행한다.
 
 릴리스 전에는 `./build.sh dmg`를 실행한 뒤 `scripts/verify-bundle.sh`로 앱 번들과 DMG를 검증한다. 앱 번들에는 자체 시험 코드가 아직 포함되어 있으며, 검증 스크립트는 이를 INFO로 표시하다가 S1b/c에서 제거가 끝나면 FAIL로 승격한다.
 
@@ -29,7 +30,7 @@ scripts/verify-bundle.sh [--app <path>] [--dmg <path>]
 | 0 | 선택한 시험 통과 | 출력된 시험·확인 수를 기록한다. |
 | 1 | 빌드 또는 시험 실패 | 첫 컴파일 오류나 실패 시험 ID부터 확인한다. |
 | 3 | UNRUNNABLE | 출력된 툴체인·런타임 부족 사유를 해소한 뒤 다시 실행한다. |
-| 4 | 사용법 오류 | 지원 계층과 옵션을 확인한다. GUI/E2E는 아직 없다. |
+| 4 | 사용법 오류 | 지원 계층과 옵션을 확인한다. E2E는 아직 없다. |
 
 `scripts/verify-bundle.sh`도 같은 0/1/3/4 규약(통과/검증 실패/UNRUNNABLE/사용법 오류)을 따른다.
 
