@@ -61,6 +61,35 @@ enum PaletteStyle: String, Codable, CaseIterable, Hashable {
     }
 }
 
+enum RadialPaletteFaceTone: Equatable, Sendable {
+    case light
+    case dark
+
+    static func resolve(inkColor: NSColor?) -> RadialPaletteFaceTone {
+        guard let inkColor else {
+            return .light
+        }
+        guard let converted = inkColor.usingColorSpace(.deviceRGB) else {
+            preconditionFailure("Radial palette ink colors must be convertible to device RGB")
+        }
+        let foreground = AttrIconColor(
+            red: Double(converted.redComponent),
+            green: Double(converted.greenComponent),
+            blue: Double(converted.blueComponent),
+            alpha: Double(converted.alphaComponent)
+        )
+        let surfaceWhite = Double(AttrIconBackgroundEstimate.lightSurfaceWhiteComponent)
+        let lightSurface = AttrIconColor(
+            red: surfaceWhite,
+            green: surfaceWhite,
+            blue: surfaceWhite
+        )
+        return AttrIconPure.needsHalo(foreground: foreground, background: lightSurface)
+            ? .dark
+            : .light
+    }
+}
+
 enum RadialPaletteGlassStyle {
     static let defaultOpacity = 0.62
     static let minimumOpacity = 0.55
@@ -70,37 +99,65 @@ enum RadialPaletteGlassStyle {
     static let disabledContentOpacity = 0.55
     static let selectedTintOpacity = 0.72
 
-    static let primaryContentColor = NSColor(
-        calibratedWhite: primaryWhiteComponent,
-        alpha: 1
-    )
     static let selectedContentColor = NSColor(calibratedWhite: 1, alpha: 1)
-    static let regularBorderColor = NSColor(
-        calibratedWhite: primaryWhiteComponent,
-        alpha: 0.28
-    )
-    static let focusOuterColor = NSColor(
-        calibratedWhite: primaryWhiteComponent,
-        alpha: 0.88
-    )
-    static let colorSelectionOuterColor = NSColor(
-        calibratedWhite: primaryWhiteComponent,
-        alpha: 0.90
-    )
 
-    static func contentColor(isSelected: Bool, isEnabled: Bool) -> NSColor {
+    static func primaryContentColor(tone: RadialPaletteFaceTone) -> NSColor {
+        NSColor(
+            calibratedWhite: tone == .light ? primaryWhiteComponent : 1,
+            alpha: 1
+        )
+    }
+
+    static func regularBorderColor(tone: RadialPaletteFaceTone) -> NSColor {
+        NSColor(
+            calibratedWhite: tone == .light ? primaryWhiteComponent : 1,
+            alpha: tone == .light ? 0.28 : 0.55
+        )
+    }
+
+    static func focusOuterColor(tone: RadialPaletteFaceTone) -> NSColor {
+        NSColor(
+            calibratedWhite: tone == .light ? primaryWhiteComponent : 1,
+            alpha: 0.88
+        )
+    }
+
+    static func colorSelectionOuterColor(tone: RadialPaletteFaceTone) -> NSColor {
+        NSColor(
+            calibratedWhite: tone == .light ? primaryWhiteComponent : 1,
+            alpha: 0.90
+        )
+    }
+
+    static func previewOutlineInnerColor(tone: RadialPaletteFaceTone) -> NSColor {
+        tone == .light
+            ? selectedContentColor
+            : NSColor(calibratedWhite: primaryWhiteComponent, alpha: 0.35)
+    }
+
+    static func contentColor(
+        isSelected: Bool,
+        isEnabled: Bool,
+        tone: RadialPaletteFaceTone
+    ) -> NSColor {
+        let primaryColor = primaryContentColor(tone: tone)
         if !isEnabled {
-            return primaryContentColor.withAlphaComponent(CGFloat(disabledContentOpacity))
+            return primaryColor.withAlphaComponent(CGFloat(disabledContentOpacity))
         }
-        return isSelected ? selectedContentColor : primaryContentColor
+        return isSelected ? selectedContentColor : primaryColor
     }
 
     /// 근사 — 실제 면은 뒤 배경과 0.55...0.90 알파로 혼합된다.
-    static func estimatedBackdropColor(selected: Bool) -> NSColor {
+    static func estimatedBackdropColor(
+        selected: Bool,
+        tone: RadialPaletteFaceTone
+    ) -> NSColor {
         selected
             ? .controlAccentColor
             : NSColor(
-                calibratedWhite: AttrIconBackgroundEstimate.lightSurfaceWhiteComponent,
+                calibratedWhite: tone == .light
+                    ? AttrIconBackgroundEstimate.lightSurfaceWhiteComponent
+                    : AttrIconBackgroundEstimate.darkSurfaceWhiteComponent,
                 alpha: 1
             )
     }
@@ -109,8 +166,16 @@ enum RadialPaletteGlassStyle {
     // renders black its encoded sRGB value is at least a: a * 1 + (1 - a) * glass >= a.
     // On black, L = ((a + 0.055) / 1.055)^2.4; near-black 0.10 content therefore has
     // 5.22:1 contrast at a = 0.55 and 6.54:1 at the default a = 0.62.
-    static func surfaceFaceColor(opacity: Double) -> NSColor {
-        NSColor(calibratedWhite: 1, alpha: CGFloat(opacity))
+    // A black face over white is at most 1 - a in encoded sRGB; white content therefore
+    // has at least 4.8:1 contrast at a = 0.55.
+    static func surfaceFaceColor(
+        opacity: Double,
+        tone: RadialPaletteFaceTone
+    ) -> NSColor {
+        NSColor(
+            calibratedWhite: tone == .light ? 1 : 0,
+            alpha: CGFloat(opacity)
+        )
     }
 }
 
