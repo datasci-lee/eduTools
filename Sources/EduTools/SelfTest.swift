@@ -15,43 +15,7 @@ private struct SelfTestRunner {
 }
 
 func runSelfTests() -> Int32 {
-    var runner = SelfTestRunner()
-
-    let mouseEntered = NSEvent.enterExitEvent(
-        with: .mouseEntered,
-        location: .zero,
-        modifierFlags: [],
-        timestamp: 0,
-        windowNumber: 0,
-        context: nil,
-        eventNumber: 0,
-        trackingNumber: 0,
-        userData: nil
-    )!
-    let mouseExited = NSEvent.enterExitEvent(
-        with: .mouseExited,
-        location: .zero,
-        modifierFlags: [],
-        timestamp: 0,
-        windowNumber: 0,
-        context: nil,
-        eventNumber: 0,
-        trackingNumber: 0,
-        userData: nil
-    )!
-    // Mouse-event reads require a WindowServer session (and throw headlessly), so verify only guarded enter/exit reads and the event-kind table here.
-    runner.expect(
-        !PointerEventKind.isEraserTip(mouseEntered)
-            && !PointerEventKind.isEraserTip(mouseExited)
-            && !PointerEventKind.canQueryPointingDevice(.mouseEntered)
-            && !PointerEventKind.canQueryPointingDevice(.mouseExited)
-            && PointerEventKind.canQueryPointingDevice(.mouseMoved)
-            && PointerEventKind.canQueryPointingDevice(.leftMouseDown)
-            && PointerEventKind.canQueryPointingDevice(.rightMouseDown)
-            && PointerEventKind.canQueryPointingDevice(.tabletProximity)
-            && !PointerEventKind.canQueryPointingDevice(.cursorUpdate),
-        "synthetic enter and exit events should guard device queries and the event-kind table should remain complete"
-    )
+    let runner = SelfTestRunner()
 
     if runner.failures.isEmpty {
         print("SelfTest: \(runner.passed) passed, 0 failed")

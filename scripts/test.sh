@@ -11,15 +11,17 @@ MODULE_CACHE_PATH="$SCRATCH_PATH/module-cache"
 
 usage() {
     cat >&2 <<'USAGE'
-usage: scripts/test.sh (unit|integration|all) [...] [--filter <regex>] [--coverage] [--xunit <path>]
-       scripts/test.sh gui|e2e
+usage: scripts/test.sh (unit|integration|gui|all) [...] [--filter <regex>] [--coverage] [--xunit <path>]
+       scripts/test.sh e2e
 
-gui/e2e targets are not available yet (planned for S3/S4).
+all runs unit+integration only. gui requires WindowServer and exits 3 with UNRUNNABLE when unavailable.
+exit codes: 0=pass, 1=failure, 3=UNRUNNABLE, 4=usage error. e2e is planned for S4.
 USAGE
 }
 
 unit_selected=false
 integration_selected=false
+gui_selected=false
 coverage_enabled=false
 filter_regex=""
 xunit_path=""
@@ -34,13 +36,17 @@ while [[ $# -gt 0 ]]; do
             integration_selected=true
             shift
             ;;
+        gui)
+            gui_selected=true
+            shift
+            ;;
         all)
             unit_selected=true
             integration_selected=true
             shift
             ;;
-        gui|e2e)
-            echo "EduTools tests: '$1' target is not available yet (gui=S3, e2e=S4)." >&2
+        e2e)
+            echo "EduTools tests: 'e2e' target is not available yet (planned for S4)." >&2
             exit 4
             ;;
         --filter)
@@ -75,7 +81,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ "$unit_selected" == false && "$integration_selected" == false ]]; then
+if [[ "$unit_selected" == false && "$integration_selected" == false && "$gui_selected" == false ]]; then
     usage
     exit 4
 fi
@@ -92,6 +98,14 @@ fi
 
 if ! swift_bin="$(xcrun --find swift 2>/dev/null)" || [[ ! -x "$swift_bin" ]]; then
     echo "EduTools tests: UNRUNNABLE - Swift could not be located with xcrun." >&2
+    exit 3
+fi
+if ! swiftc_bin="$(xcrun --find swiftc 2>/dev/null)" || [[ ! -x "$swiftc_bin" ]]; then
+    echo "EduTools tests: UNRUNNABLE - swiftc could not be located with xcrun." >&2
+    exit 3
+fi
+if ! sdk_path="$(xcrun --show-sdk-path 2>/dev/null)" || [[ ! -d "$sdk_path" ]]; then
+    echo "EduTools tests: UNRUNNABLE - the macOS SDK could not be located with xcrun." >&2
     exit 3
 fi
 
@@ -112,6 +126,30 @@ mkdir -p \
     "$MODULE_CACHE_PATH"
 export CLANG_MODULE_CACHE_PATH="$MODULE_CACHE_PATH"
 export SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE_PATH"
+
+if [[ "$gui_selected" == true ]]; then
+    window_server_check="$SCRATCH_PATH/window-server-check"
+    "$swiftc_bin" \
+        -parse-as-library \
+        -sdk "$sdk_path" \
+        -module-cache-path "$MODULE_CACHE_PATH" \
+        -DWINDOW_SERVER_CHECK_MAIN \
+        "$ROOT_DIR/Tests/Support/WindowServer.swift" \
+        -framework CoreGraphics \
+        -o "$window_server_check"
+    window_server_compile_status=$?
+    if [[ $window_server_compile_status -ne 0 ]]; then
+        echo "EduTools tests: WindowServer preflight could not be compiled or executed." >&2
+        exit 1
+    fi
+    "$window_server_check"
+    window_server_status=$?
+    if [[ $window_server_status -ne 0 ]]; then
+        [[ $window_server_status -eq 3 ]] && exit 3
+        echo "EduTools tests: WindowServer preflight could not be executed." >&2
+        exit 1
+    fi
+fi
 
 case "$developer_dir" in
     */CommandLineTools)
@@ -138,19 +176,21 @@ esac
 
 echo "EduTools tests: toolchain=$toolchain_kind developer_dir=$developer_dir swift=$swift_bin"
 
-if [[ "$unit_selected" == true && "$integration_selected" == true ]]; then
-    target_module_regex='(UnitTests|IntegrationTests)'
-    target_filter='^(UnitTests|IntegrationTests)\.'
-elif [[ "$unit_selected" == true ]]; then
-    target_module_regex='UnitTests'
-    target_filter='^UnitTests\.'
-else
-    target_module_regex='IntegrationTests'
-    target_filter='^IntegrationTests\.'
+selected_modules=()
+if [[ "$unit_selected" == true ]]; then
+    selected_modules+=(UnitTests)
 fi
+if [[ "$integration_selected" == true ]]; then
+    selected_modules+=(IntegrationTests)
+fi
+if [[ "$gui_selected" == true ]]; then
+    selected_modules+=(GUITests)
+fi
+target_module_regex="$(IFS='|'; echo "${selected_modules[*]}")"
+target_filter="^(${target_module_regex})\."
 
 if [[ -n "$filter_regex" ]]; then
-    target_filter="^(?=${target_module_regex}\\.)(?=.*(${filter_regex})).*"
+    target_filter="^(?=(${target_module_regex})\\.)(?=.*(${filter_regex})).*"
 fi
 swift_test_args+=(--filter "$target_filter")
 

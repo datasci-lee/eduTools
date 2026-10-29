@@ -11,7 +11,7 @@
 | T0 빌드 | arm64·x86_64 컴파일, 번들·서명·리소스 | 모든 맥, 개발자 | `./build.sh` |
 | T1 단위 | 입력→출력 순수 로직 | 헤드리스, 개발자 | `scripts/test.sh unit` |
 | T2 통합 | 모듈 합성, 임시 I/O, 설정·골든, 가짜 계층 | 헤드리스, 개발자 | `scripts/test.sh integration` |
-| T3 GUI | 실제 뷰·창과 합성 이벤트 | WindowServer, 사용자 맥 | 예정(S3) |
+| T3 GUI | 실제 뷰·창과 합성 이벤트 | WindowServer, 사용자 맥 | `scripts/test.sh gui` |
 | T4 E2E | 실제 앱·OS 입력·AX·화면 픽셀 | 접근성·화면 기록 권한, 사용자 | 예정(S4) |
 | T5 릴리스 | 번들·서명·plist·리소스 개수·속성 레이어 정합·자체 시험 코드 탐지·DMG | 모든 맥, 릴리스 담당 | [`scripts/verify-bundle.sh`](../../scripts/verify-bundle.sh) |
 | T6 수동 | Pencil·Sidecar·다중 모니터·프로젝터·권한 | 실제 장비, 사용자 | [`manual-checklist.md`](manual-checklist.md) |
@@ -43,6 +43,8 @@
 | 크래시·데이터 유실 수정 | 가능한 가장 낮은 재현 시험 + 회귀 대장 |
 
 모든 변경의 G1은 `scripts/test.sh unit integration`이며 종료코드 0과 실패 0이 필요하다. `./build.sh test`는 T0 앱 빌드·잔여 SelfTest·G1을 묶는다. 입력·뷰 변경의 G2는 사용자 WindowServer에서 T3를 실행한다. 릴리스 G3는 G1·G2에 T4 스모크, T5, T6 기록을 더한다. 개발자는 헤드리스 G1과 변이 증거를 책임지고, 사용자는 권한·화면·실장비가 필요한 G2/G3를 확인한다.
+
+T3의 `scripts/test.sh gui`는 사용자 맥 전용이며 WindowServer 연결이 없으면 실패나 통과 대신 `UNRUNNABLE`과 종료코드 3을 반환한다.
 
 ## 정책과 단계
 
