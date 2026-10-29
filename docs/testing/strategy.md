@@ -13,8 +13,8 @@
 | T2 통합 | 모듈 합성, 임시 I/O, 설정·골든, 가짜 계층 | 헤드리스, 개발자 | `scripts/test.sh integration` |
 | T3 GUI | 실제 뷰·창과 합성 이벤트 | WindowServer, 사용자 맥 | 예정(S3) |
 | T4 E2E | 실제 앱·OS 입력·AX·화면 픽셀 | 접근성·화면 기록 권한, 사용자 | 예정(S4) |
-| T5 릴리스 | DMG·서명·plist·리소스·실행 스모크 | 모든 맥, 릴리스 담당 | 예정(S5) |
-| T6 수동 | Pencil·Sidecar·다중 모니터·프로젝터·권한 | 실제 장비, 사용자 | 예정(S5) |
+| T5 릴리스 | 번들·서명·plist·리소스 개수·속성 레이어 정합·자체 시험 코드 탐지·DMG | 모든 맥, 릴리스 담당 | [`scripts/verify-bundle.sh`](../../scripts/verify-bundle.sh) |
+| T6 수동 | Pencil·Sidecar·다중 모니터·프로젝터·권한 | 실제 장비, 사용자 | [`manual-checklist.md`](manual-checklist.md) |
 
 횡단 장치는 교차 플랫폼 JSON 픽스처, 버전별 골든 설정, 시드 고정 불변식, 변이 증거, 크래시 회귀 대장, 정보용 커버리지 지도다.
 
@@ -49,5 +49,6 @@
 - 위험 근거 없는 시험, 같은 동작의 사례 나열, 소스 문구 고정 시험, 기존 시험 약화·삭제·skip은 금지한다.
 - 결정론을 위해 시계·난수·경로를 주입하고 정렬을 고정한다. 플레이키 실패는 재시도로 덮지 않는다.
 - 골든 갱신은 명시적 갱신 모드와 diff 검수를 거친다. 커버리지는 게이트가 아니라 영향 영역의 빈 곳을 찾는 지도다.
-- S1은 SwiftPM·지원 도구·단축키/줌/기하 이관, S1b/c는 나머지 SelfTest 이관, S2는 통합 이음새, S3는 GUI, S4는 E2E, S5는 릴리스·수동·CI, S6는 문서 동기화다.
-- `manual-checklist.md`와 `crash-regressions.md`는 예정(S5), `e2e.md`는 예정(S4)이며 현재 파일이나 링크를 만들지 않는다.
+- S1은 SwiftPM·지원 도구·단축키/줌/기하 이관, S1b/c는 나머지 SelfTest 이관, S2는 통합 이음새, S3는 GUI, S4는 E2E, S6는 문서 동기화다. S5의 릴리스 검증·수동 체크리스트·크래시 대장은 완료했고, CI(GitHub Actions)는 러너의 macOS 26 지원 여부를 확인한 뒤 제안하므로 미정이다.
+- [`manual-checklist.md`](manual-checklist.md)는 실제 장비·권한·사용자 흐름의 수동 판정 절차를 담고, [`crash-regressions.md`](crash-regressions.md)는 크래시의 증상·원인·수정·재현 시험을 추적한다. `e2e.md`만 예정(S4)이다.
+- 앱 번들에는 자체 시험 코드가 아직 포함되어 있다. S1b/c에서 제거할 예정이며, [`scripts/verify-bundle.sh`](../../scripts/verify-bundle.sh)는 현재 이를 INFO로 표시하고 이관 완료 후 FAIL로 승격한다.

@@ -11,11 +11,18 @@ scripts/test.sh unit --filter 'ShortcutTests'
 scripts/test.sh unit --coverage
 scripts/test.sh all --xunit .build/test-results.xml
 ./build.sh test
+scripts/verify-bundle.sh [--app <path>] [--dmg <path>]
 ```
 
 `unit integration`처럼 두 계층을 함께 지정할 수도 있다. `--filter` 정규식은 선택된 시험 타깃의 전체 시험 ID에서 검색한다. `--coverage`는 시험 파일을 제외한 `EduTools` 소스별 `llvm-cov report` 표를 마지막에 출력한다. `./build.sh test`는 universal 앱 빌드와 남은 SelfTest를 먼저 실행한 다음 단위·통합 시험을 실행한다.
 
-## 종료코드와 결과
+릴리스 전에는 `./build.sh dmg`를 실행한 뒤 `scripts/verify-bundle.sh`로 앱 번들과 DMG를 검증한다. 앱 번들에는 자체 시험 코드가 아직 포함되어 있으며, 검증 스크립트는 이를 INFO로 표시하다가 S1b/c에서 제거가 끝나면 FAIL로 승격한다.
+
+실제 장비·권한·사용자 흐름은 [`manual-checklist.md`](manual-checklist.md)에서 확인하고, 크래시의 증상·원인·수정·재현 시험은 [`crash-regressions.md`](crash-regressions.md)에 기록한다.
+
+## `scripts/test.sh` 종료코드와 결과
+
+아래 표는 `scripts/test.sh`의 종료코드 규약이다.
 
 | 코드 | 뜻 | 조치 |
 | --- | --- | --- |
@@ -23,6 +30,8 @@ scripts/test.sh all --xunit .build/test-results.xml
 | 1 | 빌드 또는 시험 실패 | 첫 컴파일 오류나 실패 시험 ID부터 확인한다. |
 | 3 | UNRUNNABLE | 출력된 툴체인·런타임 부족 사유를 해소한 뒤 다시 실행한다. |
 | 4 | 사용법 오류 | 지원 계층과 옵션을 확인한다. GUI/E2E는 아직 없다. |
+
+`scripts/verify-bundle.sh`도 같은 0/1/3/4 규약(통과/검증 실패/UNRUNNABLE/사용법 오류)을 따른다.
 
 Swift Testing 출력의 `Test ... failed`가 실패한 시험이며, `#expect` 진단은 실제값과 기대값을 함께 보여 준다. xUnit 파일은 외부 결과 수집용이고 터미널 종료코드가 게이트의 정본이다. 커버리지는 빈 영역을 찾는 정보용 지도이지 통과 기준이 아니다.
 
