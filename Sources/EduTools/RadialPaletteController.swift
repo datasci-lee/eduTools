@@ -821,6 +821,7 @@ final class RadialPaletteController: NSObject {
     private let dispatcher: AppCommandDispatcher
     private let settingsStore: SettingsStore
     private let defaults: UserDefaults
+    private let positionStore: ScreenPositionStore
     private let openSettings: () -> Void
     private let displayPresetEntries: () -> [DisplayPresetMenuEntry]
     private let applyDisplayPreset: (Int) -> Void
@@ -875,6 +876,11 @@ final class RadialPaletteController: NSObject {
         self.dispatcher = dispatcher
         self.settingsStore = settingsStore
         self.defaults = defaults
+        positionStore = ScreenPositionStore(
+            defaults: defaults,
+            positionsKey: DefaultsKey.positions,
+            displayUUIDKey: DefaultsKey.displayUUID
+        )
         self.openSettings = openSettings
         self.displayPresetEntries = displayPresetEntries
         self.applyDisplayPreset = applyDisplayPreset
@@ -1454,11 +1460,7 @@ final class RadialPaletteController: NSObject {
     }
 
     private func restorePosition() {
-        let screensByIdentifier = Dictionary(
-            uniqueKeysWithValues: NSScreen.screens.compactMap { screen in
-                displayUUID(for: screen).map { ($0, screen) }
-            }
-        )
+        let screensByIdentifier = screensByDisplayUUID()
         let savedIdentifier = defaults.string(forKey: DefaultsKey.displayUUID)
         let targetScreen: NSScreen
         if let savedIdentifier, let savedScreen = screensByIdentifier[savedIdentifier] {
@@ -1472,29 +1474,18 @@ final class RadialPaletteController: NSObject {
             return
         }
 
-        let visible = targetScreen.visibleFrame
-        let availableWidth = max(0, visible.width - RadialPaletteMetrics.collapsedDiameter)
-        let availableHeight = max(0, visible.height - RadialPaletteMetrics.collapsedDiameter)
-        let saved = savedRatio(for: currentDisplayUUID)
-        let xRatio = min(max(saved?.x ?? 0.5, 0), 1)
-        let yRatio = min(max(saved?.y ?? 0.85, 0), 1)
+        let diameter = RadialPaletteMetrics.collapsedDiameter
+        let origin = restoredOrigin(
+            ratio: positionStore.ratio(for: currentDisplayUUID),
+            default: CGPoint(x: 0.5, y: 0.85),
+            visibleFrame: targetScreen.visibleFrame,
+            size: CGSize(width: diameter, height: diameter)
+        )
         restingCenter = CGPoint(
-            x: visible.minX + RadialPaletteMetrics.centerRadius + availableWidth * xRatio,
-            y: visible.minY + RadialPaletteMetrics.centerRadius + availableHeight * yRatio
+            x: origin.x + RadialPaletteMetrics.centerRadius,
+            y: origin.y + RadialPaletteMetrics.centerRadius
         )
         applyPanelFrame(on: targetScreen)
-    }
-
-    private func savedRatio(for identifier: String?) -> CGPoint? {
-        guard let identifier,
-              let positions = defaults.dictionary(forKey: DefaultsKey.positions),
-              let entry = positions[identifier] as? [String: Any],
-              let x = entry["x"] as? NSNumber,
-              let y = entry["y"] as? NSNumber
-        else {
-            return nil
-        }
-        return CGPoint(x: x.doubleValue, y: y.doubleValue)
     }
 
     private func saveCurrentPosition() {
@@ -1504,19 +1495,17 @@ final class RadialPaletteController: NSObject {
             NSLog("EduTools: radial palette could not save its position without a screen")
             return
         }
-        let visible = screen.visibleFrame
-        let availableWidth = max(1, visible.width - RadialPaletteMetrics.collapsedDiameter)
-        let availableHeight = max(1, visible.height - RadialPaletteMetrics.collapsedDiameter)
         let origin = CGPoint(
             x: restingCenter.x - RadialPaletteMetrics.centerRadius,
             y: restingCenter.y - RadialPaletteMetrics.centerRadius
         )
-        let xRatio = min(max((origin.x - visible.minX) / availableWidth, 0), 1)
-        let yRatio = min(max((origin.y - visible.minY) / availableHeight, 0), 1)
-        var positions = defaults.dictionary(forKey: DefaultsKey.positions) ?? [:]
-        positions[identifier] = ["x": xRatio, "y": yRatio]
-        defaults.set(positions, forKey: DefaultsKey.positions)
-        defaults.set(identifier, forKey: DefaultsKey.displayUUID)
+        let diameter = RadialPaletteMetrics.collapsedDiameter
+        let ratio = savedRatio(
+            origin: origin,
+            visibleFrame: screen.visibleFrame,
+            size: CGSize(width: diameter, height: diameter)
+        )
+        positionStore.save(ratio: ratio, displayUUID: identifier)
         currentDisplayUUID = identifier
     }
 
