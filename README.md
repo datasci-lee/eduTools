@@ -15,7 +15,7 @@ xattr -dr com.apple.quarantine /Applications/EduTools.app
 
 ```sh
 ./build.sh          # dist/EduTools.app
-./build.sh test     # 빌드 후 자체 점검(--selftest)
+./build.sh test     # 앱 빌드 후 단위·통합 시험
 ./build.sh dmg      # dist/EduTools-<버전>.dmg
 open dist/EduTools.app
 ```
