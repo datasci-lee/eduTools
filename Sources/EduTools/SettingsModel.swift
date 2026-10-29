@@ -68,7 +68,6 @@ enum RadialPaletteGlassStyle {
 
     static let primaryWhiteComponent: CGFloat = 0.10
     static let disabledContentOpacity = 0.55
-    static let colorCellTintOpacity = 0.82
     static let selectedTintOpacity = 0.72
 
     static let primaryContentColor = NSColor(
@@ -88,7 +87,6 @@ enum RadialPaletteGlassStyle {
         calibratedWhite: primaryWhiteComponent,
         alpha: 0.90
     )
-    static let colorCellBorderColor = NSColor(calibratedWhite: 1, alpha: 1)
 
     static func contentColor(isSelected: Bool, isEnabled: Bool) -> NSColor {
         if !isEnabled {
