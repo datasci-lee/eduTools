@@ -69,6 +69,7 @@ final class LessonTimerController: NSObject, NSMenuDelegate {
 
     private let engine = LessonTimerEngine()
     private let defaults: UserDefaults
+    private let positionStore: ScreenPositionStore
     private let settingsStore: SettingsStore
     private let panel: LessonTimerPanel
     private let rootView = LessonTimerDragView()
@@ -94,6 +95,11 @@ final class LessonTimerController: NSObject, NSMenuDelegate {
 
     init(defaults: UserDefaults = .standard, settingsStore: SettingsStore? = nil) {
         self.defaults = defaults
+        positionStore = ScreenPositionStore(
+            defaults: defaults,
+            positionsKey: DefaultsKey.positions,
+            displayUUIDKey: DefaultsKey.displayUUID
+        )
         let resolvedSettingsStore = settingsStore ?? SettingsStore(defaults: defaults)
         self.settingsStore = resolvedSettingsStore
         displayMode = DisplayMode(
@@ -582,20 +588,16 @@ final class LessonTimerController: NSObject, NSMenuDelegate {
     }
 
     private func restorePosition() {
-        let screensByIdentifier = Dictionary(
-            uniqueKeysWithValues: NSScreen.screens.compactMap { screen in
-                displayUUID(for: screen).map { ($0, screen) }
-            }
-        )
+        let screensByIdentifier = screensByDisplayUUID()
         let savedIdentifier = defaults.string(forKey: DefaultsKey.displayUUID)
-        let savedRatio = savedRatio(for: savedIdentifier)
+        let ratio = positionStore.ratio(for: savedIdentifier)
         if let savedIdentifier, let screen = screensByIdentifier[savedIdentifier] {
-            placePanel(on: screen, identifier: savedIdentifier, ratio: savedRatio)
+            placePanel(on: screen, identifier: savedIdentifier, ratio: ratio)
         } else if let primaryScreen = NSScreen.screens.first {
             placePanel(
                 on: primaryScreen,
                 identifier: displayUUID(for: primaryScreen),
-                ratio: savedRatio
+                ratio: ratio
             )
         } else {
             NSLog("EduTools: lesson timer could not restore position because no screen is available")
@@ -604,13 +606,11 @@ final class LessonTimerController: NSObject, NSMenuDelegate {
 
     private func placePanel(on screen: NSScreen, identifier: String?, ratio: CGPoint?) {
         let visibleFrame = screen.visibleFrame
-        let availableWidth = max(0, visibleFrame.width - panel.frame.width)
-        let availableHeight = max(0, visibleFrame.height - panel.frame.height)
-        let xRatio = min(max(ratio?.x ?? 0.95, 0), 1)
-        let yRatio = min(max(ratio?.y ?? 0.88, 0), 1)
-        let origin = CGPoint(
-            x: visibleFrame.minX + availableWidth * xRatio,
-            y: visibleFrame.minY + availableHeight * yRatio
+        let origin = restoredOrigin(
+            ratio: ratio,
+            default: CGPoint(x: 0.95, y: 0.88),
+            visibleFrame: visibleFrame,
+            size: panel.frame.size
         )
         isApplyingFrame = true
         panel.setFrameOrigin(origin)
@@ -621,18 +621,6 @@ final class LessonTimerController: NSObject, NSMenuDelegate {
         }
     }
 
-    private func savedRatio(for identifier: String?) -> CGPoint? {
-        guard let identifier,
-              let positions = defaults.dictionary(forKey: DefaultsKey.positions),
-              let entry = positions[identifier] as? [String: Any],
-              let x = entry["x"] as? NSNumber,
-              let y = entry["y"] as? NSNumber
-        else {
-            return nil
-        }
-        return CGPoint(x: x.doubleValue, y: y.doubleValue)
-    }
-
     private func saveCurrentPosition() {
         guard !isApplyingFrame,
               let screen = screenContainingPanel(),
@@ -640,15 +628,12 @@ final class LessonTimerController: NSObject, NSMenuDelegate {
         else {
             return
         }
-        let visibleFrame = screen.visibleFrame
-        let availableWidth = max(1, visibleFrame.width - panel.frame.width)
-        let availableHeight = max(1, visibleFrame.height - panel.frame.height)
-        let xRatio = min(max((panel.frame.minX - visibleFrame.minX) / availableWidth, 0), 1)
-        let yRatio = min(max((panel.frame.minY - visibleFrame.minY) / availableHeight, 0), 1)
-        var positions = defaults.dictionary(forKey: DefaultsKey.positions) ?? [:]
-        positions[identifier] = ["x": xRatio, "y": yRatio]
-        defaults.set(positions, forKey: DefaultsKey.positions)
-        defaults.set(identifier, forKey: DefaultsKey.displayUUID)
+        let ratio = savedRatio(
+            origin: panel.frame.origin,
+            visibleFrame: screen.visibleFrame,
+            size: panel.frame.size
+        )
+        positionStore.save(ratio: ratio, displayUUID: identifier)
         currentDisplayUUID = identifier
     }
 
@@ -664,7 +649,11 @@ final class LessonTimerController: NSObject, NSMenuDelegate {
         if let currentDisplayUUID,
            let screen = NSScreen.screens.first(where: { displayUUID(for: $0) == currentDisplayUUID }) {
             guard !screen.frame.intersects(panel.frame) else { return }
-            placePanel(on: screen, identifier: currentDisplayUUID, ratio: savedRatio(for: currentDisplayUUID))
+            placePanel(
+                on: screen,
+                identifier: currentDisplayUUID,
+                ratio: positionStore.ratio(for: currentDisplayUUID)
+            )
             return
         }
 
@@ -672,7 +661,7 @@ final class LessonTimerController: NSObject, NSMenuDelegate {
             NSLog("EduTools: lesson timer could not move after a display change because no screen is available")
             return
         }
-        let priorRatio = savedRatio(for: currentDisplayUUID)
+        let priorRatio = positionStore.ratio(for: currentDisplayUUID)
         placePanel(
             on: primaryScreen,
             identifier: displayUUID(for: primaryScreen),

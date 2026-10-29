@@ -48,6 +48,7 @@ final class PaletteController: NSObject {
     private let dispatcher: AppCommandDispatcher
     private let settingsStore: SettingsStore
     private let defaults: UserDefaults
+    private let positionStore: ScreenPositionStore
     private let panel: PalettePanel
     private let rootView = NSVisualEffectView()
     private let controlsStack = NSStackView()
@@ -80,6 +81,11 @@ final class PaletteController: NSObject {
         self.dispatcher = dispatcher
         self.settingsStore = settingsStore
         self.defaults = defaults
+        positionStore = ScreenPositionStore(
+            defaults: defaults,
+            positionsKey: DefaultsKey.positions,
+            displayUUIDKey: DefaultsKey.displayUUID
+        )
         orientation = Orientation(rawValue: defaults.string(forKey: DefaultsKey.orientation) ?? "")
             ?? .horizontal
         panel = PalettePanel(
@@ -455,11 +461,7 @@ final class PaletteController: NSObject {
     }
 
     private func restorePosition() {
-        let screensByIdentifier = Dictionary(
-            uniqueKeysWithValues: NSScreen.screens.compactMap { screen in
-                displayUUID(for: screen).map { ($0, screen) }
-            }
-        )
+        let screensByIdentifier = screensByDisplayUUID()
         let savedIdentifier = defaults.string(forKey: DefaultsKey.displayUUID)
         let targetScreen: NSScreen
         if let savedIdentifier, let savedScreen = screensByIdentifier[savedIdentifier] {
@@ -477,14 +479,11 @@ final class PaletteController: NSObject {
 
     private func placePanel(on screen: NSScreen, identifier: String?) {
         let visibleFrame = screen.visibleFrame
-        let availableWidth = max(0, visibleFrame.width - panel.frame.width)
-        let availableHeight = max(0, visibleFrame.height - panel.frame.height)
-        let saved = savedRatio(for: identifier)
-        let xRatio = min(max(saved?.x ?? 0.5, 0), 1)
-        let yRatio = min(max(saved?.y ?? 0.85, 0), 1)
-        let origin = CGPoint(
-            x: visibleFrame.minX + availableWidth * xRatio,
-            y: visibleFrame.minY + availableHeight * yRatio
+        let origin = restoredOrigin(
+            ratio: positionStore.ratio(for: identifier),
+            default: CGPoint(x: 0.5, y: 0.85),
+            visibleFrame: visibleFrame,
+            size: panel.frame.size
         )
         isApplyingFrame = true
         panel.setFrameOrigin(origin)
@@ -495,18 +494,6 @@ final class PaletteController: NSObject {
         }
     }
 
-    private func savedRatio(for identifier: String?) -> CGPoint? {
-        guard let identifier,
-              let positions = defaults.dictionary(forKey: DefaultsKey.positions),
-              let entry = positions[identifier] as? [String: Any],
-              let x = entry["x"] as? NSNumber,
-              let y = entry["y"] as? NSNumber
-        else {
-            return nil
-        }
-        return CGPoint(x: x.doubleValue, y: y.doubleValue)
-    }
-
     private func saveCurrentPosition() {
         guard !isApplyingFrame,
               let screen = screenContainingPanel(),
@@ -514,15 +501,12 @@ final class PaletteController: NSObject {
         else {
             return
         }
-        let visibleFrame = screen.visibleFrame
-        let availableWidth = max(1, visibleFrame.width - panel.frame.width)
-        let availableHeight = max(1, visibleFrame.height - panel.frame.height)
-        let xRatio = min(max((panel.frame.minX - visibleFrame.minX) / availableWidth, 0), 1)
-        let yRatio = min(max((panel.frame.minY - visibleFrame.minY) / availableHeight, 0), 1)
-        var positions = defaults.dictionary(forKey: DefaultsKey.positions) ?? [:]
-        positions[identifier] = ["x": xRatio, "y": yRatio]
-        defaults.set(positions, forKey: DefaultsKey.positions)
-        defaults.set(identifier, forKey: DefaultsKey.displayUUID)
+        let ratio = savedRatio(
+            origin: panel.frame.origin,
+            visibleFrame: screen.visibleFrame,
+            size: panel.frame.size
+        )
+        positionStore.save(ratio: ratio, displayUUID: identifier)
         currentDisplayUUID = identifier
     }
 
