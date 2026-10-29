@@ -57,17 +57,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.paletteController = paletteController
         dispatcher.paletteController = paletteController
 
-        let radialPaletteController = RadialPaletteController(
-            state: appState,
-            dispatcher: dispatcher,
-            settingsStore: settingsStore,
-            openSettings: { [weak settingsController] in
-                settingsController?.showSettings()
-            }
-        )
-        self.radialPaletteController = radialPaletteController
-        dispatcher.radialPaletteController = radialPaletteController
-
         let timerCoordinator = TimerCoordinator(settingsStore: settingsStore)
         self.timerCoordinator = timerCoordinator
         dispatcher.timerCoordinator = timerCoordinator
@@ -93,6 +82,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         self.displayApplier = displayApplier
         dispatcher.displayApplier = displayApplier
+
+        let radialPaletteController = RadialPaletteController(
+            state: appState,
+            dispatcher: dispatcher,
+            settingsStore: settingsStore,
+            openSettings: { [weak settingsController] in
+                settingsController?.showSettings()
+            },
+            displayPresetEntries: {
+                displayApplier.menuEntries()
+            },
+            applyDisplayPreset: { index in
+                displayApplier.applyPreset(at: index)
+            },
+            openDisplaySettings: {
+                settingsController.showDisplaySettings()
+            }
+        )
+        self.radialPaletteController = radialPaletteController
+        dispatcher.radialPaletteController = radialPaletteController
 
         let statusMenu = StatusMenu(
             state: appState,
