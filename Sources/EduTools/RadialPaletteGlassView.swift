@@ -50,7 +50,6 @@ enum RadialPaletteMetrics {
     static let propertyLabelFontSize: CGFloat = 9.5
     static let propertyLabelPadding: CGFloat = 6
     static let cellStrokeWidth: CGFloat = 0.8
-    static let colorCellStrokeWidth: CGFloat = 1.1
     static let hoverStrokeWidth: CGFloat = 1.8
     static let selectedStrokeWidth: CGFloat = 1.2
     static let colorSelectionOuterWidth: CGFloat = 4.2
@@ -62,6 +61,41 @@ enum RadialPaletteMetrics {
     static let textSizes: [CGFloat] = [16, 24, 36, 48, 72]
     static let highlighterOpacities: [CGFloat] = [0.2, 0.4, 0.6, 0.8, 1]
     static let laserTrailDurations: [TimeInterval] = [0.3, 0.7, 1, 2]
+    static let colorPreviewDiameter: CGFloat = 14
+    static let previewSlotWidth: CGFloat = 18
+    static let previewSlotHeight: CGFloat = 15
+    static let previewLabelFontSize: CGFloat = 7.5
+    static let previewSpacing: CGFloat = 0
+    static let previewOutlineOuterWidth: CGFloat = 1
+    static let previewOutlineInnerWidth: CGFloat = 0.35
+    static let strokePreviewLength: CGFloat = 16
+    static let strokePreviewMinimumWidth: CGFloat = 1.5
+    static let strokePreviewMaximumWidth: CGFloat = 6
+    static let textPreviewMinimumSize: CGFloat = 8
+    static let textPreviewMaximumSize: CGFloat = 14
+    static let opacityPreviewWidth: CGFloat = 16
+    static let opacityPreviewHeight: CGFloat = 10
+    static let opacityPreviewCornerRadius: CGFloat = 2
+    static let eraserPreviewMinimumDiameter: CGFloat = 5
+    static let eraserPreviewMaximumDiameter: CGFloat = 15
+    static let eraserPreviewStrokeWidth: CGFloat = 1.2
+}
+
+enum RadialPalettePreview: Equatable {
+    case strokeWidth(relative: CGFloat, color: NSColor)
+    case textSize(relative: CGFloat, color: NSColor)
+    case opacity(CGFloat, color: NSColor)
+    case eraserDiameter(relative: CGFloat)
+
+    static func relativeSize(of value: CGFloat, in values: [CGFloat]) -> CGFloat {
+        guard let minimum = values.min(),
+              let maximum = values.max(),
+              maximum > minimum
+        else {
+            return 0.5
+        }
+        return min(max((value - minimum) / (maximum - minimum), 0), 1)
+    }
 }
 
 struct RadialPaletteRenderCell: Identifiable {
@@ -75,10 +109,45 @@ struct RadialPaletteRenderCell: Identifiable {
     let shortLabel: String
     let shortcut: String
     let color: NSColor?
+    let preview: RadialPalettePreview?
     let isSelected: Bool
     let isEnabled: Bool
     let isHovered: Bool
     let isFocused: Bool
+
+    init(
+        id: String,
+        ring: RadialPaletteRing,
+        geometry: RadialPaletteSectorGeometry,
+        iconKey: String?,
+        iconName: String?,
+        attributeConfiguration: AttrIconConfiguration?,
+        accessibilityLabel: String,
+        shortLabel: String,
+        shortcut: String,
+        color: NSColor?,
+        preview: RadialPalettePreview? = nil,
+        isSelected: Bool,
+        isEnabled: Bool,
+        isHovered: Bool,
+        isFocused: Bool
+    ) {
+        self.id = id
+        self.ring = ring
+        self.geometry = geometry
+        self.iconKey = iconKey
+        self.iconName = iconName
+        self.attributeConfiguration = attributeConfiguration
+        self.accessibilityLabel = accessibilityLabel
+        self.shortLabel = shortLabel
+        self.shortcut = shortcut
+        self.color = color
+        self.preview = preview
+        self.isSelected = isSelected
+        self.isEnabled = isEnabled
+        self.isHovered = isHovered
+        self.isFocused = isFocused
+    }
 }
 
 struct RadialPaletteRenderPropertyLabel: Identifiable {
@@ -223,6 +292,21 @@ private extension View {
             faceOpacity: faceOpacity
         ))
     }
+
+    func radialPalettePreviewOutline<Outline: Shape>(in outline: Outline) -> some View {
+        overlay {
+            outline.stroke(
+                Color(nsColor: RadialPaletteGlassStyle.regularBorderColor),
+                lineWidth: RadialPaletteMetrics.previewOutlineOuterWidth
+            )
+        }
+        .overlay {
+            outline.stroke(
+                Color(nsColor: RadialPaletteGlassStyle.selectedContentColor),
+                lineWidth: RadialPaletteMetrics.previewOutlineInnerWidth
+            )
+        }
+    }
 }
 
 struct RadialPaletteGlassView: View {
@@ -261,9 +345,9 @@ struct RadialPaletteGlassView: View {
                 .radialPaletteGlass(
                     glass(for: cell),
                     in: shape,
-                    faceOpacity: cell.color == nil && !cell.isSelected
-                        ? model.glassOpacity
-                        : nil
+                    faceOpacity: cell.isSelected && cell.color == nil
+                        ? nil
+                        : model.glassOpacity
                 )
 
             shape.stroke(baseBorderColor(for: cell), lineWidth: baseBorderWidth(for: cell))
@@ -339,25 +423,117 @@ struct RadialPaletteGlassView: View {
                     .accessibilityLabel(Text(cell.accessibilityLabel))
             }
         case .option:
-            ZStack {
-                if let icon {
-                    Image(nsImage: icon)
-                        .renderingMode(
-                            cell.attributeConfiguration == nil ? .template : .original
+            if let color = cell.color {
+                Circle()
+                    .fill(Color(nsColor: color))
+                    .frame(
+                        width: RadialPaletteMetrics.colorPreviewDiameter,
+                        height: RadialPaletteMetrics.colorPreviewDiameter
+                    )
+                    .radialPalettePreviewOutline(in: Circle())
+                    .accessibilityLabel(Text(cell.accessibilityLabel))
+            } else if let preview = cell.preview {
+                VStack(spacing: RadialPaletteMetrics.previewSpacing) {
+                    previewContent(preview, contentColor: contentColor)
+                        .frame(
+                            width: RadialPaletteMetrics.previewSlotWidth,
+                            height: RadialPaletteMetrics.previewSlotHeight
                         )
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 10, height: 10)
+                    Text(cell.shortLabel)
+                        .font(.system(
+                            size: RadialPaletteMetrics.previewLabelFontSize,
+                            weight: .medium
+                        ))
                         .foregroundStyle(contentColor)
-                        .offset(y: -3)
-                        .accessibilityLabel(Text(cell.accessibilityLabel))
                 }
-                Text(cell.shortLabel)
-                    .font(.system(size: 8, weight: .medium))
-                    .foregroundStyle(contentColor)
-                    .offset(y: icon == nil ? 0 : 7)
+                .accessibilityLabel(Text(cell.accessibilityLabel))
+            } else {
+                ZStack {
+                    if let icon {
+                        Image(nsImage: icon)
+                            .renderingMode(
+                                cell.attributeConfiguration == nil ? .template : .original
+                            )
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 10, height: 10)
+                            .foregroundStyle(contentColor)
+                            .offset(y: -3)
+                            .accessibilityLabel(Text(cell.accessibilityLabel))
+                    }
+                    Text(cell.shortLabel)
+                        .font(.system(size: 8, weight: .medium))
+                        .foregroundStyle(contentColor)
+                        .offset(y: icon == nil ? 0 : 7)
+                }
             }
         }
+    }
+
+    @ViewBuilder
+    private func previewContent(
+        _ preview: RadialPalettePreview,
+        contentColor: Color
+    ) -> some View {
+        switch preview {
+        case let .strokeWidth(relative, color):
+            let width = previewDimension(
+                relative: relative,
+                minimum: RadialPaletteMetrics.strokePreviewMinimumWidth,
+                maximum: RadialPaletteMetrics.strokePreviewMaximumWidth
+            )
+            Capsule()
+                .fill(Color(nsColor: color))
+                .frame(width: RadialPaletteMetrics.strokePreviewLength, height: width)
+                .radialPalettePreviewOutline(in: Capsule())
+        case let .textSize(relative, color):
+            let size = previewDimension(
+                relative: relative,
+                minimum: RadialPaletteMetrics.textPreviewMinimumSize,
+                maximum: RadialPaletteMetrics.textPreviewMaximumSize
+            )
+            Text("가")
+                .font(.system(size: size, weight: .semibold))
+                .foregroundStyle(Color(nsColor: color))
+                .shadow(
+                    color: Color(nsColor: RadialPaletteGlassStyle.selectedContentColor),
+                    radius: 0.5
+                )
+                .shadow(
+                    color: Color(nsColor: RadialPaletteGlassStyle.regularBorderColor),
+                    radius: 1
+                )
+        case let .opacity(opacity, color):
+            let sample = RoundedRectangle(
+                cornerRadius: RadialPaletteMetrics.opacityPreviewCornerRadius
+            )
+            ZStack {
+                sample.fill(Color(nsColor: .lightGray))
+                sample.fill(Color(nsColor: color).opacity(Double(opacity)))
+            }
+            .frame(
+                width: RadialPaletteMetrics.opacityPreviewWidth,
+                height: RadialPaletteMetrics.opacityPreviewHeight
+            )
+            .radialPalettePreviewOutline(in: sample)
+        case let .eraserDiameter(relative):
+            let diameter = previewDimension(
+                relative: relative,
+                minimum: RadialPaletteMetrics.eraserPreviewMinimumDiameter,
+                maximum: RadialPaletteMetrics.eraserPreviewMaximumDiameter
+            )
+            Circle()
+                .stroke(contentColor, lineWidth: RadialPaletteMetrics.eraserPreviewStrokeWidth)
+                .frame(width: diameter, height: diameter)
+        }
+    }
+
+    private func previewDimension(
+        relative: CGFloat,
+        minimum: CGFloat,
+        maximum: CGFloat
+    ) -> CGFloat {
+        minimum + relative * (maximum - minimum)
     }
 
     private func iconImage(for cell: RadialPaletteRenderCell) -> NSImage? {
@@ -498,11 +674,7 @@ struct RadialPaletteGlassView: View {
 
     private func glass(for cell: RadialPaletteRenderCell) -> Glass {
         var glass = Glass.regular
-        if let color = cell.color {
-            glass = Glass.regular.tint(
-                Color(nsColor: color).opacity(RadialPaletteGlassStyle.colorCellTintOpacity)
-            )
-        } else if cell.isSelected {
+        if cell.isSelected, cell.color == nil {
             glass = Glass.regular.tint(
                 Color.accentColor.opacity(RadialPaletteGlassStyle.selectedTintOpacity)
             )
@@ -563,9 +735,6 @@ struct RadialPaletteGlassView: View {
         if cell.isHovered, cell.isEnabled {
             return .accentColor
         }
-        if cell.color != nil {
-            return Color(nsColor: RadialPaletteGlassStyle.colorCellBorderColor)
-        }
         if cell.isSelected {
             return Color(nsColor: RadialPaletteGlassStyle.selectedContentColor)
         }
@@ -575,9 +744,6 @@ struct RadialPaletteGlassView: View {
     private func baseBorderWidth(for cell: RadialPaletteRenderCell) -> CGFloat {
         if cell.isHovered, cell.isEnabled {
             return RadialPaletteMetrics.hoverStrokeWidth
-        }
-        if cell.color != nil {
-            return RadialPaletteMetrics.colorCellStrokeWidth
         }
         if cell.isSelected {
             return RadialPaletteMetrics.selectedStrokeWidth

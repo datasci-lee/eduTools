@@ -284,6 +284,7 @@ struct RadialPaletteOption {
     let iconKey: String?
     let iconName: String?
     let color: NSColor?
+    let preview: RadialPalettePreview?
     let shortcut: String
     let isSelected: Bool
     let isEnabled: Bool
@@ -296,6 +297,7 @@ struct RadialPaletteOption {
         iconKey: String?,
         iconName: String?,
         color: NSColor?,
+        preview: RadialPalettePreview? = nil,
         shortcut: String,
         isSelected: Bool,
         isEnabled: Bool = true,
@@ -307,6 +309,7 @@ struct RadialPaletteOption {
         self.iconKey = iconKey
         self.iconName = iconName
         self.color = color
+        self.preview = preview
         self.shortcut = shortcut
         self.isSelected = isSelected
         self.isEnabled = isEnabled
@@ -336,9 +339,42 @@ struct RadialPaletteCell {
     let shortcut: String
     let propertyName: String?
     let color: NSColor?
+    let preview: RadialPalettePreview?
     let isSelected: Bool
     let isEnabled: Bool
     let action: Action
+
+    init(
+        identifier: String,
+        ring: RadialPaletteRing,
+        geometry: RadialPaletteSectorGeometry,
+        name: String,
+        iconKey: String?,
+        iconName: String?,
+        shortLabel: String,
+        shortcut: String,
+        propertyName: String?,
+        color: NSColor?,
+        preview: RadialPalettePreview? = nil,
+        isSelected: Bool,
+        isEnabled: Bool,
+        action: Action
+    ) {
+        self.identifier = identifier
+        self.ring = ring
+        self.geometry = geometry
+        self.name = name
+        self.iconKey = iconKey
+        self.iconName = iconName
+        self.shortLabel = shortLabel
+        self.shortcut = shortcut
+        self.propertyName = propertyName
+        self.color = color
+        self.preview = preview
+        self.isSelected = isSelected
+        self.isEnabled = isEnabled
+        self.action = action
+    }
 
     var innerRadius: CGFloat { geometry.innerRadius }
     var outerRadius: CGFloat { geometry.outerRadius }
@@ -1699,6 +1735,7 @@ final class RadialPaletteController: NSObject {
                             shortcut: option.shortcut,
                             propertyName: optionGroup.name,
                             color: option.color,
+                            preview: option.preview,
                             isSelected: option.isSelected,
                             isEnabled: option.isEnabled,
                             action: .option(option)
@@ -1750,6 +1787,7 @@ final class RadialPaletteController: NSObject {
                 selected: rememberedWidth(for: tool),
                 propertyName: "굵기",
                 idPrefix: "pen.width",
+                makePreview: { .strokeWidth(relative: $0, color: $1) },
                 apply: { [weak state = self.state] in state?.setWidth($0, for: tool) }
             ), booleanOptions(
                 name: recognitionDefinition.name,
@@ -1764,6 +1802,7 @@ final class RadialPaletteController: NSObject {
                 selected: rememberedWidth(for: tool),
                 propertyName: "굵기",
                 idPrefix: "highlighter.width",
+                makePreview: { .strokeWidth(relative: $0, color: $1) },
                 apply: { [weak state = self.state] in state?.setWidth($0, for: tool) }
             ), opacityOptions()]
         case .text:
@@ -1772,6 +1811,7 @@ final class RadialPaletteController: NSObject {
                 selected: rememberedWidth(for: tool),
                 propertyName: "크기",
                 idPrefix: "text.size",
+                makePreview: { .textSize(relative: $0, color: $1) },
                 apply: { [weak state = self.state] in state?.setWidth($0, for: tool) }
             )]
         case .arrow:
@@ -1780,6 +1820,7 @@ final class RadialPaletteController: NSObject {
                 selected: rememberedWidth(for: tool),
                 propertyName: "굵기",
                 idPrefix: "arrow.width",
+                makePreview: { .strokeWidth(relative: $0, color: $1) },
                 apply: { [weak state = self.state] in state?.setWidth($0, for: tool) }
             ), arrowStyleOptions()]
         case .rectangle, .ellipse:
@@ -1788,6 +1829,7 @@ final class RadialPaletteController: NSObject {
                 selected: rememberedWidth(for: tool),
                 propertyName: "굵기",
                 idPrefix: "shape.width",
+                makePreview: { .strokeWidth(relative: $0, color: $1) },
                 apply: { [weak state = self.state] in state?.setWidth($0, for: tool) }
             )]
         case .eraser:
@@ -1874,7 +1916,7 @@ final class RadialPaletteController: NSObject {
             return RadialPaletteOption(
                 identifier: "ink.color.\(index)",
                 name: definition.name,
-                shortLabel: String(index + 1),
+                shortLabel: "",
                 iconKey: nil,
                 iconName: nil,
                 color: state.colorPresets[index],
@@ -1891,10 +1933,14 @@ final class RadialPaletteController: NSObject {
         selected: CGFloat,
         propertyName: String,
         idPrefix: String,
+        makePreview: (CGFloat, NSColor) -> RadialPalettePreview,
         apply: @escaping (CGFloat) -> Void
     ) -> RadialPaletteOptionGroup {
+        let inkColor = state.selectedColor
         let options = values.map { value in
             let label = formattedNumber(value)
+            // Tool ranges differ, so normalize within each preset group to keep previews in-cell.
+            let relative = RadialPalettePreview.relativeSize(of: value, in: values)
             return RadialPaletteOption(
                 identifier: "\(idPrefix).\(label)",
                 name: "\(propertyName) \(label)",
@@ -1902,6 +1948,7 @@ final class RadialPaletteController: NSObject {
                 iconKey: nil,
                 iconName: nil,
                 color: nil,
+                preview: makePreview(relative, inkColor),
                 shortcut: "",
                 isSelected: abs(selected - value) < 0.001,
                 action: { apply(value) }
@@ -1920,6 +1967,7 @@ final class RadialPaletteController: NSObject {
                 iconKey: nil,
                 iconName: nil,
                 color: nil,
+                preview: .opacity(value, color: state.selectedColor),
                 shortcut: "",
                 isSelected: abs(state.highlighterOpacity - value) < 0.001,
                 action: { [weak state = self.state] in state?.setHighlighterOpacity(value) }
@@ -1986,9 +2034,10 @@ final class RadialPaletteController: NSObject {
                 action: { [weak state = self.state] in state?.setEraserMode(mode) }
             )
         }
-        let sizes = settingsStore.settings.eraser.presetDiameters.enumerated().map {
+        let diameterValues = settingsStore.settings.eraser.presetDiameters.map { CGFloat($0) }
+        let sizes = diameterValues.enumerated().map {
             index, value in
-            let label = formattedNumber(CGFloat(value))
+            let label = formattedNumber(value)
             return RadialPaletteOption(
                 identifier: "eraser.size.\(index)",
                 name: "지우개 크기 \(label)",
@@ -1996,9 +2045,13 @@ final class RadialPaletteController: NSObject {
                 iconKey: nil,
                 iconName: nil,
                 color: nil,
+                preview: .eraserDiameter(relative: RadialPalettePreview.relativeSize(
+                    of: value,
+                    in: diameterValues
+                )),
                 shortcut: "",
-                isSelected: abs(state.eraserDiameter - CGFloat(value)) < 0.001,
-                action: { [weak state = self.state] in state?.setEraserDiameter(CGFloat(value)) }
+                isSelected: abs(state.eraserDiameter - value) < 0.001,
+                action: { [weak state = self.state] in state?.setEraserDiameter(value) }
             )
         }
         let shapes = EraserAreaShape.allCases.map { shape in
@@ -2030,7 +2083,7 @@ final class RadialPaletteController: NSObject {
             return RadialPaletteOption(
                 identifier: "laser.color.\(index)",
                 name: definition.name,
-                shortLabel: String(index + 1),
+                shortLabel: "",
                 iconKey: nil,
                 iconName: nil,
                 color: color,
@@ -2048,7 +2101,7 @@ final class RadialPaletteController: NSObject {
             return RadialPaletteOption(
                 identifier: "laser.trail.\(label)",
                 name: "레이저 꼬리 \(label)초",
-                shortLabel: label,
+                shortLabel: "\(label)초",
                 iconKey: nil,
                 iconName: nil,
                 color: nil,
@@ -2107,6 +2160,7 @@ final class RadialPaletteController: NSObject {
                     shortLabel: cell.shortLabel,
                     shortcut: cell.shortcut,
                     color: cell.color,
+                    preview: cell.preview,
                     isSelected: cell.isSelected,
                     isEnabled: cell.isEnabled,
                     isHovered: cell.identifier == hoveredIdentifier,
