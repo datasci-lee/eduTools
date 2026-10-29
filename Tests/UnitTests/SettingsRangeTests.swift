@@ -52,6 +52,12 @@ private let settingsRangeCases: [SettingsRangeCase] = [
     setValue: { $0.tools.highlighterOpacity = $1.decimalValue }
   ),
   SettingsRangeCase(
+    name: "필압 최소 굵기",
+    minimum: .decimal(0.05),
+    maximum: .decimal(1),
+    setValue: { $0.tools.pressureMinimumWidthRatio = $1.decimalValue }
+  ),
+  SettingsRangeCase(
     name: "레이저 크기",
     minimum: .decimal(2),
     maximum: .decimal(50),

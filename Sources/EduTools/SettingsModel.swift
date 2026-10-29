@@ -321,6 +321,7 @@ struct ToolSettings: Codable, Equatable {
         }
     }
     var highlighterOpacity: Double
+    var pressureMinimumWidthRatio: Double
     var laserColor: SettingsColor
     var laserSize: Double
     var laserTrailDuration: Double
@@ -333,6 +334,7 @@ struct ToolSettings: Codable, Equatable {
     init(
         colors: [SettingsColor],
         highlighterOpacity: Double,
+        pressureMinimumWidthRatio: Double = AppSettings.default.tools.pressureMinimumWidthRatio,
         laserColor: SettingsColor,
         laserSize: Double,
         laserTrailDuration: Double,
@@ -344,6 +346,7 @@ struct ToolSettings: Codable, Equatable {
     ) {
         self.colors = colors
         self.highlighterOpacity = highlighterOpacity
+        self.pressureMinimumWidthRatio = pressureMinimumWidthRatio
         self.laserColor = laserColor
         self.laserSize = laserSize
         self.laserTrailDuration = laserTrailDuration
@@ -359,6 +362,7 @@ struct ToolSettings: Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case colors
         case highlighterOpacity
+        case pressureMinimumWidthRatio
         case laserColor
         case laserSize
         case laserTrailDuration
@@ -379,6 +383,10 @@ struct ToolSettings: Codable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         colors = try container.decode([SettingsColor].self, forKey: .colors)
         highlighterOpacity = try container.decode(Double.self, forKey: .highlighterOpacity)
+        pressureMinimumWidthRatio = try container.decodeIfPresent(
+            Double.self,
+            forKey: .pressureMinimumWidthRatio
+        ) ?? AppSettings.default.tools.pressureMinimumWidthRatio
         laserColor = try container.decode(SettingsColor.self, forKey: .laserColor)
         laserSize = try container.decode(Double.self, forKey: .laserSize)
         laserTrailDuration = try container.decode(Double.self, forKey: .laserTrailDuration)
@@ -421,6 +429,7 @@ struct ToolSettings: Codable, Equatable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(colors, forKey: .colors)
         try container.encode(highlighterOpacity, forKey: .highlighterOpacity)
+        try container.encode(pressureMinimumWidthRatio, forKey: .pressureMinimumWidthRatio)
         try container.encode(laserColor, forKey: .laserColor)
         try container.encode(laserSize, forKey: .laserSize)
         try container.encode(laserTrailDuration, forKey: .laserTrailDuration)
@@ -648,6 +657,7 @@ struct AppSettings: Codable, Equatable {
                 SettingsColor(red: 1, green: 1, blue: 1),
             ],
             highlighterOpacity: 0.4,
+            pressureMinimumWidthRatio: 0.2,
             laserColor: SettingsColor(red: 1, green: 0.231, blue: 0.188),
             laserSize: 8,
             laserTrailDuration: 1,
@@ -701,6 +711,7 @@ struct AppSettings: Codable, Equatable {
 
 enum SettingsRanges {
     static let highlighterOpacity: ClosedRange<Double> = 0.05...1
+    static let pressureMinimumWidthRatio: ClosedRange<Double> = 0.05...1
     static let laserSize: ClosedRange<Double> = 2...50
     static let laserTrailDuration: ClosedRange<Double> = 0.1...10
     static let eraserDiameter: ClosedRange<Double> = 8...200
@@ -752,6 +763,9 @@ enum SettingsValidator {
         try settings.tools.colors.forEach(validateColor)
         try validateColor(settings.tools.laserColor)
         guard SettingsRanges.highlighterOpacity.contains(settings.tools.highlighterOpacity),
+              SettingsRanges.pressureMinimumWidthRatio.contains(
+                    settings.tools.pressureMinimumWidthRatio
+                ),
               SettingsRanges.laserSize.contains(settings.tools.laserSize),
               SettingsRanges.laserTrailDuration.contains(settings.tools.laserTrailDuration),
               (RadialPaletteGlassStyle.minimumOpacity...RadialPaletteGlassStyle.maximumOpacity).contains(

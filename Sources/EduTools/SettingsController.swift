@@ -579,6 +579,17 @@ private struct SettingsRootView: View {
                 }
             }
             slider("펜 기본 굵기", binding: toolSizeBinding(.pen), range: 1...30, step: 1)
+            VStack(alignment: .leading, spacing: 4) {
+                slider(
+                    "필압 최소 굵기",
+                    keyPath: \.tools.pressureMinimumWidthRatio,
+                    range: SettingsRanges.pressureMinimumWidthRatio,
+                    step: 0.05
+                )
+                Text("펜 태블릿에서 가장 약하게 눌렀을 때 굵기 비율. 1이면 필압을 쓰지 않음")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             slider(
                 "형광펜 기본 굵기",
                 binding: toolSizeBinding(.highlighter),

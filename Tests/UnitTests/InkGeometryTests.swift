@@ -7,6 +7,18 @@ import Testing
 
 @Suite("판서 기하", .serialized)
 struct InkGeometryTests {
+  @Test("필압 최소 굵기 비율은 펜 굵기의 하한을 보정한다")
+  func pressureMinimumWidthRatioAdjustsEffectiveWidth() {
+    let pressureStroke = makeTestStroke(width: 10, usesPressure: true)
+    let fixedStroke = makeTestStroke(width: 10, usesPressure: false)
+
+    #expect(abs(pressureStroke.effectiveWidth(pressure: 0, minimumRatio: 0.2) - 2) < 0.000_001)
+    #expect(abs(pressureStroke.effectiveWidth(pressure: 1, minimumRatio: 0.2) - 10) < 0.000_001)
+    #expect(abs(pressureStroke.effectiveWidth(pressure: 0.5, minimumRatio: 0.2) - 6) < 0.000_001)
+    #expect(abs(pressureStroke.effectiveWidth(pressure: 0.5, minimumRatio: 1) - 10) < 0.000_001)
+    #expect(abs(fixedStroke.effectiveWidth(pressure: 0, minimumRatio: 0.2) - 10) < 0.000_001)
+  }
+
   @Test("Catmull-Rom 평활 곡선은 모든 원본 점을 통과한다")
   func catmullRomPassesThroughSourcePoints() {
     let sourcePoints = makeTestStroke(

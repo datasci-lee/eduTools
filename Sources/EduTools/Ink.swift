@@ -88,6 +88,9 @@ enum InkDefaults {
     static var penWidth: CGFloat { CGFloat(PerToolMemorySettings.default.pen.size) }
     static var highlighterWidth: CGFloat { CGFloat(PerToolMemorySettings.default.highlighter.size) }
     static var highlighterOpacity: CGFloat { CGFloat(AppSettings.default.tools.highlighterOpacity) }
+    static var pressureMinimumWidthRatio: CGFloat {
+        CGFloat(AppSettings.default.tools.pressureMinimumWidthRatio)
+    }
     static let minimumHighlighterOpacity = CGFloat(SettingsRanges.highlighterOpacity.lowerBound)
     static let maximumHighlighterOpacity = CGFloat(SettingsRanges.highlighterOpacity.upperBound)
     static let minimumWidth: CGFloat = 1
@@ -247,6 +250,10 @@ struct InkStroke: Equatable, Codable {
         pointBounds = points.reduce(CGRect.null) { bounds, point in
             bounds.union(CGRect(origin: point.location, size: .zero))
         }
+    }
+
+    func effectiveWidth(pressure: CGFloat, minimumRatio: CGFloat) -> CGFloat {
+        usesPressure ? width * (minimumRatio + (1 - minimumRatio) * pressure) : width
     }
 
     static func == (lhs: InkStroke, rhs: InkStroke) -> Bool {

@@ -42,11 +42,13 @@ struct SettingsTests {
     tools["textFontSize"] = memory.text.size
     tools.removeValue(forKey: "perToolMemory")
     tools.removeValue(forKey: "paletteGlassOpacity")
+    tools.removeValue(forKey: "pressureMinimumWidthRatio")
     object["tools"] = tools
 
     let compatibleData = try JSONSerialization.data(withJSONObject: object)
     let decoded = try JSONDecoder().decode(AppSettings.self, from: compatibleData)
 
+    #expect(decoded.tools.pressureMinimumWidthRatio == AppSettings.default.tools.pressureMinimumWidthRatio)
     #expect(decoded == AppSettings.default)
   }
 
