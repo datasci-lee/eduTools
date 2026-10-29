@@ -705,7 +705,7 @@ private struct SettingsRootView: View {
 
     private var shortcutRows: [ShortcutRowModel] {
         ShortcutCatalog.definitions.flatMap { definition in
-            definition.bindings.map { binding in
+            let defaultRows = definition.bindings.map { binding in
                 ShortcutRowModel(
                     key: ShortcutCatalog.overrideKey(
                         definitionID: definition.id,
@@ -716,6 +716,18 @@ private struct SettingsRootView: View {
                     defaultPortable: binding.portableString
                 )
             }
+            let assignableRows = definition.assignableScopes.map { scope in
+                ShortcutRowModel(
+                    key: ShortcutCatalog.overrideKey(
+                        definitionID: definition.id,
+                        scope: scope
+                    ),
+                    name: definition.name,
+                    scope: scope,
+                    defaultPortable: nil
+                )
+            }
+            return defaultRows + assignableRows
         }
     }
 
@@ -792,7 +804,7 @@ private struct ShortcutRowModel {
     let key: String
     let name: String
     let scope: ShortcutScope
-    let defaultPortable: String
+    let defaultPortable: String?
 }
 
 private struct ShortcutSettingRow: View {
@@ -813,6 +825,12 @@ private struct ShortcutSettingRow: View {
                     store.update { $0.shortcuts.overrides[row.key] = value }
                 }
                 .frame(width: 150, height: 25)
+                if row.defaultPortable == nil {
+                    Button("해제") {
+                        store.update { $0.shortcuts.overrides.removeValue(forKey: row.key) }
+                    }
+                    .disabled(store.settings.shortcuts.overrides[row.key] == nil)
+                }
             }
             if let warning = warning {
                 Text("⚠ \(warning)").font(.caption).foregroundStyle(.orange)
@@ -822,7 +840,7 @@ private struct ShortcutSettingRow: View {
     }
 
     private var portableString: String {
-        store.settings.shortcuts.overrides[row.key] ?? row.defaultPortable
+        store.settings.shortcuts.overrides[row.key] ?? row.defaultPortable ?? ""
     }
 
     private var warning: String? {
@@ -857,9 +875,7 @@ private struct ShortcutRecorderView: NSViewRepresentable {
         button.portableString = portableString
         button.onRecord = onRecord
         if !button.isRecording {
-            button.title = PortableShortcut(serialized: portableString)?.displayString(
-                appModifier: appModifier
-            ) ?? portableString
+            button.refreshTitle()
         }
     }
 }
@@ -934,10 +950,14 @@ private final class ShortcutRecorderButton: NSButton {
             portableString = value
             onRecord?(value)
         }
+        refreshTitle()
+        window?.makeFirstResponder(nil)
+    }
+
+    func refreshTitle() {
         title = PortableShortcut(serialized: portableString)?.displayString(
             appModifier: appModifier
-        ) ?? portableString
-        window?.makeFirstResponder(nil)
+        ) ?? (portableString.isEmpty ? "없음" : portableString)
     }
 }
 
