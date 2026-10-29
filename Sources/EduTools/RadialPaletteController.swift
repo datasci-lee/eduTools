@@ -1520,17 +1520,20 @@ final class RadialPaletteController: NSObject {
         else {
             return
         }
-        let diameter = isExpanded
+        let drawingDiameter = isExpanded
             ? RadialPaletteMetrics.expandedDiameter
             : RadialPaletteMetrics.collapsedDiameter
-        let center = isExpanded
-            ? clampedCenter(restingCenter, diameter: diameter, in: screen.visibleFrame)
-            : clampedCenter(restingCenter, diameter: diameter, in: screen.visibleFrame)
+        let center = clampedCenter(
+            restingCenter,
+            diameter: drawingDiameter,
+            in: screen.visibleFrame
+        )
+        let windowDiameter = drawingDiameter + 2 * RadialPaletteMetrics.windowMargin
         let frame = CGRect(
-            x: center.x - diameter / 2,
-            y: center.y - diameter / 2,
-            width: diameter,
-            height: diameter
+            x: center.x - windowDiameter / 2,
+            y: center.y - windowDiameter / 2,
+            width: windowDiameter,
+            height: windowDiameter
         )
         panel.setFrame(frame, display: true)
         paletteView.redraw()
@@ -2237,7 +2240,7 @@ final class RadialPaletteController: NSObject {
             let textWidth = ceil(
                 (group.name as NSString).size(withAttributes: [.font: font]).width
             )
-            let labelRadius = RadialPaletteMetrics.optionInnerRadius + 7
+            let labelRadius = RadialPaletteMetrics.optionInnerRadius - 1
             let availableArcLength = (group.end - group.start) * labelRadius
                 - 2 * RadialPaletteMetrics.propertyLabelPadding
             let fitsGroupArc = textWidth <= availableArcLength
