@@ -1493,7 +1493,8 @@ final class InkView: NSView {
         case .rightMouseDown, .rightMouseDragged, .rightMouseUp:
             return true
         default:
-            return state.currentTool == .eraser || event.pointingDeviceType == .eraser
+            return state.currentTool == .eraser
+                || PointerEventKind.isEraserTip(event)
         }
     }
 

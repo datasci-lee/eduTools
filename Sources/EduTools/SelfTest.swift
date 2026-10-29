@@ -1336,6 +1336,74 @@ func runSelfTests() -> Int32 {
         "settings backups should rotate to the most recent five entries"
     )
 
+    let mouseEntered = NSEvent.enterExitEvent(
+        with: .mouseEntered,
+        location: .zero,
+        modifierFlags: [],
+        timestamp: 0,
+        windowNumber: 0,
+        context: nil,
+        eventNumber: 0,
+        trackingNumber: 0,
+        userData: nil
+    )!
+    let mouseExited = NSEvent.enterExitEvent(
+        with: .mouseExited,
+        location: .zero,
+        modifierFlags: [],
+        timestamp: 0,
+        windowNumber: 0,
+        context: nil,
+        eventNumber: 0,
+        trackingNumber: 0,
+        userData: nil
+    )!
+    let mouseMoved = NSEvent.mouseEvent(
+        with: .mouseMoved,
+        location: .zero,
+        modifierFlags: [],
+        timestamp: 0,
+        windowNumber: 0,
+        context: nil,
+        eventNumber: 0,
+        clickCount: 0,
+        pressure: 0
+    )!
+    let leftMouseDown = NSEvent.mouseEvent(
+        with: .leftMouseDown,
+        location: .zero,
+        modifierFlags: [],
+        timestamp: 0,
+        windowNumber: 0,
+        context: nil,
+        eventNumber: 0,
+        clickCount: 0,
+        pressure: 0
+    )!
+    let rightMouseDown = NSEvent.mouseEvent(
+        with: .rightMouseDown,
+        location: .zero,
+        modifierFlags: [],
+        timestamp: 0,
+        windowNumber: 0,
+        context: nil,
+        eventNumber: 0,
+        clickCount: 0,
+        pressure: 0
+    )!
+    runner.expect(
+        !PointerEventKind.isEraserTip(mouseEntered)
+            && !PointerEventKind.isEraserTip(mouseExited)
+            && !PointerEventKind.isEraserTip(mouseMoved)
+            && !PointerEventKind.isEraserTip(leftMouseDown)
+            && !PointerEventKind.isEraserTip(rightMouseDown)
+            && !PointerEventKind.canQueryPointingDevice(.mouseEntered)
+            && !PointerEventKind.canQueryPointingDevice(.mouseExited)
+            && PointerEventKind.canQueryPointingDevice(.mouseMoved)
+            && PointerEventKind.canQueryPointingDevice(.leftMouseDown),
+        "synthetic pointer events should guard invalid device queries and reject mouse eraser tips"
+    )
+
     if runner.failures.isEmpty {
         print("SelfTest: \(runner.passed) passed, 0 failed")
         return 0
