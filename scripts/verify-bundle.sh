@@ -422,7 +422,7 @@ check_selftest_code() {
 
     if ! strings_output="$($STRINGS "$executable_path" 2>/dev/null)"; then
         if [[ "$nm_output" == *"runSelfTests"* ]]; then
-            info "자체 시험 코드 포함(이관 전) — S1b/c 완료 후 FAIL 로 승격"
+            fail "실행 파일에 자체 시험 코드가 있습니다(runSelfTests)"
         else
             info "실행 파일 문자열을 읽을 수 없어 시험 코드 부재를 판정할 수 없음"
         fi
@@ -430,8 +430,7 @@ check_selftest_code() {
     fi
 
     if [[ "$nm_output" == *"runSelfTests"* || "$strings_output" == *"SelfTest"* ]]; then
-        # S1b/c가 시험 코드를 번들 밖으로 이관하면 이 INFO를 FAIL로 승격한다.
-        info "자체 시험 코드 포함(이관 전) — S1b/c 완료 후 FAIL 로 승격"
+        fail "실행 파일에 자체 시험 코드가 있습니다(runSelfTests)"
     else
         pass "실행 파일에 자체 시험 코드가 없습니다"
     fi

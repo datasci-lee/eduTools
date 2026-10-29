@@ -18,7 +18,7 @@ scripts/verify-bundle.sh [--app <path>] [--dmg <path>]
 
 `unit integration`처럼 두 계층을 함께 지정할 수도 있다. `--filter` 정규식은 선택된 시험 타깃의 전체 시험 ID에서 검색한다. `--coverage`는 시험 파일을 제외한 `EduTools` 소스별 `llvm-cov report` 표를 마지막에 출력한다. `gui`는 사용자 맥의 WindowServer 전용이다. `e2e`는 손쉬운 사용·화면 기록 권한이 있는 사용자 맥에서 실제 번들을 제어하며 [`e2e.md`](e2e.md)의 격리·위험 규칙을 따른다. 환경이 부족하면 둘 다 `UNRUNNABLE`과 종료코드 3을 반환한다. `all`과 `./build.sh test`는 GUI·E2E를 포함하지 않고 단위·통합 시험만 실행한다.
 
-릴리스 전에는 `./build.sh dmg`를 실행한 뒤 `scripts/verify-bundle.sh`로 앱 번들과 DMG를 검증한다. 앱 번들에는 자체 시험 코드가 아직 포함되어 있으며, 검증 스크립트는 이를 INFO로 표시하다가 S1b/c에서 제거가 끝나면 FAIL로 승격한다.
+릴리스 전에는 `./build.sh dmg`를 실행한 뒤 `scripts/verify-bundle.sh`로 앱 번들과 DMG를 검증한다. 검증 스크립트는 앱 번들에 자체 시험 코드가 없으면 PASS, 발견되면 FAIL로 판정한다.
 
 실제 장비·권한·사용자 흐름은 [`manual-checklist.md`](manual-checklist.md)에서 확인하고, 크래시의 증상·원인·수정·재현 시험은 [`crash-regressions.md`](crash-regressions.md)에 기록한다.
 
