@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "white-on-white",
+      "input": {
+        "foreground": { "red": 1, "green": 1, "blue": 1 },
+        "background": { "red": 1, "green": 1, "blue": 1 }
+      },
+      "expected": { "ratio": 1, "tolerance": 0.000001, "needsHalo": true }
+    },
+    {
+      "name": "black-on-black",
+      "input": {
+        "foreground": { "red": 0, "green": 0, "blue": 0 },
+        "background": { "red": 0, "green": 0, "blue": 0 }
+      },
+      "expected": { "ratio": 1, "tolerance": 0.000001, "needsHalo": true }
+    },
+    {
+      "name": "black-on-white",
+      "input": {
+        "foreground": { "red": 0, "green": 0, "blue": 0 },
+        "background": { "red": 1, "green": 1, "blue": 1 }
+      },
+      "expected": { "ratio": 21, "tolerance": 0.000001, "needsHalo": false }
+    },
+    {
+      "name": "white-on-black",
+      "input": {
+        "foreground": { "red": 1, "green": 1, "blue": 1 },
+        "background": { "red": 0, "green": 0, "blue": 0 }
+      },
+      "expected": { "ratio": 21, "tolerance": 0.000001, "needsHalo": false }
+    },
+    {
+      "name": "white-on-light-gray",
+      "input": {
+        "foreground": { "red": 1, "green": 1, "blue": 1 },
+        "background": { "red": 0.93, "green": 0.93, "blue": 0.93 }
+      },
+      "expected": { "ratio": 1.169, "tolerance": 0.001, "needsHalo": true }
+    },
+    {
+      "name": "black-on-light-gray",
+      "input": {
+        "foreground": { "red": 0, "green": 0, "blue": 0 },
+        "background": { "red": 0.93, "green": 0.93, "blue": 0.93 }
+      },
+      "expected": { "ratio": 17.96, "tolerance": 0.01, "needsHalo": false }
+    }
+  ]
+}
