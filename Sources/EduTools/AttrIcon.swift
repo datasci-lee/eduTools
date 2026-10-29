@@ -235,7 +235,8 @@ enum AttrIcon {
         AttrIconToolCatalog.manifestKeyByTool
     }
 
-    private static var repository = loadRepository()
+    private static var repositoryResourceURL = Bundle.main.resourceURL
+    private static var repository = loadRepository(resourceURL: repositoryResourceURL)
     private static var renderedImages: [RenderCacheKey: NSImage] = [:]
     private static var decodedLayers: [String: CachedLayer] = [:]
     private static var loggedReasons: Set<String> = []
@@ -588,7 +589,13 @@ enum AttrIcon {
         )
     }
 
-    static func auditBundledAssets() {
+    static func auditBundledAssets(resourceURL: URL? = Bundle.main.resourceURL) {
+        if repositoryResourceURL != resourceURL {
+            repositoryResourceURL = resourceURL
+            repository = loadRepository(resourceURL: resourceURL)
+            renderedImages.removeAll(keepingCapacity: true)
+            decodedLayers.removeAll(keepingCapacity: true)
+        }
         _ = repository
     }
 
@@ -645,8 +652,8 @@ enum AttrIcon {
         return AttrIconColor(red: 1, green: 1, blue: 1, alpha: AttrIconConstants.lightHaloAlpha)
     }
 
-    private static func loadRepository() -> Repository {
-        let directoryURL = Bundle.main.resourceURL?
+    private static func loadRepository(resourceURL: URL?) -> Repository {
+        let directoryURL = resourceURL?
             .appendingPathComponent("Icons", isDirectory: true)
             .appendingPathComponent("Attr", isDirectory: true)
         guard let directoryURL else {

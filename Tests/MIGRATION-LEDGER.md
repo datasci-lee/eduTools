@@ -54,11 +54,11 @@
 | highlighter-only stroke erasing should preserve a touched pen stroke | 542 | `UnitTests.EraserTests/highlighterOnlyErasePreservesPen()` | T1 | 이관 |
 | display ink and its undo history should survive a JSON round-trip | 585 | `UnitTests.InkSerializationTests/displayInkAndHistorySurviveJSONRoundTrip()` | T1 | 이관 |
 | restoring on a different resolution should preserve normalized stroke coordinates | 608 | `UnitTests.InkSerializationTests/differentResolutionPreservesNormalizedCoordinates()` | T1 | 이관 |
-| move-to-primary disconnect policy should merge source ink after destination ink | 621 | — | T2 | S2 |
+| move-to-primary disconnect policy should merge source ink after destination ink | 621 | `IntegrationTests.AppStateIntegrationTests/moveToPrimaryMergesAfterDestinationInk()` | T2 | 이관 |
 | area erasing should distinguish touching strokes from fully contained strokes | 677 | `UnitTests.EraserTests/areaEraseDistinguishesTouchingFromContained()` | T1 | 이관 |
-| clear all should restore every display with one undo | 692 | — | T2 | S2 |
-| screen and board strokes should survive repeated board transitions | 709 | — | T2 | S2 |
-| each board page should keep an independent undo history | 728 | — | T2 | S2 |
+| clear all should restore every display with one undo | 692 | `IntegrationTests.AppStateIntegrationTests/clearAllRestoresEveryDisplayWithOneUndo()` | T2 | 이관 |
+| screen and board strokes should survive repeated board transitions | 709 | `IntegrationTests.AppStateIntegrationTests/repeatedBoardTransitionsPreserveScreenAndBoardInk()` | T2 | 이관 |
+| each board page should keep an independent undo history | 728 | `IntegrationTests.AppStateIntegrationTests/boardPagesKeepIndependentUndoHistories()` | T2 | 이관 |
 | a stored black stroke should display as white on the blackboard | 753 | `UnitTests.BoardColorTests/blackStrokeDisplaysWhiteOnBlackboard()` | T1 | 이관 |
 | lesson remaining time should equal end date minus the injected current time | 761 | `UnitTests.TimerTests/countdownUsesInjectedClock()` | T1 | 이관 |
 | a paused lesson timer should stay fixed and continue from that value after resume | 772 | `UnitTests.TimerTests/pauseFreezesAndResumeContinues()` | T1 | 이관 |
@@ -79,5 +79,5 @@
 | settings decoding should ignore unknown keys and default missing compatible values | 1266 | `UnitTests.SettingsTests/decodingIgnoresUnknownKeysAndDefaultsMissingValues()` | T1 | 이관 |
 | settings export should include display presets but exclude computer-specific switches and paths | 1310 | `UnitTests.SettingsTests/exportIncludesPresetsAndExcludesComputerSpecificValues()` | T1 | 이관 |
 | known avoided global shortcuts should be reported as conflicts | 1321 | `UnitTests.SettingsTests/avoidedGlobalShortcutIsReportedAsConflict()` | T1 | 이관 |
-| settings backups should rotate to the most recent five entries | 1334 | — | T2 | S2 |
+| settings backups should rotate to the most recent five entries | 1334 | `IntegrationTests.SettingsBackupIntegrationTests/backupsRotateToMostRecentFive()` | T2 | 이관 |
 | synthetic enter and exit events should guard device queries and the event-kind table should remain complete | 1362 | — | T3 | S3 |
