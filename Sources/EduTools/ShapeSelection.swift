@@ -36,7 +36,7 @@ enum InkStrokeContent: Equatable, Codable {
     case cover
 }
 
-enum EraserAreaShape: CaseIterable {
+enum EraserAreaShape: String, CaseIterable {
     case rectangle
     case lasso
 

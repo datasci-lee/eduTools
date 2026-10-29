@@ -612,9 +612,9 @@ private struct SettingsRootView: View {
     private var eraserTab: some View {
         Form {
             Picker("기본 방식", selection: binding(\.eraser.mode)) {
-                Text("부분").tag("partial")
-                Text("획").tag("stroke")
-                Text("영역").tag("area")
+                ForEach(EraserMode.allCases, id: \.rawValue) { mode in
+                    Text(mode.settingsDisplayName).tag(mode.rawValue)
+                }
             }
             .pickerStyle(.segmented)
             slider(
@@ -632,13 +632,14 @@ private struct SettingsRootView: View {
                 )
             }
             Picker("판정 기준", selection: binding(\.eraser.hitRule)) {
-                Text("닿으면").tag("touching")
-                Text("완전히 포함").tag("contained")
+                ForEach(EraserHitRule.allCases, id: \.rawValue) { hitRule in
+                    Text(hitRule.displayName).tag(hitRule.rawValue)
+                }
             }
             Picker("대상", selection: binding(\.eraser.targetFilter)) {
-                Text("전체").tag("all")
-                Text("펜만").tag("penOnly")
-                Text("형광펜만").tag("highlighterOnly")
+                ForEach(EraserTargetFilter.allCases, id: \.rawValue) { targetFilter in
+                    Text(targetFilter.displayName).tag(targetFilter.rawValue)
+                }
             }
         }
         .padding()
@@ -689,9 +690,9 @@ private struct SettingsRootView: View {
             ColorPicker("화이트보드 배경", selection: colorBinding(\.board.whiteboardColor))
             ColorPicker("블랙보드 배경", selection: colorBinding(\.board.blackboardColor))
             Picker("배경 무늬", selection: binding(\.board.backgroundPattern)) {
-                Text("없음").tag("none")
-                Text("격자").tag("grid")
-                Text("줄").tag("lines")
+                ForEach(BoardBackgroundPattern.allCases, id: \.rawValue) { pattern in
+                    Text(pattern.displayName).tag(pattern.rawValue)
+                }
             }
             .pickerStyle(.segmented)
         }

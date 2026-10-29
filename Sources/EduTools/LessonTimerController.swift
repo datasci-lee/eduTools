@@ -40,7 +40,7 @@ final class LessonTimerController: NSObject, NSMenuDelegate {
         static let displayUUID = "EduTools.lessonTimer.displayUUID"
     }
 
-    private enum SizePreset: String, CaseIterable {
+    enum SizePreset: String, CaseIterable {
         case small
         case medium
         case large
@@ -62,7 +62,7 @@ final class LessonTimerController: NSObject, NSMenuDelegate {
         }
     }
 
-    private enum DisplayMode: String {
+    enum DisplayMode: String, CaseIterable {
         case remaining
         case elapsed
     }
