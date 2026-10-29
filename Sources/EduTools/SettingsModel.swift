@@ -205,24 +205,11 @@ struct FavoriteTool: Codable, Equatable {
     }
 
     var decodedEraserMode: EraserMode? {
-        guard let eraserMode else { return nil }
-        return EraserMode.allCases.first { mode in
-            switch mode {
-            case .partial: return eraserMode == "partial"
-            case .stroke: return eraserMode == "stroke"
-            case .area: return eraserMode == "area"
-            }
-        }
+        eraserMode.flatMap(EraserMode.init(rawValue:))
     }
 
     var decodedEraserAreaShape: EraserAreaShape? {
-        guard let eraserAreaShape else { return nil }
-        return EraserAreaShape.allCases.first { shape in
-            switch shape {
-            case .rectangle: return eraserAreaShape == "rectangle"
-            case .lasso: return eraserAreaShape == "lasso"
-            }
-        }
+        eraserAreaShape.flatMap(EraserAreaShape.init(rawValue:))
     }
 
     func isValid(colorPresetCount: Int) -> Bool {
@@ -667,12 +654,12 @@ struct AppSettings: Codable, Equatable {
             shapeRecognitionEnabled: true
         ),
         eraser: EraserGroupSettings(
-            mode: "partial",
+            mode: EraserMode.partial.rawValue,
             diameter: 24,
             presetDiameters: [12, 24, 60],
-            hitRule: "touching",
-            targetFilter: "all",
-            areaShape: "rectangle"
+            hitRule: EraserHitRule.touching.rawValue,
+            targetFilter: EraserTargetFilter.all.rawValue,
+            areaShape: EraserAreaShape.rectangle.rawValue
         ),
         zoom: ZoomGroupSettings(
             startingMagnification: 2,
@@ -686,7 +673,7 @@ struct AppSettings: Codable, Equatable {
         board: BoardGroupSettings(
             whiteboardColor: SettingsColor(red: 1, green: 1, blue: 1),
             blackboardColor: SettingsColor(red: 0, green: 0, blue: 0),
-            backgroundPattern: "none"
+            backgroundPattern: BoardBackgroundPattern.none.rawValue
         ),
         timer: TimerGroupSettings(
             lessonPresets: [25, 45, 50, 90],
@@ -702,9 +689,9 @@ struct AppSettings: Codable, Equatable {
             fadeEnabled: true,
             fadeDuration: 60,
             autoStartBreak: false,
-            lessonBadgeSize: "medium",
+            lessonBadgeSize: LessonTimerController.SizePreset.medium.rawValue,
             lessonBadgeOpacity: 0.9,
-            lessonDisplayMode: "remaining"
+            lessonDisplayMode: LessonTimerController.DisplayMode.remaining.rawValue
         ),
         display: .default,
         shortcuts: ShortcutGroupSettings(appModifier: .controlOption, overrides: [:]),
@@ -750,9 +737,9 @@ enum SettingsValidationError: LocalizedError, Equatable {
 
 enum SettingsValidator {
     static func validate(_ settings: AppSettings) throws {
-        guard ["archive", "moveToPrimary", "delete"].contains(
-            settings.general.displayDisconnectPolicy
-        ) else {
+        guard DisplayDisconnectPolicy(
+            rawValue: settings.general.displayDisconnectPolicy
+        ) != nil else {
             throw SettingsValidationError.invalidValue("화면 연결 해제 정책")
         }
         if let path = settings.general.archiveFolderPath, path.isEmpty {
@@ -792,13 +779,13 @@ enum SettingsValidator {
             throw SettingsValidationError.invalidValue("즐겨찾기 도구")
         }
 
-        guard ["partial", "stroke", "area"].contains(settings.eraser.mode),
+        guard EraserMode(rawValue: settings.eraser.mode) != nil,
               SettingsRanges.eraserDiameter.contains(settings.eraser.diameter),
               settings.eraser.presetDiameters.count == 3,
               settings.eraser.presetDiameters.allSatisfy(SettingsRanges.eraserDiameter.contains),
-              ["touching", "contained"].contains(settings.eraser.hitRule),
-              ["all", "penOnly", "highlighterOnly"].contains(settings.eraser.targetFilter),
-              ["rectangle", "lasso"].contains(settings.eraser.areaShape)
+              EraserHitRule(rawValue: settings.eraser.hitRule) != nil,
+              EraserTargetFilter(rawValue: settings.eraser.targetFilter) != nil,
+              EraserAreaShape(rawValue: settings.eraser.areaShape) != nil
         else {
             throw SettingsValidationError.invalidValue("지우개 범위")
         }
@@ -842,7 +829,7 @@ enum SettingsValidator {
 
         try validateColor(settings.board.whiteboardColor)
         try validateColor(settings.board.blackboardColor)
-        guard ["none", "grid", "lines"].contains(settings.board.backgroundPattern) else {
+        guard BoardBackgroundPattern(rawValue: settings.board.backgroundPattern) != nil else {
             throw SettingsValidationError.invalidValue("보드 배경 무늬")
         }
 
@@ -857,9 +844,13 @@ enum SettingsValidator {
                 || settings.timer.playlistURLs.indices.contains(settings.timer.defaultPlaylistIndex),
               BreakMusicBrowser(rawValue: settings.timer.musicBrowser) != nil,
               SettingsRanges.fadeDuration.contains(settings.timer.fadeDuration),
-              ["small", "medium", "large"].contains(settings.timer.lessonBadgeSize),
+              LessonTimerController.SizePreset(
+                rawValue: settings.timer.lessonBadgeSize
+              ) != nil,
               SettingsRanges.lessonBadgeOpacity.contains(settings.timer.lessonBadgeOpacity),
-              ["remaining", "elapsed"].contains(settings.timer.lessonDisplayMode)
+              LessonTimerController.DisplayMode(
+                rawValue: settings.timer.lessonDisplayMode
+              ) != nil
         else {
             throw SettingsValidationError.invalidValue("타이머 범위")
         }

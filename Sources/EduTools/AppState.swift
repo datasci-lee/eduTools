@@ -325,19 +325,13 @@ final class AppState {
 
         switch tool {
         case .eraser:
-            let mode: String
-            switch eraserMode {
-            case .partial: mode = "partial"
-            case .stroke: mode = "stroke"
-            case .area: mode = "area"
-            }
             return FavoriteTool(
                 tool: tool.rawValue,
                 colorIndex: nil,
                 size: Double(eraserDiameter),
                 arrowStyle: nil,
-                eraserMode: mode,
-                eraserAreaShape: eraserAreaShape == .rectangle ? "rectangle" : "lasso"
+                eraserMode: eraserMode.rawValue,
+                eraserAreaShape: eraserAreaShape.rawValue
             )
         case .laser:
             guard let colorIndex = colorPresets.firstIndex(where: { $0.isEqual(laserColor) }) else {
@@ -787,13 +781,7 @@ final class AppState {
     }
 
     func setBoardBackgroundPattern(_ pattern: BoardBackgroundPattern) {
-        settingsStore.update {
-            switch pattern {
-            case .none: $0.board.backgroundPattern = "none"
-            case .grid: $0.board.backgroundPattern = "grid"
-            case .lines: $0.board.backgroundPattern = "lines"
-            }
-        }
+        settingsStore.update { $0.board.backgroundPattern = pattern.rawValue }
     }
 
     func boardBackgroundColor(for kind: BoardKind) -> NSColor {
@@ -867,15 +855,11 @@ final class AppState {
     }
 
     func toggleEraserAreaShape() {
-        settingsStore.update {
-            $0.eraser.areaShape = eraserAreaShape.next == .rectangle ? "rectangle" : "lasso"
-        }
+        settingsStore.update { $0.eraser.areaShape = eraserAreaShape.next.rawValue }
     }
 
     func setEraserAreaShape(_ shape: EraserAreaShape) {
-        settingsStore.update {
-            $0.eraser.areaShape = shape == .rectangle ? "rectangle" : "lasso"
-        }
+        settingsStore.update { $0.eraser.areaShape = shape.rawValue }
     }
 
     @discardableResult
@@ -897,29 +881,15 @@ final class AppState {
     }
 
     func setEraserMode(_ mode: EraserMode) {
-        settingsStore.update {
-            switch mode {
-            case .partial: $0.eraser.mode = "partial"
-            case .stroke: $0.eraser.mode = "stroke"
-            case .area: $0.eraser.mode = "area"
-            }
-        }
+        settingsStore.update { $0.eraser.mode = mode.rawValue }
     }
 
     func setEraserHitRule(_ hitRule: EraserHitRule) {
-        settingsStore.update {
-            $0.eraser.hitRule = hitRule == .touching ? "touching" : "contained"
-        }
+        settingsStore.update { $0.eraser.hitRule = hitRule.rawValue }
     }
 
     func setEraserTargetFilter(_ targetFilter: EraserTargetFilter) {
-        settingsStore.update {
-            switch targetFilter {
-            case .all: $0.eraser.targetFilter = "all"
-            case .penOnly: $0.eraser.targetFilter = "penOnly"
-            case .highlighterOnly: $0.eraser.targetFilter = "highlighterOnly"
-            }
-        }
+        settingsStore.update { $0.eraser.targetFilter = targetFilter.rawValue }
     }
 
     func setEraserDiameter(_ diameter: CGFloat) {
@@ -1561,27 +1531,17 @@ final class AppState {
         laserTrailDuration = settings.tools.laserTrailDuration
         isShapeRecognitionEnabled = settings.tools.shapeRecognitionEnabled
 
-        switch settings.eraser.mode {
-        case "stroke": eraserMode = .stroke
-        case "area": eraserMode = .area
-        default: eraserMode = .partial
-        }
+        eraserMode = EraserMode(rawValue: settings.eraser.mode) ?? .partial
         eraserDiameter = CGFloat(settings.eraser.diameter)
-        eraserHitRule = settings.eraser.hitRule == "contained" ? .contained : .touching
-        switch settings.eraser.targetFilter {
-        case "penOnly": eraserTargetFilter = .penOnly
-        case "highlighterOnly": eraserTargetFilter = .highlighterOnly
-        default: eraserTargetFilter = .all
-        }
-        eraserAreaShape = settings.eraser.areaShape == "lasso" ? .lasso : .rectangle
+        eraserHitRule = EraserHitRule(rawValue: settings.eraser.hitRule) ?? .touching
+        eraserTargetFilter = EraserTargetFilter(rawValue: settings.eraser.targetFilter) ?? .all
+        eraserAreaShape = EraserAreaShape(rawValue: settings.eraser.areaShape) ?? .rectangle
 
         whiteboardColor = settings.board.whiteboardColor.nsColor
         blackboardColor = settings.board.blackboardColor.nsColor
-        switch settings.board.backgroundPattern {
-        case "grid": boardBackgroundPattern = .grid
-        case "lines": boardBackgroundPattern = .lines
-        default: boardBackgroundPattern = .none
-        }
+        boardBackgroundPattern = BoardBackgroundPattern(
+            rawValue: settings.board.backgroundPattern
+        ) ?? .none
         blackboardBackground = settings.board.blackboardColor.green > settings.board.blackboardColor.red
             ? .chalkGreen
             : .black

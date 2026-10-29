@@ -101,7 +101,7 @@ enum InkDefaults {
     static let undoLimit = 100
 }
 
-enum EraserMode: CaseIterable {
+enum EraserMode: String, CaseIterable {
     case partial
     case stroke
     case area
@@ -114,6 +114,14 @@ enum EraserMode: CaseIterable {
         }
     }
 
+    var settingsDisplayName: String {
+        switch self {
+        case .partial: return "부분"
+        case .stroke: return "획"
+        case .area: return "영역"
+        }
+    }
+
     var next: EraserMode {
         switch self {
         case .partial: return .stroke
@@ -123,15 +131,30 @@ enum EraserMode: CaseIterable {
     }
 }
 
-enum EraserHitRule {
+enum EraserHitRule: String, CaseIterable {
     case touching
     case contained
+
+    var displayName: String {
+        switch self {
+        case .touching: return "닿으면"
+        case .contained: return "완전히 포함"
+        }
+    }
 }
 
-enum EraserTargetFilter {
+enum EraserTargetFilter: String, CaseIterable {
     case all
     case penOnly
     case highlighterOnly
+
+    var displayName: String {
+        switch self {
+        case .all: return "전체"
+        case .penOnly: return "펜만"
+        case .highlighterOnly: return "형광펜만"
+        }
+    }
 
     func includes(_ tool: InkStrokeTool) -> Bool {
         switch self {

@@ -18,10 +18,18 @@ enum BlackboardBackground: Hashable {
     case chalkGreen
 }
 
-enum BoardBackgroundPattern: Hashable {
+enum BoardBackgroundPattern: String, CaseIterable, Hashable {
     case none
     case grid
     case lines
+
+    var displayName: String {
+        switch self {
+        case .none: return "없음"
+        case .grid: return "격자"
+        case .lines: return "줄"
+        }
+    }
 }
 
 struct BoardPresentation: Equatable {
