@@ -15,7 +15,7 @@ private struct SelfTestRunner {
 }
 
 func runSelfTests() -> Int32 {
-    var runner = SelfTestRunner()
+    let runner = SelfTestRunner()
 
     if runner.failures.isEmpty {
         print("SelfTest: \(runner.passed) passed, 0 failed")
