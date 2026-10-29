@@ -14,7 +14,7 @@ final class ArchiveController {
 
     init(
         state: AppState,
-        overlayController: OverlayController,
+        overlayController: OverlayController? = nil,
         settingsStore: SettingsStore,
         fileManager: FileManager = .default
     ) {
@@ -244,7 +244,7 @@ final class ArchiveController {
     }
 
     @discardableResult
-    private func storeDisconnectedDisplay(_ displayUUID: String) -> Bool {
+    func storeDisconnectedDisplay(_ displayUUID: String) -> Bool {
         guard state.hasRestorableScreenState(for: displayUUID) else { return true }
         guard let url = disconnectedArchiveURL(for: displayUUID) else { return false }
         do {
@@ -313,6 +313,17 @@ final class ArchiveController {
     }
 
     private func applicationSupportRoot() -> URL? {
+        if let dataDirectory = ProcessInfo.processInfo.environment["EDUTOOLS_DATA_DIR"] {
+            guard !dataDirectory.isEmpty else {
+                NSLog("EduTools: EDUTOOLS_DATA_DIR was empty; using the standard application support directory")
+                return standardApplicationSupportRoot()
+            }
+            return URL(fileURLWithPath: dataDirectory, isDirectory: true)
+        }
+        return standardApplicationSupportRoot()
+    }
+
+    private func standardApplicationSupportRoot() -> URL? {
         do {
             return try fileManager.url(
                 for: .applicationSupportDirectory,

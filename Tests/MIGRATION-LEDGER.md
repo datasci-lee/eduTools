@@ -26,9 +26,9 @@
 | P without AppMod should be rejected | 78 | `UnitTests.ShortcutTests/carbonValuesWithoutAppModifierAreRejected()` | T1 | 이관 |
 | shortcut catalog should not contain duplicate keys in the same scope | 85 | `UnitTests.ShortcutTests/catalogBindingsAreUniqueWithinScope()` | T1 | 이관 |
 | every annotation shortcut should be connected to the command dispatcher | 93 | `UnitTests.ShortcutTests/annotationCatalogCommandsAreSupported()` | T1 | 이관 |
-| attribute icon width levels should clamp values and preserve every quartile boundary | 98 | — | T1 | 남음(S1c) |
-| attribute icon conditions should match booleans and values while rejecting unknown attributes | 120 | — | T1 | 남음(S1c) |
-| attribute icon contrast should be symmetric and apply halos below the threshold | 152 | — | T1 | 남음(S1c) |
+| attribute icon width levels should clamp values and preserve every quartile boundary | 98 | `UnitTests.AttrIconTests/widthLevelsFollowVector(_:)` | T1 | 이관 |
+| attribute icon conditions should match booleans and values while rejecting unknown attributes | 120 | `UnitTests.AttrIconTests/conditionsFollowVector(_:)` | T1 | 이관 |
+| attribute icon contrast should be symmetric and apply halos below the threshold | 152 | `UnitTests.AttrIconTests/contrastFollowsVector(_:)` | T1 | 이관 |
 | keystroke display should accept modified shortcuts but reject plain and Shift-only typing | 183 | `UnitTests.ShortcutPresentationTests/modifiedKeystrokeDisplayFiltersTyping()` | T1 | 이관 |
 | help filtering should match a Korean feature name | 192 | `UnitTests.ShortcutPresentationTests/helpFilterMatchesKoreanFeatureName()` | T1 | 이관 |
 | help filtering should match a displayed shortcut key | 201 | `UnitTests.ShortcutPresentationTests/helpFilterMatchesDisplayedKey()` | T1 | 이관 |
@@ -37,47 +37,47 @@
 | edge following should stay still in the center and move only past the inner edge | 241 | `UnitTests.ZoomTests/edgeFollowingMovesOnlyBeyondInnerEdge()` | T1 | 이관 |
 | zoom center should clamp the viewport to every screen edge | 246 | `UnitTests.ZoomTests/centerClampKeepsViewportOnScreen()` | T1 | 이관 |
 | frozen zoom input should map back to the original screen coordinate | 264 | `UnitTests.ZoomTests/frozenInputMapsBackToOriginalCoordinate()` | T1 | 이관 |
-| Catmull-Rom smoothing should pass through source points | 284 | — | T1 | 남음(S1b) |
-| pen Shift snapping should select 0, 45, and 90 degrees | 299 | — | T1 | 남음(S1b) |
-| highlighter Shift snapping should stay horizontal | 305 | — | T1 | 남음(S1b) |
-| a nearly straight hand stroke should be recognized | 319 | — | T1 | 남음(S1b) |
-| a closed four-sided hand stroke should be recognized as a rectangle | 334 | — | T1 | 남음(S1b) |
-| a closed round hand stroke should be recognized as an ellipse | 343 | — | T1 | 남음(S1b) |
-| an open zigzag should not be recognized as a shape | 357 | — | T1 | 남음(S1b) |
-| lasso containment should respect a concave polygon boundary | 366 | — | T1 | 남음(S1b) |
-| selection movement should offset every normalized coordinate | 388 | — | T1 | 남음(S1b) |
-| clicking overlapping covers should remove only the topmost matching cover | 421 | — | T1 | 남음(S1b) |
-| selection resizing should map normalized coordinates into the new bounds | 432 | — | T1 | 남음(S1b) |
-| 101 recorded strokes should permit 100 undos | 460 | — | T1 | 남음(S1b) |
-| a new stroke should clear redo history | 486 | — | T1 | 남음(S1b) |
-| partial erasing through a stroke center should leave two end fragments | 510 | — | T1 | 남음(S1b) |
-| highlighter-only stroke erasing should preserve a touched pen stroke | 542 | — | T1 | 남음(S1b) |
-| display ink and its undo history should survive a JSON round-trip | 585 | — | T1 | 남음(S1b) |
-| restoring on a different resolution should preserve normalized stroke coordinates | 608 | — | T1 | 남음(S1b) |
-| move-to-primary disconnect policy should merge source ink after destination ink | 621 | — | T2 | S2 |
-| area erasing should distinguish touching strokes from fully contained strokes | 677 | — | T1 | 남음(S1b) |
-| clear all should restore every display with one undo | 692 | — | T2 | S2 |
-| screen and board strokes should survive repeated board transitions | 709 | — | T2 | S2 |
-| each board page should keep an independent undo history | 728 | — | T2 | S2 |
-| a stored black stroke should display as white on the blackboard | 753 | — | T1 | 남음(S1b) |
-| lesson remaining time should equal end date minus the injected current time | 761 | — | T1 | 남음(S1c) |
-| a paused lesson timer should stay fixed and continue from that value after resume | 772 | — | T1 | 남음(S1c) |
-| the +10 minute break button should calculate its end date from the current clock | 777 | — | T1 | 남음(S1c) |
-| a direct break time earlier than now should be rejected as already passed today | 788 | — | T1 | 남음(S1c) |
-| lesson badge snapping should distinguish positions inside and outside 16 pixels | 812 | — | T1 | 남음(S1c) |
-| break music should accept only https://music.youtube.com/ playlist URLs | 822 | — | T1 | 남음(S1c) |
-| break music fade should be linear and move when the break end date changes | 841 | — | T1 | 남음(S1c) |
-| break music should escape URL text before inserting it into AppleScript | 847 | — | T1 | 남음(S1c) |
-| display grid planning should place all tested layouts edge-to-edge from the origin | 957 | — | T1 | 남음(S1c) |
-| display planning should anchor the connected main display at zero and reject overlaps | 1028 | — | T1 | 남음(S1c) |
-| display planning should preserve mirror, master succession, missing, and outside monitor rules | 1086 | — | T1 | 남음(S1c) |
-| display grid validation should reject duplicate or diagonal cells and accept connected cells | 1130 | — | T1 | 남음(S1c) |
-| automatic display preset selection should require an exact set and preserve list priority | 1153 | — | T1 | 남음(S1c) |
-| display matching should use valid hardware identity without reusing an online display | 1208 | — | T1 | 남음(S1c) |
-| settings JSON should round-trip without changing values | 1222 | — | T1 | 남음(S1c) |
-| settings validation should reject a zoom value outside 1.25 through 8 | 1236 | — | T1 | 남음(S1c) |
-| settings decoding should ignore unknown keys and default missing compatible values | 1266 | — | T1 | 남음(S1c) |
-| settings export should include display presets but exclude computer-specific switches and paths | 1310 | — | T1 | 남음(S1c) |
-| known avoided global shortcuts should be reported as conflicts | 1321 | — | T1 | 남음(S1c) |
-| settings backups should rotate to the most recent five entries | 1334 | — | T2 | S2 |
+| Catmull-Rom smoothing should pass through source points | 284 | `UnitTests.InkGeometryTests/catmullRomPassesThroughSourcePoints()` | T1 | 이관 |
+| pen Shift snapping should select 0, 45, and 90 degrees | 299 | `UnitTests.InkGeometryTests/penShiftSnapsToThreeDirections()` | T1 | 이관 |
+| highlighter Shift snapping should stay horizontal | 305 | `UnitTests.InkGeometryTests/highlighterShiftStaysHorizontal()` | T1 | 이관 |
+| a nearly straight hand stroke should be recognized | 319 | `UnitTests.RecognitionTests/nearlyStraightStrokeIsRecognized()` | T1 | 이관 |
+| a closed four-sided hand stroke should be recognized as a rectangle | 334 | `UnitTests.RecognitionTests/closedFourSidedStrokeIsRectangle()` | T1 | 이관 |
+| a closed round hand stroke should be recognized as an ellipse | 343 | `UnitTests.RecognitionTests/closedRoundStrokeIsEllipse()` | T1 | 이관 |
+| an open zigzag should not be recognized as a shape | 357 | `UnitTests.RecognitionTests/openZigzagIsRejected()` | T1 | 이관 |
+| lasso containment should respect a concave polygon boundary | 366 | `UnitTests.SelectionTests/concaveLassoRespectsBoundary()` | T1 | 이관 |
+| selection movement should offset every normalized coordinate | 388 | `UnitTests.SelectionTests/movementOffsetsEveryNormalizedCoordinate()` | T1 | 이관 |
+| clicking overlapping covers should remove only the topmost matching cover | 421 | `UnitTests.SelectionTests/overlappingCoverClickRemovesOnlyTopmost()` | T1 | 이관 |
+| selection resizing should map normalized coordinates into the new bounds | 432 | `UnitTests.SelectionTests/resizingMapsCoordinatesIntoNewBounds()` | T1 | 이관 |
+| 101 recorded strokes should permit 100 undos | 460 | `UnitTests.UndoTests/oneHundredOneStrokesPermitOneHundredUndos()` | T1 | 이관 |
+| a new stroke should clear redo history | 486 | `UnitTests.UndoTests/newStrokeClearsRedoHistory()` | T1 | 이관 |
+| partial erasing through a stroke center should leave two end fragments | 510 | `UnitTests.EraserTests/partialEraseThroughCenterLeavesTwoFragments()` | T1 | 이관 |
+| highlighter-only stroke erasing should preserve a touched pen stroke | 542 | `UnitTests.EraserTests/highlighterOnlyErasePreservesPen()` | T1 | 이관 |
+| display ink and its undo history should survive a JSON round-trip | 585 | `UnitTests.InkSerializationTests/displayInkAndHistorySurviveJSONRoundTrip()` | T1 | 이관 |
+| restoring on a different resolution should preserve normalized stroke coordinates | 608 | `UnitTests.InkSerializationTests/differentResolutionPreservesNormalizedCoordinates()` | T1 | 이관 |
+| move-to-primary disconnect policy should merge source ink after destination ink | 621 | `IntegrationTests.AppStateIntegrationTests/moveToPrimaryMergesAfterDestinationInk()` | T2 | 이관 |
+| area erasing should distinguish touching strokes from fully contained strokes | 677 | `UnitTests.EraserTests/areaEraseDistinguishesTouchingFromContained()` | T1 | 이관 |
+| clear all should restore every display with one undo | 692 | `IntegrationTests.AppStateIntegrationTests/clearAllRestoresEveryDisplayWithOneUndo()` | T2 | 이관 |
+| screen and board strokes should survive repeated board transitions | 709 | `IntegrationTests.AppStateIntegrationTests/repeatedBoardTransitionsPreserveScreenAndBoardInk()` | T2 | 이관 |
+| each board page should keep an independent undo history | 728 | `IntegrationTests.AppStateIntegrationTests/boardPagesKeepIndependentUndoHistories()` | T2 | 이관 |
+| a stored black stroke should display as white on the blackboard | 753 | `UnitTests.BoardColorTests/blackStrokeDisplaysWhiteOnBlackboard()` | T1 | 이관 |
+| lesson remaining time should equal end date minus the injected current time | 761 | `UnitTests.TimerTests/countdownUsesInjectedClock()` | T1 | 이관 |
+| a paused lesson timer should stay fixed and continue from that value after resume | 772 | `UnitTests.TimerTests/pauseFreezesAndResumeContinues()` | T1 | 이관 |
+| the +10 minute break button should calculate its end date from the current clock | 777 | `UnitTests.TimerTests/tenMinuteBreakUsesInjectedClock()` | T1 | 이관 |
+| a direct break time earlier than now should be rejected as already passed today | 788 | `UnitTests.TimerTests/pastDirectBreakTimeIsRejected()` | T1 | 이관 |
+| lesson badge snapping should distinguish positions inside and outside 16 pixels | 812 | `UnitTests.TimerTests/badgeSnapsInsideSixteenPixelsOnly()` | T1 | 이관 |
+| break music should accept only https://music.youtube.com/ playlist URLs | 822 | `UnitTests.BreakMusicTests/playlistURLRequiresHTTPSMusicHost()` | T1 | 이관 |
+| break music fade should be linear and move when the break end date changes | 841 | `UnitTests.BreakMusicTests/fadeIsLinearAndTracksEndDate()` | T1 | 이관 |
+| break music should escape URL text before inserting it into AppleScript | 847 | `UnitTests.BreakMusicTests/appleScriptLiteralEscapesURLText()` | T1 | 이관 |
+| display grid planning should place all tested layouts edge-to-edge from the origin | 957 | `UnitTests.DisplayPlannerTests/gridLayoutsFollowVector(_:)` | T1 | 이관 |
+| display planning should anchor the connected main display at zero and reject overlaps | 1028 | `UnitTests.DisplayPlannerTests/connectedMainAnchorsAtZeroAndOverlapIsRejected()` | T1 | 이관 |
+| display planning should preserve mirror, master succession, missing, and outside monitor rules | 1086 | `UnitTests.DisplayPlannerTests/mirrorSuccessionMissingAndOutsideRulesArePreserved()` | T1 | 이관 |
+| display grid validation should reject duplicate or diagonal cells and accept connected cells | 1130 | `UnitTests.DisplayPlannerTests/gridValidationRejectsDuplicateAndDiagonalCells()` | T1 | 이관 |
+| automatic display preset selection should require an exact set and preserve list priority | 1153 | `UnitTests.DisplayPlannerTests/automaticSelectionRequiresExactSetAndPreservesPriority()` | T1 | 이관 |
+| display matching should use valid hardware identity without reusing an online display | 1208 | `UnitTests.DisplayPlannerTests/matchingUsesValidHardwareIdentityWithoutReuse()` | T1 | 이관 |
+| settings JSON should round-trip without changing values | 1222 | `UnitTests.SettingsTests/jsonRoundTripPreservesValues()` | T1 | 이관 |
+| settings validation should reject a zoom value outside 1.25 through 8 | 1236 | `UnitTests.SettingsTests/validationRejectsOutOfRangeZoom()` | T1 | 이관 |
+| settings decoding should ignore unknown keys and default missing compatible values | 1266 | `UnitTests.SettingsTests/decodingIgnoresUnknownKeysAndDefaultsMissingValues()` | T1 | 이관 |
+| settings export should include display presets but exclude computer-specific switches and paths | 1310 | `UnitTests.SettingsTests/exportIncludesPresetsAndExcludesComputerSpecificValues()` | T1 | 이관 |
+| known avoided global shortcuts should be reported as conflicts | 1321 | `UnitTests.SettingsTests/avoidedGlobalShortcutIsReportedAsConflict()` | T1 | 이관 |
+| settings backups should rotate to the most recent five entries | 1334 | `IntegrationTests.SettingsBackupIntegrationTests/backupsRotateToMostRecentFive()` | T2 | 이관 |
 | synthetic enter and exit events should guard device queries and the event-kind table should remain complete | 1362 | `UnitTests.PointerEventsTests/pointingDeviceQueryPermissionMatchesEventKind(_:)`<br>`GUITests.PointerEnterExitTests/enterAndExitAvoidPointingDeviceQueries()` | T1 + T3 | 이관 |
