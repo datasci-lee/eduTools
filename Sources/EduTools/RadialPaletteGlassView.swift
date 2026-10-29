@@ -33,6 +33,8 @@ struct RadialPaletteSectorGeometry {
 enum RadialPaletteMetrics {
     static let collapsedDiameter: CGFloat = 44
     static let expandedDiameter: CGFloat = 280
+    // 3pt focus-ring overhang plus room for the Liquid Glass edge light and shadow.
+    static let windowMargin: CGFloat = 10
     static let centerRadius: CGFloat = collapsedDiameter / 2
     static let groupInnerRadius: CGFloat = 28
     static let groupOuterRadius: CGFloat = 58
