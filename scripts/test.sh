@@ -12,19 +12,22 @@ MODULE_CACHE_PATH="$SCRATCH_PATH/module-cache"
 usage() {
     cat >&2 <<'USAGE'
 usage: scripts/test.sh (unit|integration|gui|all) [...] [--filter <regex>] [--coverage] [--xunit <path>]
-       scripts/test.sh e2e
+       scripts/test.sh e2e [--app <EduTools.app>] [--filter <regex>] [--xunit <path>]
 
-all runs unit+integration only. gui requires WindowServer and exits 3 with UNRUNNABLE when unavailable.
-exit codes: 0=pass, 1=failure, 3=UNRUNNABLE, 4=usage error. e2e is planned for S4.
+all runs unit+integration only. gui requires WindowServer. e2e additionally requires Accessibility and Screen Recording.
+gui/e2e exit 3 with UNRUNNABLE when their environment is unavailable.
+exit codes: 0=pass, 1=failure, 3=UNRUNNABLE, 4=usage error.
 USAGE
 }
 
 unit_selected=false
 integration_selected=false
 gui_selected=false
+e2e_selected=false
 coverage_enabled=false
 filter_regex=""
 xunit_path=""
+e2e_app_path=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -46,8 +49,16 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         e2e)
-            echo "EduTools tests: 'e2e' target is not available yet (planned for S4)." >&2
-            exit 4
+            e2e_selected=true
+            shift
+            ;;
+        --app)
+            if [[ $# -lt 2 || -z "$2" ]]; then
+                usage
+                exit 4
+            fi
+            e2e_app_path="$2"
+            shift 2
             ;;
         --filter)
             if [[ $# -lt 2 || -z "$2" ]]; then
@@ -81,8 +92,21 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ "$unit_selected" == false && "$integration_selected" == false && "$gui_selected" == false ]]; then
+if [[ "$unit_selected" == false && "$integration_selected" == false && "$gui_selected" == false && "$e2e_selected" == false ]]; then
     usage
+    exit 4
+fi
+
+if [[ "$e2e_selected" == true && ( "$unit_selected" == true || "$integration_selected" == true || "$gui_selected" == true ) ]]; then
+    echo "EduTools tests: e2e must run by itself so it cannot take over input during another tier." >&2
+    exit 4
+fi
+if [[ -n "$e2e_app_path" && "$e2e_selected" == false ]]; then
+    echo "EduTools tests: --app is only valid with e2e." >&2
+    exit 4
+fi
+if [[ "$e2e_selected" == true && "$coverage_enabled" == true ]]; then
+    echo "EduTools tests: --coverage is not supported for the external-process e2e tier." >&2
     exit 4
 fi
 
@@ -117,6 +141,16 @@ swift_test_args=(
     --config-path "$SWIFTPM_CONFIG_PATH"
     --security-path "$SWIFTPM_SECURITY_PATH"
     --disable-sandbox
+)
+swift_build_args=(
+    build
+    --package-path "$ROOT_DIR"
+    --scratch-path "$SCRATCH_PATH"
+    --cache-path "$SWIFTPM_CACHE_PATH"
+    --config-path "$SWIFTPM_CONFIG_PATH"
+    --security-path "$SWIFTPM_SECURITY_PATH"
+    --disable-sandbox
+    --target E2ETests
 )
 
 mkdir -p \
@@ -168,11 +202,60 @@ case "$developer_dir" in
             -Xlinker -rpath
             -Xlinker "$library_dir"
         )
+        swift_build_args+=(
+            -Xswiftc -F"$framework_dir"
+            -Xlinker -F"$framework_dir"
+            -Xlinker -rpath
+            -Xlinker "$framework_dir"
+            -Xlinker -rpath
+            -Xlinker "$library_dir"
+        )
         ;;
     *)
         toolchain_kind="Xcode"
         ;;
 esac
+
+if [[ "$e2e_selected" == true ]]; then
+    "$swift_bin" "${swift_build_args[@]}"
+    e2e_build_status=$?
+    if [[ $e2e_build_status -ne 0 ]]; then
+        echo "EduTools tests: E2ETests target did not compile." >&2
+        exit 1
+    fi
+
+    e2e_environment_check="$SCRATCH_PATH/e2e-environment-check"
+    "$swiftc_bin" \
+        -parse-as-library \
+        -sdk "$sdk_path" \
+        -module-cache-path "$MODULE_CACHE_PATH" \
+        -DE2E_ENVIRONMENT_CHECK_MAIN \
+        "$ROOT_DIR/Tests/Support/WindowServer.swift" \
+        "$ROOT_DIR/Tests/Support/TempDir.swift" \
+        "$ROOT_DIR/Tests/Support/E2EHarness.swift" \
+        -framework AppKit \
+        -framework ApplicationServices \
+        -framework CoreGraphics \
+        -framework ImageIO \
+        -o "$e2e_environment_check"
+    e2e_environment_compile_status=$?
+    if [[ $e2e_environment_compile_status -ne 0 ]]; then
+        echo "EduTools tests: E2E environment preflight could not be compiled." >&2
+        exit 1
+    fi
+    if [[ -n "$e2e_app_path" ]]; then
+        export EDUTOOLS_E2E_APP="$e2e_app_path"
+    fi
+    "$e2e_environment_check"
+    e2e_environment_status=$?
+    if [[ $e2e_environment_status -ne 0 ]]; then
+        [[ $e2e_environment_status -eq 3 ]] && exit 3
+        echo "EduTools tests: E2E environment preflight could not be executed." >&2
+        exit 1
+    fi
+    export EDUTOOLS_E2E_NO_COUNTDOWN=1
+    export EDUTOOLS_E2E_PREFLIGHTED=1
+fi
 
 echo "EduTools tests: toolchain=$toolchain_kind developer_dir=$developer_dir swift=$swift_bin"
 
@@ -185,6 +268,9 @@ if [[ "$integration_selected" == true ]]; then
 fi
 if [[ "$gui_selected" == true ]]; then
     selected_modules+=(GUITests)
+fi
+if [[ "$e2e_selected" == true ]]; then
+    selected_modules+=(E2ETests)
 fi
 target_module_regex="$(IFS='|'; echo "${selected_modules[*]}")"
 target_filter="^(${target_module_regex})\."
