@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "horizontal",
+      "input": {
+        "metrics": [
+          { "cell": { "x": 0, "y": 0 }, "size": { "width": 2560, "height": 1440 } },
+          { "cell": { "x": -1, "y": 0 }, "size": { "width": 1920, "height": 1080 } },
+          { "cell": { "x": 1, "y": 0 }, "size": { "width": 1280, "height": 720 } }
+        ]
+      },
+      "expected": {
+        "origins": [
+          { "cell": { "x": -1, "y": 0 }, "origin": { "x": -1920, "y": 0 } },
+          { "cell": { "x": 0, "y": 0 }, "origin": { "x": 0, "y": 0 } },
+          { "cell": { "x": 1, "y": 0 }, "origin": { "x": 2560, "y": 0 } }
+        ]
+      }
+    },
+    {
+      "name": "vertical",
+      "input": {
+        "metrics": [
+          { "cell": { "x": 0, "y": 0 }, "size": { "width": 2560, "height": 1440 } },
+          { "cell": { "x": 0, "y": -1 }, "size": { "width": 1920, "height": 1080 } },
+          { "cell": { "x": 0, "y": 1 }, "size": { "width": 1280, "height": 720 } }
+        ]
+      },
+      "expected": {
+        "origins": [
+          { "cell": { "x": 0, "y": -1 }, "origin": { "x": 0, "y": -1080 } },
+          { "cell": { "x": 0, "y": 1 }, "origin": { "x": 0, "y": 1440 } }
+        ]
+      }
+    },
+    {
+      "name": "corner",
+      "input": {
+        "metrics": [
+          { "cell": { "x": 0, "y": 0 }, "size": { "width": 2560, "height": 1440 } },
+          { "cell": { "x": -1, "y": 0 }, "size": { "width": 1920, "height": 1080 } },
+          { "cell": { "x": 0, "y": 1 }, "size": { "width": 1280, "height": 720 } }
+        ]
+      },
+      "expected": {
+        "origins": [
+          { "cell": { "x": 0, "y": 1 }, "origin": { "x": 0, "y": 1440 } }
+        ]
+      }
+    },
+    {
+      "name": "different-sizes-share-main-edge",
+      "input": {
+        "metrics": [
+          { "cell": { "x": 0, "y": 0 }, "size": { "width": 1920, "height": 1080 } },
+          { "cell": { "x": 0, "y": 1 }, "size": { "width": 2560, "height": 1080 } },
+          { "cell": { "x": 1, "y": 0 }, "size": { "width": 1280, "height": 720 } }
+        ]
+      },
+      "expected": {
+        "origins": [
+          { "cell": { "x": 1, "y": 0 }, "origin": { "x": 1920, "y": 0 } }
+        ]
+      }
+    }
+  ]
+}
