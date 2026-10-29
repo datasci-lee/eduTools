@@ -17,39 +17,6 @@ private struct SelfTestRunner {
 func runSelfTests() -> Int32 {
     var runner = SelfTestRunner()
 
-    let filterPen = InkStroke(
-        tool: .pen,
-        color: .systemBlue,
-        width: 3,
-        usesPressure: false,
-        points: [InkPoint(location: CGPoint(x: 0.5, y: 0.5), pressure: 1, timestamp: 0)]
-    )
-    let filterHighlighter = InkStroke(
-        tool: .highlighter,
-        color: .systemYellow,
-        width: 18,
-        usesPressure: false,
-        points: [InkPoint(location: CGPoint(x: 0.5, y: 0.5), pressure: 1, timestamp: 0)]
-    )
-    let archiveFirstStroke = InkStroke(
-        tool: .pen,
-        color: NSColor(deviceRed: 0.2, green: 0.4, blue: 0.8, alpha: 1),
-        width: 3,
-        usesPressure: true,
-        points: [
-            InkPoint(location: CGPoint(x: 0.25, y: 0.75), pressure: 0.6, timestamp: 1),
-            InkPoint(location: CGPoint(x: 0.5, y: 0.5), pressure: 0.9, timestamp: 2),
-        ]
-    )
-    let archiveSecondStroke = InkStroke(
-        tool: .highlighter,
-        color: NSColor(deviceRed: 0.9, green: 0.7, blue: 0.1, alpha: 1),
-        width: 18,
-        usesPressure: false,
-        points: [InkPoint(location: CGPoint(x: 0.8, y: 0.2), pressure: 1, timestamp: 3)]
-    )
-    )
-
     let mouseEntered = NSEvent.enterExitEvent(
         with: .mouseEntered,
         location: .zero,
