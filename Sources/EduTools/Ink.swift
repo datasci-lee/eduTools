@@ -578,6 +578,31 @@ final class InkLayerState: Codable {
 }
 
 enum InkGeometry {
+    static func laserTrailPath(_ points: [CGPoint]) -> CGPath {
+        let path = CGMutablePath()
+        guard points.count > 1 else { return path }
+
+        path.move(to: points[0])
+        guard points.count > 2 else {
+            path.addLine(to: points[1])
+            return path
+        }
+
+        for index in 1..<(points.count - 1) {
+            let point = points[index]
+            let nextPoint = points[index + 1]
+            path.addQuadCurve(
+                to: CGPoint(
+                    x: (point.x + nextPoint.x) / 2,
+                    y: (point.y + nextPoint.y) / 2
+                ),
+                control: point
+            )
+        }
+        path.addLine(to: points[points.count - 1])
+        return path
+    }
+
     static func normalizedPoint(from point: CGPoint, in size: CGSize) -> CGPoint {
         guard size.width > 0, size.height > 0 else { return .zero }
         return CGPoint(x: point.x / size.width, y: point.y / size.height)

@@ -3,12 +3,27 @@ import Carbon
 import CoreImage
 import CoreMedia
 import CoreVideo
+import IOSurface
 import QuartzCore
 import ScreenCaptureKit
 
 private final class ZoomPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+}
+
+private enum ZoomFrame {
+    case ioSurface(IOSurfaceRef)
+    case image(CGImage)
+
+    var layerContents: Any {
+        switch self {
+        case let .ioSurface(surface):
+            return surface
+        case let .image(image):
+            return image
+        }
+    }
 }
 
 private final class ZoomCaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
@@ -19,7 +34,7 @@ private final class ZoomCaptureSession: NSObject, SCStreamOutput, SCStreamDelega
         qos: .userInteractive
     )
     private let imageContext = CIContext()
-    private let onFrame: (CGImage) -> Void
+    private let onFrame: (ZoomFrame) -> Void
     private let onFailure: (String) -> Void
     private var stream: SCStream?
     private var isStopping = false
@@ -27,7 +42,7 @@ private final class ZoomCaptureSession: NSObject, SCStreamOutput, SCStreamDelega
     init(
         displayID: CGDirectDisplayID,
         pixelSize: CGSize,
-        onFrame: @escaping (CGImage) -> Void,
+        onFrame: @escaping (ZoomFrame) -> Void,
         onFailure: @escaping (String) -> Void
     ) {
         self.displayID = displayID
@@ -137,16 +152,31 @@ private final class ZoomCaptureSession: NSObject, SCStreamOutput, SCStreamDelega
         of outputType: SCStreamOutputType
     ) {
         guard outputType == .screen, !isStopping else { return }
+        guard let frameInfoArray = CMSampleBufferGetSampleAttachmentsArray(
+            sampleBuffer,
+            createIfNecessary: false
+        ) as? [[SCStreamFrameInfo: Any]],
+              let frameInfo = frameInfoArray.first,
+              let statusRawValue = frameInfo[.status] as? Int,
+              statusRawValue == SCFrameStatus.complete.rawValue
+        else { return }
         guard sampleBuffer.isValid,
               let pixelBuffer = sampleBuffer.imageBuffer
         else {
             NSLog("EduTools: ScreenCaptureKit delivered an invalid zoom frame")
             return
         }
-        let image = CIImage(cvPixelBuffer: pixelBuffer)
-        guard let frame = imageContext.createCGImage(image, from: image.extent) else {
-            NSLog("EduTools: failed to convert a zoom frame to CGImage")
-            return
+        let frame: ZoomFrame
+        if let surface = CVPixelBufferGetIOSurface(pixelBuffer)?.takeUnretainedValue() {
+            frame = .ioSurface(surface)
+        } else {
+            NSLog("EduTools: zoom frame has no IOSurface; falling back to CGImage conversion")
+            let image = CIImage(cvPixelBuffer: pixelBuffer)
+            guard let fallbackImage = imageContext.createCGImage(image, from: image.extent) else {
+                NSLog("EduTools: failed to convert a zoom frame to CGImage")
+                return
+            }
+            frame = .image(fallbackImage)
         }
         DispatchQueue.main.async { [onFrame] in
             onFrame(frame)
@@ -328,13 +358,33 @@ private final class ZoomView: NSView {
         }
         let trackingArea = NSTrackingArea(
             rect: bounds,
-            options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            options: [
+                .mouseMoved,
+                .mouseEnteredAndExited,
+                .cursorUpdate,
+                .activeAlways,
+                .inVisibleRect,
+            ],
             owner: self,
             userInfo: nil
         )
         addTrackingArea(trackingArea)
         trackingAreaReference = trackingArea
         super.updateTrackingAreas()
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        Self.transparentCursor.set()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        Self.transparentCursor.set()
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        Self.transparentCursor.set()
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -371,11 +421,11 @@ private final class ZoomView: NSView {
         super.keyUp(with: event)
     }
 
-    func setFrameImage(_ image: CGImage) {
+    func setFrame(_ frame: ZoomFrame) {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        imageLayer.contents = image
-        dimLayer.contents = image
+        imageLayer.contents = frame.layerContents
+        dimLayer.contents = frame.layerContents
         CATransaction.commit()
     }
 
@@ -643,8 +693,8 @@ final class ZoomController {
     private var targetScreenFrame: CGRect?
     private var targetDisplayUUID: String?
     private var previousApplication: NSRunningApplication?
-    private var latestFrame: CGImage?
-    private var previewOriginalFrame: CGImage?
+    private var latestFrame: ZoomFrame?
+    private var previewOriginalFrame: ZoomFrame?
     private var scrollAccumulator = CGFloat.zero
     private var magnifyAccumulator = CGFloat.zero
     private let pointerWarpEventSource = CGEventSource(stateID: .combinedSessionState)
@@ -878,7 +928,7 @@ final class ZoomController {
         state.finishZoomPreview(cancelled: true)
         if state.zoomSession?.isFrozen == true, let previewOriginalFrame {
             latestFrame = previewOriginalFrame
-            zoomView?.setFrameImage(previewOriginalFrame)
+            zoomView?.setFrame(previewOriginalFrame)
         }
         self.previewOriginalFrame = nil
         focusZoomPanel()
@@ -932,11 +982,11 @@ final class ZoomController {
         return panel
     }
 
-    private func receive(frame: CGImage) {
+    private func receive(frame: ZoomFrame) {
         guard let session = state.zoomSession else { return }
         if session.isFrozen && !session.isPreviewing { return }
         latestFrame = frame
-        zoomView?.setFrameImage(frame)
+        zoomView?.setFrame(frame)
 
         guard !session.isPreviewing,
               !isInkGestureActive(),

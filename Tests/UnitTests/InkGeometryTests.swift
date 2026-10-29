@@ -7,6 +7,40 @@ import Testing
 
 @Suite("판서 기하", .serialized)
 struct InkGeometryTests {
+  @Test("레이저 꼬리 경로는 여러 점을 곡선으로 잇고 짧은 입력을 안전하게 처리한다")
+  func laserTrailPathUsesCurvesAndHandlesShortInputs() {
+    let points = [
+      CGPoint(x: 10, y: 20),
+      CGPoint(x: 35, y: 80),
+      CGPoint(x: 90, y: 45),
+      CGPoint(x: 140, y: 110),
+    ]
+    let curvedPath = InkGeometry.laserTrailPath(points)
+    var curvedElementTypes: [CGPathElementType] = []
+    var curvedStartPoint: CGPoint?
+    curvedPath.applyWithBlock { elementPointer in
+      let element = elementPointer.pointee
+      curvedElementTypes.append(element.type)
+      if element.type == .moveToPoint {
+        curvedStartPoint = element.points[0]
+      }
+    }
+
+    #expect(curvedStartPoint == points[0])
+    #expect(curvedPath.currentPoint == points[points.count - 1])
+    #expect(curvedElementTypes.contains(.addQuadCurveToPoint))
+
+    let linePath = InkGeometry.laserTrailPath([points[0], points[1]])
+    var lineElementTypes: [CGPathElementType] = []
+    linePath.applyWithBlock { elementPointer in
+      lineElementTypes.append(elementPointer.pointee.type)
+    }
+
+    #expect(lineElementTypes == [.moveToPoint, .addLineToPoint])
+    #expect(InkGeometry.laserTrailPath([]).isEmpty)
+    #expect(InkGeometry.laserTrailPath([points[0]]).isEmpty)
+  }
+
   @Test("필압 최소 굵기 비율은 펜 굵기의 하한을 보정한다")
   func pressureMinimumWidthRatioAdjustsEffectiveWidth() {
     let pressureStroke = makeTestStroke(width: 10, usesPressure: true)
