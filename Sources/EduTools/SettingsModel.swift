@@ -905,9 +905,7 @@ final class SettingsStore: ObservableObject {
         didSet {
             guard settings != oldValue else { return }
             persist()
-            for observer in observers.values {
-                observer(settings)
-            }
+            observers.forEach { $0(settings) }
         }
     }
     @Published private(set) var runtimeShortcutWarnings: [String: String] = [:]
@@ -915,7 +913,7 @@ final class SettingsStore: ObservableObject {
     @Published private(set) var pendingIssue: SettingsStoreIssue?
 
     private let defaults: UserDefaults
-    private var observers: [UUID: (AppSettings) -> Void] = [:]
+    private var observers = ObserverRegistry<(AppSettings) -> Void>()
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -982,14 +980,13 @@ final class SettingsStore: ObservableObject {
 
     @discardableResult
     func addObserver(_ observer: @escaping (AppSettings) -> Void) -> UUID {
-        let identifier = UUID()
-        observers[identifier] = observer
+        let identifier = observers.add(observer)
         observer(settings)
         return identifier
     }
 
     func removeObserver(_ identifier: UUID) {
-        observers.removeValue(forKey: identifier)
+        observers.remove(identifier)
     }
 
     func setRuntimeShortcutWarnings(_ warnings: [String: String]) {

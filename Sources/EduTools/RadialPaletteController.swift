@@ -2058,7 +2058,7 @@ final class RadialPaletteController: NSObject {
         }
         let shapes = EraserAreaShape.allCases.map { shape in
             RadialPaletteOption(
-                identifier: "eraser.area.\(shape == .rectangle ? "rectangle" : "lasso")",
+                identifier: "eraser.area.\(shape.rawValue)",
                 name: shape.displayName,
                 shortLabel: shape.displayName,
                 iconKey: shape == .rectangle

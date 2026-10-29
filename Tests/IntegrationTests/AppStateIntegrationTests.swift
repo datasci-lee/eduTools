@@ -6,6 +6,30 @@ import TestSupport
 
 @Suite("AppState 합성")
 struct AppStateIntegrationTests {
+  @Test("도구 관찰자는 즉시 통지되고 해제 뒤에는 통지되지 않으며 판서 관찰자는 즉시 통지되지 않는다")
+  func toolAndInkObserverInitialNotificationSemantics() throws {
+    let defaults = try IsolatedDefaults()
+    _ = try TempDir()
+    let state = IntegrationFixtures.state(defaults: defaults.value)
+    var observedTools: [InkTool] = []
+    var inkNotificationCount = 0
+
+    let toolObserverIdentifier = state.addToolObserver { observedTools.append($0) }
+    #expect(observedTools == [state.currentTool])
+
+    observedTools.removeAll()
+    state.selectTool(.highlighter)
+    #expect(observedTools == [.highlighter])
+
+    state.removeToolObserver(toolObserverIdentifier)
+    state.selectTool(.eraser)
+    #expect(observedTools == [.highlighter])
+
+    let inkObserverIdentifier = state.addInkObserver { _, _ in inkNotificationCount += 1 }
+    #expect(inkNotificationCount == 0)
+    state.removeInkObserver(inkObserverIdentifier)
+  }
+
   @Test("연결 해제 화면 판서는 주 화면의 기존 판서 뒤에 병합된다")
   func moveToPrimaryMergesAfterDestinationInk() throws {
     let defaults = try IsolatedDefaults()
