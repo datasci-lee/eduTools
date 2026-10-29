@@ -2240,7 +2240,7 @@ final class RadialPaletteController: NSObject {
             let textWidth = ceil(
                 (group.name as NSString).size(withAttributes: [.font: font]).width
             )
-            let labelRadius = RadialPaletteMetrics.optionInnerRadius + 7
+            let labelRadius = RadialPaletteMetrics.optionInnerRadius - 1
             let availableArcLength = (group.end - group.start) * labelRadius
                 - 2 * RadialPaletteMetrics.propertyLabelPadding
             let fitsGroupArc = textWidth <= availableArcLength

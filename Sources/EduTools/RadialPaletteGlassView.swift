@@ -42,6 +42,8 @@ enum RadialPaletteMetrics {
     static let entryOuterRadius: CGFloat = 96
     static let optionInnerRadius: CGFloat = 102
     static let optionOuterRadius: CGFloat = 138
+    // 속성 라벨 칩이 가운데 칸의 안쪽 가장자리에 걸치므로 내용을 바깥으로 비킨다.
+    static let optionContentRadialOffset: CGFloat = 5
     static let dragThreshold: CGFloat = 4
     static let commandHoldDuration: TimeInterval = 0.5
     static let sectorGap: CGFloat = 2 * .pi / 180
@@ -336,7 +338,8 @@ struct RadialPaletteGlassView: View {
         let shape = RadialSectorShape(geometry: cell.geometry)
         let contentPosition = RadialSectorShape.point(
             center: CGPoint(x: bounds.midX, y: bounds.midY),
-            radius: (cell.geometry.innerRadius + cell.geometry.outerRadius) / 2,
+            radius: (cell.geometry.innerRadius + cell.geometry.outerRadius) / 2
+                + (cell.ring == .option ? RadialPaletteMetrics.optionContentRadialOffset : 0),
             angle: (cell.geometry.startAngle + cell.geometry.endAngle) / 2
         )
         return ZStack {
