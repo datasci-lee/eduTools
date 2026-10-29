@@ -6,6 +6,21 @@ import ServiceManagement
 import SwiftUI
 import UniformTypeIdentifiers
 
+private enum SettingsTab: Hashable {
+    case general
+    case tools
+    case eraser
+    case zoom
+    case board
+    case timer
+    case display
+    case shortcuts
+}
+
+private final class SettingsSelection: ObservableObject {
+    @Published var tab: SettingsTab = .general
+}
+
 private struct SettingsActions {
     let updateLaunchAtLogin: (Bool) -> Void
     let chooseArchiveFolder: () -> Void
@@ -24,6 +39,7 @@ final class SettingsController: NSObject {
     private let settingsStore: SettingsStore
     private let backupStore: SettingsBackupStore
     private let defaults: UserDefaults
+    private let settingsSelection = SettingsSelection()
     private var settingsWindow: NSWindow?
     private var importWindow: NSWindow?
     private var permissionWindow: NSWindow?
@@ -61,7 +77,11 @@ final class SettingsController: NSObject {
             resetSettings: { [weak self] in self?.confirmResetToDefaults() },
             restorePrevious: { [weak self] in self?.restorePreviousSettings() }
         )
-        let rootView = SettingsRootView(store: settingsStore, actions: actions)
+        let rootView = SettingsRootView(
+            store: settingsStore,
+            selection: settingsSelection,
+            actions: actions
+        )
         let hostingController = NSHostingController(rootView: rootView)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 980, height: 700),
@@ -78,6 +98,11 @@ final class SettingsController: NSObject {
         settingsWindow = window
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
+    }
+
+    func showDisplaySettings() {
+        settingsSelection.tab = .display
+        showSettings()
     }
 
     func refreshShortcutPresentation() {
@@ -409,19 +434,35 @@ private final class SettingsExportOptionsView: NSStackView {
 
 private struct SettingsRootView: View {
     @ObservedObject var store: SettingsStore
+    @ObservedObject var selection: SettingsSelection
     let actions: SettingsActions
 
     var body: some View {
-        TabView {
-            generalTab.tabItem { Label("일반", systemImage: "gearshape") }
-            toolsTab.tabItem { Label("도구", systemImage: "pencil.and.outline") }
-            eraserTab.tabItem { Label("지우개", systemImage: "eraser") }
-            zoomTab.tabItem { Label("줌", systemImage: "plus.magnifyingglass") }
-            boardTab.tabItem { Label("보드", systemImage: "rectangle.fill") }
-            timerTab.tabItem { Label("타이머", systemImage: "timer") }
+        TabView(selection: $selection.tab) {
+            generalTab
+                .tag(SettingsTab.general)
+                .tabItem { Label("일반", systemImage: "gearshape") }
+            toolsTab
+                .tag(SettingsTab.tools)
+                .tabItem { Label("도구", systemImage: "pencil.and.outline") }
+            eraserTab
+                .tag(SettingsTab.eraser)
+                .tabItem { Label("지우개", systemImage: "eraser") }
+            zoomTab
+                .tag(SettingsTab.zoom)
+                .tabItem { Label("줌", systemImage: "plus.magnifyingglass") }
+            boardTab
+                .tag(SettingsTab.board)
+                .tabItem { Label("보드", systemImage: "rectangle.fill") }
+            timerTab
+                .tag(SettingsTab.timer)
+                .tabItem { Label("타이머", systemImage: "timer") }
             DisplayPresetsSettingsView(store: store)
+                .tag(SettingsTab.display)
                 .tabItem { Label("화면", systemImage: "display.2") }
-            shortcutsTab.tabItem { Label("단축키", systemImage: "keyboard") }
+            shortcutsTab
+                .tag(SettingsTab.shortcuts)
+                .tabItem { Label("단축키", systemImage: "keyboard") }
         }
         .padding(14)
         .frame(minWidth: 900, minHeight: 620)

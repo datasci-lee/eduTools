@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var zoomController: ZoomController?
     private var presenterEffectsController: PresenterEffectsController?
     private var archiveController: ArchiveController?
+    private var displayApplier: DisplayApplier?
     private var exportController: ExportController?
     private var dispatcher: AppCommandDispatcher?
     private var hotkeyCenter: HotkeyCenter?
@@ -71,18 +72,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.timerCoordinator = timerCoordinator
         dispatcher.timerCoordinator = timerCoordinator
 
-        let statusMenu = StatusMenu(
-            state: appState,
-            dispatcher: dispatcher,
-            settingsController: settingsController
-        )
-        self.statusMenu = statusMenu
-        presenterEffectsController.setAccessibilityStatusHandler { [weak statusMenu] trusted in
-            statusMenu?.setAccessibilityTrusted(trusted)
-        }
-        timerCoordinator.setLessonDisplayHandler { [weak statusMenu] title in
-            statusMenu?.setLessonTimerDisplay(title)
-        }
         let overlayController = OverlayController(state: appState, dispatcher: dispatcher)
         self.overlayController = overlayController
         dispatcher.overlayController = overlayController
@@ -96,6 +85,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlayController.archiveController = archiveController
         for displayUUID in overlayController.connectedDisplayUUIDs {
             archiveController.restoreDisconnectedDisplayIfNeeded(displayUUID)
+        }
+
+        let displayApplier = DisplayApplier(
+            settingsStore: settingsStore,
+            archiveController: archiveController
+        )
+        self.displayApplier = displayApplier
+        dispatcher.displayApplier = displayApplier
+
+        let statusMenu = StatusMenu(
+            state: appState,
+            dispatcher: dispatcher,
+            displayApplier: displayApplier,
+            settingsController: settingsController
+        )
+        self.statusMenu = statusMenu
+        presenterEffectsController.setAccessibilityStatusHandler { [weak statusMenu] trusted in
+            statusMenu?.setAccessibilityTrusted(trusted)
+        }
+        timerCoordinator.setLessonDisplayHandler { [weak statusMenu] title in
+            statusMenu?.setLessonTimerDisplay(title)
         }
 
         let exportController = ExportController(
@@ -194,6 +204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        displayApplier?.applicationWillTerminate()
         zoomController?.stopZoom()
         timerCoordinator?.stopBreakMusicForTermination()
         hotkeyCenter?.invalidate()
