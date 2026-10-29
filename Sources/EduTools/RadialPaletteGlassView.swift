@@ -49,8 +49,6 @@ enum RadialPaletteMetrics {
     static let sectorGap: CGFloat = 2 * .pi / 180
     static let propertyGap: CGFloat = 4 * .pi / 180
     static let tooltipGap: CGFloat = 8
-    static let propertyLabelFontSize: CGFloat = 9.5
-    static let propertyLabelPadding: CGFloat = 6
     static let cellStrokeWidth: CGFloat = 0.8
     static let hoverStrokeWidth: CGFloat = 1.8
     static let selectedStrokeWidth: CGFloat = 1.2
@@ -152,19 +150,11 @@ struct RadialPaletteRenderCell: Identifiable {
     }
 }
 
-struct RadialPaletteRenderPropertyLabel: Identifiable {
-    let id: String
-    let name: String
-    let angle: CGFloat
-    let radius: CGFloat
-}
-
 struct RadialPaletteRenderState {
     let isExpanded: Bool
     let showsKeyCaps: Bool
     let faceTone: RadialPaletteFaceTone
     let cells: [RadialPaletteRenderCell]
-    let propertyLabels: [RadialPaletteRenderPropertyLabel]
     let centerIconKey: String?
     let centerIconName: String?
     let centerAttributeConfiguration: AttrIconConfiguration?
@@ -181,7 +171,6 @@ struct RadialPaletteRenderState {
         showsKeyCaps: false,
         faceTone: .light,
         cells: [],
-        propertyLabels: [],
         centerIconKey: nil,
         centerIconName: nil,
         centerAttributeConfiguration: nil,
@@ -331,9 +320,6 @@ struct RadialPaletteGlassView: View {
                     ForEach(model.state.cells) { cell in
                         cellView(cell, in: bounds)
                     }
-                    ForEach(model.state.propertyLabels) { label in
-                        propertyLabel(label, in: bounds)
-                    }
                 }
                 centerView(in: bounds)
             }
@@ -411,23 +397,16 @@ struct RadialPaletteGlassView: View {
         let icon = iconImage(for: cell)
         switch cell.ring {
         case .group:
-            ZStack {
-                if let icon {
-                    Image(nsImage: icon)
-                        .renderingMode(
-                            cell.attributeConfiguration == nil ? .template : .original
-                        )
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 13, height: 13)
-                        .foregroundStyle(contentColor)
-                        .offset(y: -4)
-                        .accessibilityLabel(Text(cell.accessibilityLabel))
-                }
-                Text(cell.shortLabel)
-                    .font(.system(size: 7.5, weight: .medium))
+            if let icon {
+                Image(nsImage: icon)
+                    .renderingMode(
+                        cell.attributeConfiguration == nil ? .template : .original
+                    )
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 13, height: 13)
                     .foregroundStyle(contentColor)
-                    .offset(y: 9)
+                    .accessibilityLabel(Text(cell.accessibilityLabel))
             }
         case .entry:
             if let icon {
@@ -586,32 +565,6 @@ struct RadialPaletteGlassView: View {
             selected: cell.isSelected,
             accessibilityDescription: cell.accessibilityLabel
         )
-    }
-
-    private func propertyLabel(
-        _ label: RadialPaletteRenderPropertyLabel,
-        in bounds: CGRect
-    ) -> some View {
-        let position = RadialSectorShape.point(
-            center: CGPoint(x: bounds.midX, y: bounds.midY),
-            radius: label.radius,
-            angle: label.angle
-        )
-        return Text(label.name)
-            .font(.system(size: RadialPaletteMetrics.propertyLabelFontSize, weight: .semibold))
-            .foregroundStyle(Color(nsColor: RadialPaletteGlassStyle.primaryContentColor(
-                tone: model.state.faceTone
-            )))
-            .padding(.horizontal, 4)
-            .padding(.vertical, 2)
-            .radialPaletteGlass(
-                .regular,
-                in: Capsule(),
-                faceOpacity: model.glassOpacity,
-                tone: model.state.faceTone
-            )
-            .fixedSize()
-            .position(position)
     }
 
     private func centerView(in bounds: CGRect) -> some View {

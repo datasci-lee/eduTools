@@ -337,7 +337,6 @@ struct RadialPaletteCell {
     let iconName: String?
     let shortLabel: String
     let shortcut: String
-    let propertyName: String?
     let color: NSColor?
     let preview: RadialPalettePreview?
     let isSelected: Bool
@@ -353,7 +352,6 @@ struct RadialPaletteCell {
         iconName: String?,
         shortLabel: String,
         shortcut: String,
-        propertyName: String?,
         color: NSColor?,
         preview: RadialPalettePreview? = nil,
         isSelected: Bool,
@@ -368,7 +366,6 @@ struct RadialPaletteCell {
         self.iconName = iconName
         self.shortLabel = shortLabel
         self.shortcut = shortcut
-        self.propertyName = propertyName
         self.color = color
         self.preview = preview
         self.isSelected = isSelected
@@ -1407,6 +1404,10 @@ final class RadialPaletteController: NSObject {
         for target: RadialPaletteHitTarget,
         preferredDirection: CGVector
     ) {
+        if case let .cell(cell) = target, cell.ring == .group {
+            tooltip.hide()
+            return
+        }
         updateTooltipAppearance()
         let name: String
         let shortcut: String
@@ -1663,9 +1664,8 @@ final class RadialPaletteController: NSObject {
                     name: group.name,
                     iconKey: group.iconKey,
                     iconName: group.iconName,
-                    shortLabel: group.name,
+                    shortLabel: "",
                     shortcut: "",
-                    propertyName: nil,
                     color: nil,
                     isSelected: group.id == selectedGroup,
                     isEnabled: group.isEnabled,
@@ -1700,7 +1700,6 @@ final class RadialPaletteController: NSObject {
                         iconName: entry.iconName,
                         shortLabel: "",
                         shortcut: entry.shortcut,
-                        propertyName: nil,
                         color: nil,
                         isSelected: entryIsSelected(entry),
                         isEnabled: entry.isEnabled,
@@ -1735,7 +1734,6 @@ final class RadialPaletteController: NSObject {
                             iconName: option.iconName,
                             shortLabel: option.shortLabel,
                             shortcut: option.shortcut,
-                            propertyName: optionGroup.name,
                             color: option.color,
                             preview: option.preview,
                             isSelected: option.isSelected,
@@ -2171,7 +2169,6 @@ final class RadialPaletteController: NSObject {
                     isFocused: cell.identifier == focusedIdentifier
                 )
             },
-            propertyLabels: renderPropertyLabels(for: cells),
             centerIconKey: centerDefinition?.id,
             centerIconName: centerDefinition?.iconName,
             centerAttributeConfiguration: state.isPassThroughModeEnabled
@@ -2209,57 +2206,6 @@ final class RadialPaletteController: NSObject {
             state: state,
             settings: settingsStore.settings
         )
-    }
-
-    private func renderPropertyLabels(
-        for cells: [RadialPaletteCell]
-    ) -> [RadialPaletteRenderPropertyLabel] {
-        var groups: [(
-            name: String,
-            start: CGFloat,
-            end: CGFloat,
-            firstCellStart: CGFloat,
-            firstCellEnd: CGFloat
-        )] = []
-        for cell in cells where cell.ring == .option {
-            guard let propertyName = cell.propertyName else { continue }
-            if let last = groups.last, last.name == propertyName {
-                groups[groups.count - 1].end = cell.endAngle
-            } else {
-                groups.append((
-                    propertyName,
-                    cell.startAngle,
-                    cell.endAngle,
-                    cell.startAngle,
-                    cell.endAngle
-                ))
-            }
-        }
-
-        let font = NSFont.systemFont(
-            ofSize: RadialPaletteMetrics.propertyLabelFontSize,
-            weight: .semibold
-        )
-        return groups.enumerated().map { index, group in
-            let textWidth = ceil(
-                (group.name as NSString).size(withAttributes: [.font: font]).width
-            )
-            let labelRadius = RadialPaletteMetrics.optionInnerRadius - 1
-            let availableArcLength = (group.end - group.start) * labelRadius
-                - 2 * RadialPaletteMetrics.propertyLabelPadding
-            let fitsGroupArc = textWidth <= availableArcLength
-            return RadialPaletteRenderPropertyLabel(
-                id: "\(index).\(group.name)",
-                name: group.name,
-                angle: fitsGroupArc
-                    ? (group.start + group.end) / 2
-                    : (group.firstCellStart + group.firstCellEnd) / 2,
-                radius: fitsGroupArc
-                    ? labelRadius
-                    : (RadialPaletteMetrics.optionInnerRadius
-                        + RadialPaletteMetrics.optionOuterRadius) / 2
-            )
-        }
     }
 
     private func centerDefinition() -> ShortcutDefinition? {
