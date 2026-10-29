@@ -3,6 +3,7 @@ import Foundation
 
 enum AttrIconBackgroundEstimate {
     static let lightSurfaceWhiteComponent: CGFloat = 0.93
+    static let darkSurfaceWhiteComponent: CGFloat = 0.07
     static let darkSystemSurfaceWhiteComponent: CGFloat = 0.18
 }
 
