@@ -121,6 +121,89 @@ struct ToolMemorySetting: Codable, Equatable {
     var size: Double
 }
 
+enum FavoritesDefaults {
+    static let maximumCount = 8
+}
+
+struct FavoriteTool: Codable, Equatable {
+    let tool: String
+    let colorIndex: Int?
+    let size: Double
+    let arrowStyle: String?
+    let eraserMode: String?
+    let eraserAreaShape: String?
+
+    var inkTool: InkTool? {
+        InkTool(rawValue: tool)
+    }
+
+    var decodedArrowStyle: ArrowStyle? {
+        arrowStyle.flatMap(ArrowStyle.init(rawValue:))
+    }
+
+    var decodedEraserMode: EraserMode? {
+        guard let eraserMode else { return nil }
+        return EraserMode.allCases.first { mode in
+            switch mode {
+            case .partial: return eraserMode == "partial"
+            case .stroke: return eraserMode == "stroke"
+            case .area: return eraserMode == "area"
+            }
+        }
+    }
+
+    var decodedEraserAreaShape: EraserAreaShape? {
+        guard let eraserAreaShape else { return nil }
+        return EraserAreaShape.allCases.first { shape in
+            switch shape {
+            case .rectangle: return eraserAreaShape == "rectangle"
+            case .lasso: return eraserAreaShape == "lasso"
+            }
+        }
+    }
+
+    func isValid(colorPresetCount: Int) -> Bool {
+        guard let inkTool, AttrIconToolCatalog.manifestKeyByTool[inkTool] != nil else {
+            return false
+        }
+
+        let hasValidColor: Bool
+        if inkTool == .eraser {
+            hasValidColor = colorIndex == nil
+        } else {
+            hasValidColor = colorIndex.map { (0..<colorPresetCount).contains($0) } == true
+        }
+        guard hasValidColor else { return false }
+
+        switch inkTool {
+        case .eraser:
+            return (Double(EraserDefaults.minimumDiameter)...Double(EraserDefaults.maximumDiameter))
+                .contains(size)
+                && arrowStyle == nil
+                && decodedEraserMode != nil
+                && decodedEraserAreaShape != nil
+        case .laser:
+            return (InkDefaults.minimumLaserTrailDuration...InkDefaults.maximumLaserTrailDuration)
+                .contains(size)
+                && arrowStyle == nil
+                && eraserMode == nil
+                && eraserAreaShape == nil
+        case .arrow:
+            return inkTool.memorySlot?.sizeRange.contains(size) == true
+                && decodedArrowStyle != nil
+                && eraserMode == nil
+                && eraserAreaShape == nil
+        case .pen, .highlighter, .rectangle, .ellipse, .text:
+            return inkTool.memorySlot?.sizeRange.contains(size) == true
+                && arrowStyle == nil
+                && eraserMode == nil
+                && eraserAreaShape == nil
+        case .select, .cover:
+            return false
+        }
+    }
+}
+
 struct PerToolMemorySettings: Codable, Equatable {
     static let initialColorIndex = 0
 
@@ -194,6 +277,7 @@ struct ToolSettings: Codable, Equatable {
     var laserSize: Double
     var laserTrailDuration: Double
     var perToolMemory: PerToolMemorySettings
+    var favorites: [FavoriteTool]
     var shapeRecognitionEnabled: Bool
     var paletteStyle: PaletteStyle
     var paletteGlassOpacity: Double
@@ -205,6 +289,7 @@ struct ToolSettings: Codable, Equatable {
         laserSize: Double,
         laserTrailDuration: Double,
         perToolMemory: PerToolMemorySettings = .default,
+        favorites: [FavoriteTool] = [],
         shapeRecognitionEnabled: Bool,
         paletteStyle: PaletteStyle = .radial,
         paletteGlassOpacity: Double = RadialPaletteGlassStyle.defaultOpacity
@@ -215,6 +300,9 @@ struct ToolSettings: Codable, Equatable {
         self.laserSize = laserSize
         self.laserTrailDuration = laserTrailDuration
         self.perToolMemory = perToolMemory
+        self.favorites = favorites.isEmpty
+            ? []
+            : Self.normalizedFavorites(favorites, colorPresetCount: colors.count)
         self.shapeRecognitionEnabled = shapeRecognitionEnabled
         self.paletteStyle = paletteStyle
         self.paletteGlassOpacity = paletteGlassOpacity
@@ -227,6 +315,7 @@ struct ToolSettings: Codable, Equatable {
         case laserSize
         case laserTrailDuration
         case perToolMemory
+        case favorites
         case shapeRecognitionEnabled
         case paletteStyle
         case paletteGlassOpacity
@@ -264,6 +353,13 @@ struct ToolSettings: Codable, Equatable {
                 )
             )
         }
+        let decodedFavorites = try container.decodeIfPresent(
+            [FavoriteTool].self,
+            forKey: .favorites
+        ) ?? []
+        favorites = decodedFavorites.isEmpty
+            ? []
+            : Self.normalizedFavorites(decodedFavorites, colorPresetCount: colors.count)
         shapeRecognitionEnabled = try container.decode(Bool.self, forKey: .shapeRecognitionEnabled)
         paletteStyle = try container.decodeIfPresent(PaletteStyle.self, forKey: .paletteStyle)
             ?? .radial
@@ -281,9 +377,30 @@ struct ToolSettings: Codable, Equatable {
         try container.encode(laserSize, forKey: .laserSize)
         try container.encode(laserTrailDuration, forKey: .laserTrailDuration)
         try container.encode(perToolMemory, forKey: .perToolMemory)
+        try container.encode(favorites, forKey: .favorites)
         try container.encode(shapeRecognitionEnabled, forKey: .shapeRecognitionEnabled)
         try container.encode(paletteStyle, forKey: .paletteStyle)
         try container.encode(paletteGlassOpacity, forKey: .paletteGlassOpacity)
+    }
+
+    private static func normalizedFavorites(
+        _ favorites: [FavoriteTool],
+        colorPresetCount: Int
+    ) -> [FavoriteTool] {
+        var result: [FavoriteTool] = []
+        for favorite in favorites where favorite.isValid(colorPresetCount: colorPresetCount) {
+            guard !result.contains(favorite), result.count < FavoritesDefaults.maximumCount else {
+                continue
+            }
+            result.append(favorite)
+        }
+        if result.count != favorites.count {
+            NSLog(
+                "EduTools: ignored %d invalid, duplicate, or excess favorite tool settings",
+                favorites.count - result.count
+            )
+        }
+        return result
     }
 }
 
@@ -581,6 +698,15 @@ enum SettingsValidator {
             else {
                 throw SettingsValidationError.invalidValue("\(tool.displayName) 마지막 설정")
             }
+        }
+        let favorites = settings.tools.favorites
+        guard favorites.count <= FavoritesDefaults.maximumCount,
+              favorites.allSatisfy({ $0.isValid(colorPresetCount: settings.tools.colors.count) }),
+              favorites.enumerated().allSatisfy({ index, favorite in
+                  favorites.firstIndex(of: favorite) == index
+              })
+        else {
+            throw SettingsValidationError.invalidValue("즐겨찾기 도구")
         }
 
         guard ["partial", "stroke", "area"].contains(settings.eraser.mode),

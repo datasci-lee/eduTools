@@ -308,6 +308,99 @@ final class AppState {
         return CGFloat(settingsStore.settings.tools.perToolMemory[keyPath: slot.keyPath].size)
     }
 
+    func favoriteSnapshot(for tool: InkTool) -> FavoriteTool? {
+        guard AttrIcon.manifestKeyByTool[tool] != nil else { return nil }
+
+        if let slot = tool.memorySlot {
+            let memory = settingsStore.settings.tools.perToolMemory[keyPath: slot.keyPath]
+            return FavoriteTool(
+                tool: tool.rawValue,
+                colorIndex: memory.colorIndex,
+                size: memory.size,
+                arrowStyle: tool == .arrow ? arrowStyle.rawValue : nil,
+                eraserMode: nil,
+                eraserAreaShape: nil
+            )
+        }
+
+        switch tool {
+        case .eraser:
+            let mode: String
+            switch eraserMode {
+            case .partial: mode = "partial"
+            case .stroke: mode = "stroke"
+            case .area: mode = "area"
+            }
+            return FavoriteTool(
+                tool: tool.rawValue,
+                colorIndex: nil,
+                size: Double(eraserDiameter),
+                arrowStyle: nil,
+                eraserMode: mode,
+                eraserAreaShape: eraserAreaShape == .rectangle ? "rectangle" : "lasso"
+            )
+        case .laser:
+            guard let colorIndex = colorPresets.firstIndex(where: { $0.isEqual(laserColor) }) else {
+                return nil
+            }
+            return FavoriteTool(
+                tool: tool.rawValue,
+                colorIndex: colorIndex,
+                size: laserTrailDuration,
+                arrowStyle: nil,
+                eraserMode: nil,
+                eraserAreaShape: nil
+            )
+        case .pen, .highlighter, .arrow, .rectangle, .ellipse, .text,
+             .select, .cover:
+            return nil
+        }
+    }
+
+    func currentFavoriteSnapshot() -> FavoriteTool? {
+        favoriteSnapshot(for: currentTool)
+    }
+
+    @discardableResult
+    func applyFavorite(_ favorite: FavoriteTool) -> Bool {
+        let colorPresetCount = settingsStore.settings.tools.colors.count
+        guard favorite.isValid(colorPresetCount: colorPresetCount),
+              let tool = favorite.inkTool
+        else {
+            return false
+        }
+
+        selectTool(tool)
+        if let colorIndex = favorite.colorIndex {
+            selectColor(at: colorIndex)
+        }
+        if tool.memorySlot != nil {
+            setWidth(CGFloat(favorite.size), for: tool)
+        }
+
+        switch tool {
+        case .arrow:
+            guard let style = favorite.decodedArrowStyle else { return false }
+            setArrowStyle(style)
+        case .eraser:
+            guard let mode = favorite.decodedEraserMode,
+                  let shape = favorite.decodedEraserAreaShape
+            else {
+                return false
+            }
+            setEraserDiameter(CGFloat(favorite.size))
+            setEraserMode(mode)
+            setEraserAreaShape(shape)
+        case .laser:
+            setLaserTrailDuration(favorite.size)
+        case .pen, .highlighter, .rectangle, .ellipse, .text:
+            break
+        case .select, .cover:
+            return false
+        }
+        return true
+    }
+
     private func requiredWidth(for tool: InkTool) -> CGFloat {
         guard let width = width(for: tool) else {
             preconditionFailure("Tool does not have a remembered size: \(tool.rawValue)")
