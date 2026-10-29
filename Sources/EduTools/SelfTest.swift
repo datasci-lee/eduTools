@@ -1358,50 +1358,18 @@ func runSelfTests() -> Int32 {
         trackingNumber: 0,
         userData: nil
     )!
-    let mouseMoved = NSEvent.mouseEvent(
-        with: .mouseMoved,
-        location: .zero,
-        modifierFlags: [],
-        timestamp: 0,
-        windowNumber: 0,
-        context: nil,
-        eventNumber: 0,
-        clickCount: 0,
-        pressure: 0
-    )!
-    let leftMouseDown = NSEvent.mouseEvent(
-        with: .leftMouseDown,
-        location: .zero,
-        modifierFlags: [],
-        timestamp: 0,
-        windowNumber: 0,
-        context: nil,
-        eventNumber: 0,
-        clickCount: 0,
-        pressure: 0
-    )!
-    let rightMouseDown = NSEvent.mouseEvent(
-        with: .rightMouseDown,
-        location: .zero,
-        modifierFlags: [],
-        timestamp: 0,
-        windowNumber: 0,
-        context: nil,
-        eventNumber: 0,
-        clickCount: 0,
-        pressure: 0
-    )!
+    // Mouse-event reads require a WindowServer session (and throw headlessly), so verify only guarded enter/exit reads and the event-kind table here.
     runner.expect(
         !PointerEventKind.isEraserTip(mouseEntered)
             && !PointerEventKind.isEraserTip(mouseExited)
-            && !PointerEventKind.isEraserTip(mouseMoved)
-            && !PointerEventKind.isEraserTip(leftMouseDown)
-            && !PointerEventKind.isEraserTip(rightMouseDown)
             && !PointerEventKind.canQueryPointingDevice(.mouseEntered)
             && !PointerEventKind.canQueryPointingDevice(.mouseExited)
             && PointerEventKind.canQueryPointingDevice(.mouseMoved)
-            && PointerEventKind.canQueryPointingDevice(.leftMouseDown),
-        "synthetic pointer events should guard invalid device queries and reject mouse eraser tips"
+            && PointerEventKind.canQueryPointingDevice(.leftMouseDown)
+            && PointerEventKind.canQueryPointingDevice(.rightMouseDown)
+            && PointerEventKind.canQueryPointingDevice(.tabletProximity)
+            && !PointerEventKind.canQueryPointingDevice(.cursorUpdate),
+        "synthetic enter and exit events should guard device queries and the event-kind table should remain complete"
     )
 
     if runner.failures.isEmpty {
