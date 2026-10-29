@@ -201,6 +201,7 @@ iPad는 macOS **Sidecar**로 연결해 하나의 모니터처럼 다루고, Appl
 - 모니터는 디스플레이 UUID(`CGDisplayCreateUUIDFromDisplayID`)로 구분해, 다시 연결해도 같은 화면으로 알아봄
 - 획 좌표는 화면 크기에 대한 비율(0~1)로 저장해, 해상도가 바뀌거나 다른 화면으로 옮겨도 같은 위치에 그려짐
 - Apple Pencil은 태블릿 이벤트(`NSEvent.pressure`)로 들어오며, 손가락 터치는 Sidecar가 제스처로 처리해 판서가 되지 않음(손바닥 오인식 방지). Sidecar 연결과 macOS의 Pencil 더블 탭 사용 설정 후 압력 및 지우개 ↔ 이전 도구 전환을 실기 확인
+- 지우개 끝 판별의 장치 종류는 마우스 누름·뗌·드래그·이동과 태블릿 근접 이벤트에서만 읽는다. 진입·이탈 이벤트에서 `NSEvent.pointingDeviceType`을 읽으면 예외가 발생하므로 그 밖의 이벤트는 지우개 끝이 아닌 것으로 다룬다.
 - iPad 화면에는 크고 터치하기 쉬운 도구 팔레트를 따로 띄움(색·펜·지우개·실행 취소). Sidecar 사이드바는 꺼두길 안내
 - 수업에서는 무선보다 끊김이 적은 **USB 유선 Sidecar**를 권장
 - Windows에는 Sidecar가 없으므로, Windows 확장 단계에서는 iPad용 동반 앱(PencilKit)을 만들어 로컬 네트워크로 획을 보내는 방식을 검토. 획을 비율 좌표로 저장하는 지금 구조가 그대로 쓰임
