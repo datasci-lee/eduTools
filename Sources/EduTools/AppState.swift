@@ -60,16 +60,16 @@ final class AppState {
         case rebuilt
     }
 
-    private var annotationModeObservers: [UUID: AnnotationModeObserver] = [:]
-    private var passThroughModeObservers: [UUID: PassThroughModeObserver] = [:]
-    private var toolObservers: [UUID: ToolObserver] = [:]
-    private var toolSettingsObservers: [UUID: ToolSettingsObserver] = [:]
-    private var paletteVisibilityObservers: [UUID: PaletteVisibilityObserver] = [:]
-    private var inkObservers: [UUID: InkObserver] = [:]
-    private var boardObservers: [UUID: BoardObserver] = [:]
-    private var zoomObservers: [UUID: ZoomObserver] = [:]
-    private var presenterEffectsObservers: [UUID: PresenterEffectsObserver] = [:]
-    private var sharingSettingsObservers: [UUID: SharingSettingsObserver] = [:]
+    private var annotationModeObservers = ObserverRegistry<AnnotationModeObserver>()
+    private var passThroughModeObservers = ObserverRegistry<PassThroughModeObserver>()
+    private var toolObservers = ObserverRegistry<ToolObserver>()
+    private var toolSettingsObservers = ObserverRegistry<ToolSettingsObserver>()
+    private var paletteVisibilityObservers = ObserverRegistry<PaletteVisibilityObserver>()
+    private var inkObservers = ObserverRegistry<InkObserver>()
+    private var boardObservers = ObserverRegistry<BoardObserver>()
+    private var zoomObservers = ObserverRegistry<ZoomObserver>()
+    private var presenterEffectsObservers = ObserverRegistry<PresenterEffectsObserver>()
+    private var sharingSettingsObservers = ObserverRegistry<SharingSettingsObserver>()
     private var selectedStrokeIdentifiersByDisplay: [String: Set<UUID>] = [:]
     private let inkState = InkLayerState()
     private let boardDocuments: [BoardKind: BoardDocument] = [
@@ -144,9 +144,7 @@ final class AppState {
     private(set) var zoomSession: ZoomSessionState? {
         didSet {
             guard oldValue != zoomSession else { return }
-            for observer in zoomObservers.values {
-                observer(zoomSession)
-            }
+            zoomObservers.forEach { $0(zoomSession) }
         }
     }
 
@@ -162,9 +160,7 @@ final class AppState {
                 clearAllSelections()
                 dismissBoard()
             }
-            for observer in annotationModeObservers.values {
-                observer(isAnnotationModeEnabled)
-            }
+            annotationModeObservers.forEach { $0(isAnnotationModeEnabled) }
         }
     }
 
@@ -173,9 +169,7 @@ final class AppState {
             let wasEnabled = oldValue != nil
             let isEnabled = passThroughModeSource != nil
             guard wasEnabled != isEnabled else { return }
-            for observer in passThroughModeObservers.values {
-                observer(isEnabled)
-            }
+            passThroughModeObservers.forEach { $0(isEnabled) }
         }
     }
 
@@ -192,9 +186,7 @@ final class AppState {
             if currentTool.memorySlot != nil {
                 lastColorTool = currentTool
             }
-            for observer in toolObservers.values {
-                observer(currentTool)
-            }
+            toolObservers.forEach { $0(currentTool) }
             notifyToolSettingsObservers()
         }
     }
@@ -277,18 +269,14 @@ final class AppState {
     private(set) var showsHelpInSharing: Bool {
         didSet {
             guard oldValue != showsHelpInSharing else { return }
-            for observer in sharingSettingsObservers.values {
-                observer(showsHelpInSharing)
-            }
+            sharingSettingsObservers.forEach { $0(showsHelpInSharing) }
         }
     }
 
     private(set) var isPaletteVisible = true {
         didSet {
             guard oldValue != isPaletteVisible else { return }
-            for observer in paletteVisibilityObservers.values {
-                observer(isPaletteVisible)
-            }
+            paletteVisibilityObservers.forEach { $0(isPaletteVisible) }
         }
     }
 
@@ -1369,145 +1357,126 @@ final class AppState {
 
     @discardableResult
     func addAnnotationModeObserver(_ observer: @escaping AnnotationModeObserver) -> UUID {
-        let identifier = UUID()
-        annotationModeObservers[identifier] = observer
+        let identifier = annotationModeObservers.add(observer)
         observer(isAnnotationModeEnabled)
         return identifier
     }
 
     func removeAnnotationModeObserver(_ identifier: UUID) {
-        annotationModeObservers.removeValue(forKey: identifier)
+        annotationModeObservers.remove(identifier)
     }
 
     @discardableResult
     func addPassThroughModeObserver(_ observer: @escaping PassThroughModeObserver) -> UUID {
-        let identifier = UUID()
-        passThroughModeObservers[identifier] = observer
+        let identifier = passThroughModeObservers.add(observer)
         observer(isPassThroughModeEnabled)
         return identifier
     }
 
     func removePassThroughModeObserver(_ identifier: UUID) {
-        passThroughModeObservers.removeValue(forKey: identifier)
+        passThroughModeObservers.remove(identifier)
     }
 
     @discardableResult
     func addToolObserver(_ observer: @escaping ToolObserver) -> UUID {
-        let identifier = UUID()
-        toolObservers[identifier] = observer
+        let identifier = toolObservers.add(observer)
         observer(currentTool)
         return identifier
     }
 
     func removeToolObserver(_ identifier: UUID) {
-        toolObservers.removeValue(forKey: identifier)
+        toolObservers.remove(identifier)
     }
 
     @discardableResult
     func addToolSettingsObserver(_ observer: @escaping ToolSettingsObserver) -> UUID {
-        let identifier = UUID()
-        toolSettingsObservers[identifier] = observer
+        let identifier = toolSettingsObservers.add(observer)
         observer()
         return identifier
     }
 
     func removeToolSettingsObserver(_ identifier: UUID) {
-        toolSettingsObservers.removeValue(forKey: identifier)
+        toolSettingsObservers.remove(identifier)
     }
 
     @discardableResult
     func addPaletteVisibilityObserver(_ observer: @escaping PaletteVisibilityObserver) -> UUID {
-        let identifier = UUID()
-        paletteVisibilityObservers[identifier] = observer
+        let identifier = paletteVisibilityObservers.add(observer)
         observer(isPaletteVisible)
         return identifier
     }
 
     func removePaletteVisibilityObserver(_ identifier: UUID) {
-        paletteVisibilityObservers.removeValue(forKey: identifier)
+        paletteVisibilityObservers.remove(identifier)
     }
 
     @discardableResult
     func addInkObserver(_ observer: @escaping InkObserver) -> UUID {
-        let identifier = UUID()
-        inkObservers[identifier] = observer
-        return identifier
+        inkObservers.add(observer)
     }
 
     func removeInkObserver(_ identifier: UUID) {
-        inkObservers.removeValue(forKey: identifier)
+        inkObservers.remove(identifier)
     }
 
     @discardableResult
     func addBoardObserver(_ observer: @escaping BoardObserver) -> UUID {
-        let identifier = UUID()
-        boardObservers[identifier] = observer
+        let identifier = boardObservers.add(observer)
         observer()
         return identifier
     }
 
     func removeBoardObserver(_ identifier: UUID) {
-        boardObservers.removeValue(forKey: identifier)
+        boardObservers.remove(identifier)
     }
 
     @discardableResult
     func addZoomObserver(_ observer: @escaping ZoomObserver) -> UUID {
-        let identifier = UUID()
-        zoomObservers[identifier] = observer
+        let identifier = zoomObservers.add(observer)
         observer(zoomSession)
         return identifier
     }
 
     func removeZoomObserver(_ identifier: UUID) {
-        zoomObservers.removeValue(forKey: identifier)
+        zoomObservers.remove(identifier)
     }
 
     @discardableResult
     func addPresenterEffectsObserver(_ observer: @escaping PresenterEffectsObserver) -> UUID {
-        let identifier = UUID()
-        presenterEffectsObservers[identifier] = observer
+        let identifier = presenterEffectsObservers.add(observer)
         observer()
         return identifier
     }
 
     func removePresenterEffectsObserver(_ identifier: UUID) {
-        presenterEffectsObservers.removeValue(forKey: identifier)
+        presenterEffectsObservers.remove(identifier)
     }
 
     @discardableResult
     func addSharingSettingsObserver(_ observer: @escaping SharingSettingsObserver) -> UUID {
-        let identifier = UUID()
-        sharingSettingsObservers[identifier] = observer
+        let identifier = sharingSettingsObservers.add(observer)
         observer(showsHelpInSharing)
         return identifier
     }
 
     func removeSharingSettingsObserver(_ identifier: UUID) {
-        sharingSettingsObservers.removeValue(forKey: identifier)
+        sharingSettingsObservers.remove(identifier)
     }
 
     private func notifyInkObservers(displayUUID: String, change: InkLayerChange) {
-        for observer in inkObservers.values {
-            observer(displayUUID, change)
-        }
+        inkObservers.forEach { $0(displayUUID, change) }
     }
 
     private func notifyToolSettingsObservers() {
-        for observer in toolSettingsObservers.values {
-            observer()
-        }
+        toolSettingsObservers.forEach { $0() }
     }
 
     private func notifyPresenterEffectsObservers() {
-        for observer in presenterEffectsObservers.values {
-            observer()
-        }
+        presenterEffectsObservers.forEach { $0() }
     }
 
     private func notifyBoardObservers() {
-        for observer in boardObservers.values {
-            observer()
-        }
+        boardObservers.forEach { $0() }
     }
 
     private func notifyAllInkObservers() {
