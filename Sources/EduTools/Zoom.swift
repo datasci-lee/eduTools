@@ -24,7 +24,7 @@ enum ZoomFollowMode: String, CaseIterable {
 }
 
 enum ZoomDefaults {
-    static let minimumMagnification = CGFloat(1.25)
+    static let minimumMagnification = CGFloat(SettingsRanges.zoomMagnification.lowerBound)
     static var maximumMagnification: CGFloat { CGFloat(AppSettings.default.zoom.maximumMagnification) }
     static var magnificationStep: CGFloat { CGFloat(AppSettings.default.zoom.magnificationStep) }
     static var startingMagnification: CGFloat { CGFloat(AppSettings.default.zoom.startingMagnification) }
@@ -164,7 +164,11 @@ enum ZoomGeometry {
             target = pushed
         }
 
-        let amount = min(max(smoothness, 0), 1)
+        let smoothnessRange = SettingsRanges.zoomFollowSmoothness
+        let amount = min(
+            max(smoothness, CGFloat(smoothnessRange.lowerBound)),
+            CGFloat(smoothnessRange.upperBound)
+        )
         let interpolated = CGPoint(
             x: current.x + (target.x - current.x) * amount,
             y: current.y + (target.y - current.y) * amount

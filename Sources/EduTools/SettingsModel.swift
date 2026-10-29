@@ -240,14 +240,12 @@ struct FavoriteTool: Codable, Equatable {
 
         switch inkTool {
         case .eraser:
-            return (Double(EraserDefaults.minimumDiameter)...Double(EraserDefaults.maximumDiameter))
-                .contains(size)
+            return SettingsRanges.eraserDiameter.contains(size)
                 && arrowStyle == nil
                 && decodedEraserMode != nil
                 && decodedEraserAreaShape != nil
         case .laser:
-            return (InkDefaults.minimumLaserTrailDuration...InkDefaults.maximumLaserTrailDuration)
-                .contains(size)
+            return SettingsRanges.laserTrailDuration.contains(size)
                 && arrowStyle == nil
                 && eraserMode == nil
                 && eraserAreaShape == nil
@@ -714,6 +712,28 @@ struct AppSettings: Codable, Equatable {
     )
 }
 
+enum SettingsRanges {
+    static let highlighterOpacity: ClosedRange<Double> = 0.05...1
+    static let laserSize: ClosedRange<Double> = 2...50
+    static let laserTrailDuration: ClosedRange<Double> = 0.1...10
+    static let eraserDiameter: ClosedRange<Double> = 8...200
+    static let zoomMagnification: ClosedRange<Double> = 1.25...8
+    static let zoomFollowSmoothness: ClosedRange<Double> = 0...1
+    static let zoomPreviewDimming: ClosedRange<Double> = 0...1
+    static let lessonMinutes: ClosedRange<Int> = 1...240
+    static let breakMinutes: ClosedRange<Int> = 1...180
+    static let fadeDuration: ClosedRange<Double> = 1...600
+    static let lessonBadgeOpacity: ClosedRange<Double> = 0.4...1
+
+    static func displayText(for range: ClosedRange<Double>) -> String {
+        "\(displayText(for: range.lowerBound))~\(displayText(for: range.upperBound))"
+    }
+
+    private static func displayText(for value: Double) -> String {
+        value.rounded() == value ? String(Int(value)) : String(value)
+    }
+}
+
 enum SettingsValidationError: LocalizedError, Equatable {
     case invalidValue(String)
     case unsupportedFormat(String)
@@ -744,9 +764,9 @@ enum SettingsValidator {
         }
         try settings.tools.colors.forEach(validateColor)
         try validateColor(settings.tools.laserColor)
-        guard (0.05...1).contains(settings.tools.highlighterOpacity),
-              (2...50).contains(settings.tools.laserSize),
-              (0.1...10).contains(settings.tools.laserTrailDuration),
+        guard SettingsRanges.highlighterOpacity.contains(settings.tools.highlighterOpacity),
+              SettingsRanges.laserSize.contains(settings.tools.laserSize),
+              SettingsRanges.laserTrailDuration.contains(settings.tools.laserTrailDuration),
               (RadialPaletteGlassStyle.minimumOpacity...RadialPaletteGlassStyle.maximumOpacity).contains(
                     settings.tools.paletteGlassOpacity
                 )
@@ -773,9 +793,9 @@ enum SettingsValidator {
         }
 
         guard ["partial", "stroke", "area"].contains(settings.eraser.mode),
-              (8...200).contains(settings.eraser.diameter),
+              SettingsRanges.eraserDiameter.contains(settings.eraser.diameter),
               settings.eraser.presetDiameters.count == 3,
-              settings.eraser.presetDiameters.allSatisfy({ (8...200).contains($0) }),
+              settings.eraser.presetDiameters.allSatisfy(SettingsRanges.eraserDiameter.contains),
               ["touching", "contained"].contains(settings.eraser.hitRule),
               ["all", "penOnly", "highlighterOnly"].contains(settings.eraser.targetFilter),
               ["rectangle", "lasso"].contains(settings.eraser.areaShape)
@@ -783,11 +803,18 @@ enum SettingsValidator {
             throw SettingsValidationError.invalidValue("지우개 범위")
         }
 
-        guard (1.25...8).contains(settings.zoom.startingMagnification) else {
-            throw SettingsValidationError.invalidValue("시작 배율은 1.25~8배여야 합니다")
+        let zoomMagnificationText = SettingsRanges.displayText(
+            for: SettingsRanges.zoomMagnification
+        )
+        guard SettingsRanges.zoomMagnification.contains(settings.zoom.startingMagnification) else {
+            throw SettingsValidationError.invalidValue(
+                "시작 배율은 \(zoomMagnificationText)배여야 합니다"
+            )
         }
-        guard (1.25...8).contains(settings.zoom.maximumMagnification) else {
-            throw SettingsValidationError.invalidValue("최대 배율은 1.25~8배여야 합니다")
+        guard SettingsRanges.zoomMagnification.contains(settings.zoom.maximumMagnification) else {
+            throw SettingsValidationError.invalidValue(
+                "최대 배율은 \(zoomMagnificationText)배여야 합니다"
+            )
         }
         guard settings.zoom.startingMagnification <= settings.zoom.maximumMagnification else {
             throw SettingsValidationError.invalidValue("최대 배율은 시작 배율보다 작을 수 없습니다")
@@ -800,11 +827,17 @@ enum SettingsValidator {
         guard ZoomFollowMode(rawValue: settings.zoom.followMode) != nil else {
             throw SettingsValidationError.invalidValue("따라가기 방식")
         }
-        guard (0...1).contains(settings.zoom.followSmoothness) else {
-            throw SettingsValidationError.invalidValue("따라가기 부드러움은 0~1이어야 합니다")
+        guard SettingsRanges.zoomFollowSmoothness.contains(settings.zoom.followSmoothness) else {
+            let rangeText = SettingsRanges.displayText(for: SettingsRanges.zoomFollowSmoothness)
+            throw SettingsValidationError.invalidValue(
+                "따라가기 부드러움은 \(rangeText)이어야 합니다"
+            )
         }
-        guard (0...1).contains(settings.zoom.previewDimming) else {
-            throw SettingsValidationError.invalidValue("미리보기 회색 농도는 0~1이어야 합니다")
+        guard SettingsRanges.zoomPreviewDimming.contains(settings.zoom.previewDimming) else {
+            let rangeText = SettingsRanges.displayText(for: SettingsRanges.zoomPreviewDimming)
+            throw SettingsValidationError.invalidValue(
+                "미리보기 회색 농도는 \(rangeText)이어야 합니다"
+            )
         }
 
         try validateColor(settings.board.whiteboardColor)
@@ -815,17 +848,17 @@ enum SettingsValidator {
 
         try validateColor(settings.timer.breakBackgroundColor)
         guard !settings.timer.lessonPresets.isEmpty,
-              settings.timer.lessonPresets.allSatisfy({ (1...240).contains($0) }),
-              (1...240).contains(settings.timer.lessonDefaultMinutes),
-              (1...180).contains(settings.timer.breakDefaultMinutes),
+              settings.timer.lessonPresets.allSatisfy(SettingsRanges.lessonMinutes.contains),
+              SettingsRanges.lessonMinutes.contains(settings.timer.lessonDefaultMinutes),
+              SettingsRanges.breakMinutes.contains(settings.timer.breakDefaultMinutes),
               settings.timer.playlistURLs.count <= BreakMusicSettings.maximumPlaylistCount,
               settings.timer.playlistURLs.allSatisfy({ BreakMusicURL.validated($0) != nil }),
               settings.timer.playlistURLs.isEmpty
                 || settings.timer.playlistURLs.indices.contains(settings.timer.defaultPlaylistIndex),
               BreakMusicBrowser(rawValue: settings.timer.musicBrowser) != nil,
-              (1...600).contains(settings.timer.fadeDuration),
+              SettingsRanges.fadeDuration.contains(settings.timer.fadeDuration),
               ["small", "medium", "large"].contains(settings.timer.lessonBadgeSize),
-              (0.4...1).contains(settings.timer.lessonBadgeOpacity),
+              SettingsRanges.lessonBadgeOpacity.contains(settings.timer.lessonBadgeOpacity),
               ["remaining", "elapsed"].contains(settings.timer.lessonDisplayMode)
         else {
             throw SettingsValidationError.invalidValue("타이머 범위")

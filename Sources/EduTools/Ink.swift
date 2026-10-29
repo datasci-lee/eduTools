@@ -88,16 +88,16 @@ enum InkDefaults {
     static var penWidth: CGFloat { CGFloat(PerToolMemorySettings.default.pen.size) }
     static var highlighterWidth: CGFloat { CGFloat(PerToolMemorySettings.default.highlighter.size) }
     static var highlighterOpacity: CGFloat { CGFloat(AppSettings.default.tools.highlighterOpacity) }
-    static let minimumHighlighterOpacity: CGFloat = 0.05
-    static let maximumHighlighterOpacity: CGFloat = 1
+    static let minimumHighlighterOpacity = CGFloat(SettingsRanges.highlighterOpacity.lowerBound)
+    static let maximumHighlighterOpacity = CGFloat(SettingsRanges.highlighterOpacity.upperBound)
     static let minimumWidth: CGFloat = 1
     static let maximumWidth: CGFloat = 30
     static var textFontSize: CGFloat { CGFloat(PerToolMemorySettings.default.text.size) }
     static let minimumTextFontSize: CGFloat = 8
     static let maximumTextFontSize: CGFloat = 96
     static var laserTrailDuration: TimeInterval { AppSettings.default.tools.laserTrailDuration }
-    static let minimumLaserTrailDuration: TimeInterval = 0.1
-    static let maximumLaserTrailDuration: TimeInterval = 10
+    static let minimumLaserTrailDuration = TimeInterval(SettingsRanges.laserTrailDuration.lowerBound)
+    static let maximumLaserTrailDuration = TimeInterval(SettingsRanges.laserTrailDuration.upperBound)
     static let undoLimit = 100
 }
 
@@ -146,8 +146,8 @@ enum EraserTargetFilter {
 }
 
 enum EraserDefaults {
-    static let minimumDiameter: CGFloat = 8
-    static let maximumDiameter: CGFloat = 200
+    static let minimumDiameter = CGFloat(SettingsRanges.eraserDiameter.lowerBound)
+    static let maximumDiameter = CGFloat(SettingsRanges.eraserDiameter.upperBound)
     static var presetDiameters: [CGFloat] {
         AppSettings.default.eraser.presetDiameters.map { CGFloat($0) }
     }

@@ -585,10 +585,25 @@ private struct SettingsRootView: View {
                 range: 1...30,
                 step: 1
             )
-            slider("형광펜 투명도", keyPath: \.tools.highlighterOpacity, range: 0.05...1, step: 0.05)
+            slider(
+                "형광펜 투명도",
+                keyPath: \.tools.highlighterOpacity,
+                range: SettingsRanges.highlighterOpacity,
+                step: 0.05
+            )
             ColorPicker("레이저 색", selection: colorBinding(\.tools.laserColor), supportsOpacity: false)
-            slider("레이저 크기", keyPath: \.tools.laserSize, range: 2...50, step: 1)
-            slider("레이저 사라지는 시간", keyPath: \.tools.laserTrailDuration, range: 0.1...10, step: 0.1)
+            slider(
+                "레이저 크기",
+                keyPath: \.tools.laserSize,
+                range: SettingsRanges.laserSize,
+                step: 1
+            )
+            slider(
+                "레이저 사라지는 시간",
+                keyPath: \.tools.laserTrailDuration,
+                range: SettingsRanges.laserTrailDuration,
+                step: 0.1
+            )
             Toggle("도형 자동 보정", isOn: binding(\.tools.shapeRecognitionEnabled))
         }
         .padding()
@@ -602,12 +617,17 @@ private struct SettingsRootView: View {
                 Text("영역").tag("area")
             }
             .pickerStyle(.segmented)
-            slider("기본 크기", keyPath: \.eraser.diameter, range: 8...200, step: 1)
+            slider(
+                "기본 크기",
+                keyPath: \.eraser.diameter,
+                range: SettingsRanges.eraserDiameter,
+                step: 1
+            )
             ForEach(0..<3, id: \.self) { index in
                 slider(
                     "크기 프리셋 \(index + 1)",
                     binding: arrayBinding(\.eraser.presetDiameters, index: index),
-                    range: 8...200,
+                    range: SettingsRanges.eraserDiameter,
                     step: 1
                 )
             }
@@ -626,8 +646,18 @@ private struct SettingsRootView: View {
 
     private var zoomTab: some View {
         Form {
-            slider("시작 배율", keyPath: \.zoom.startingMagnification, range: 1.25...8, step: 0.25)
-            slider("최대 배율", keyPath: \.zoom.maximumMagnification, range: 1.25...8, step: 0.25)
+            slider(
+                "시작 배율",
+                keyPath: \.zoom.startingMagnification,
+                range: SettingsRanges.zoomMagnification,
+                step: 0.25
+            )
+            slider(
+                "최대 배율",
+                keyPath: \.zoom.maximumMagnification,
+                range: SettingsRanges.zoomMagnification,
+                step: 0.25
+            )
             Picker("배율 단계", selection: binding(\.zoom.magnificationStep)) {
                 Text("0.25배").tag(0.25)
                 Text("0.5배").tag(0.5)
@@ -637,8 +667,18 @@ private struct SettingsRootView: View {
                 Text("가장자리").tag("edge")
                 Text("고정").tag("fixed")
             }
-            slider("따라가기 부드러움", keyPath: \.zoom.followSmoothness, range: 0...1, step: 0.05)
-            slider("미리보기 회색 농도", keyPath: \.zoom.previewDimming, range: 0...1, step: 0.05)
+            slider(
+                "따라가기 부드러움",
+                keyPath: \.zoom.followSmoothness,
+                range: SettingsRanges.zoomFollowSmoothness,
+                step: 0.05
+            )
+            slider(
+                "미리보기 회색 농도",
+                keyPath: \.zoom.previewDimming,
+                range: SettingsRanges.zoomPreviewDimming,
+                step: 0.05
+            )
             Toggle("라이브 줌을 기본값으로", isOn: binding(\.zoom.liveByDefault))
         }
         .padding()
@@ -665,13 +705,13 @@ private struct SettingsRootView: View {
                     Stepper(
                         "프리셋 \(index + 1): \(store.settings.timer.lessonPresets[index])분",
                         value: intArrayBinding(\.timer.lessonPresets, index: index),
-                        in: 1...240
+                        in: SettingsRanges.lessonMinutes
                     )
                 }
                 Stepper(
                     "기본 수업 시간: \(store.settings.timer.lessonDefaultMinutes)분",
                     value: binding(\.timer.lessonDefaultMinutes),
-                    in: 1...240
+                    in: SettingsRanges.lessonMinutes
                 )
                 Picker("알림 사운드", selection: binding(\.timer.notificationSound)) {
                     Text("Glass").tag("Glass")
@@ -684,7 +724,7 @@ private struct SettingsRootView: View {
                 Stepper(
                     "기본 길이: \(store.settings.timer.breakDefaultMinutes)분",
                     value: binding(\.timer.breakDefaultMinutes),
-                    in: 1...180
+                    in: SettingsRanges.breakMinutes
                 )
                 TextField("화면 문구", text: binding(\.timer.breakMessage))
                 ColorPicker("배경색", selection: colorBinding(\.timer.breakBackgroundColor))
@@ -699,7 +739,12 @@ private struct SettingsRootView: View {
                     Text("기본 브라우저").tag("defaultBrowser")
                 }
                 Toggle("종료 전 페이드아웃", isOn: binding(\.timer.fadeEnabled))
-                slider("페이드 시간(초)", keyPath: \.timer.fadeDuration, range: 1...600, step: 1)
+                slider(
+                    "페이드 시간(초)",
+                    keyPath: \.timer.fadeDuration,
+                    range: SettingsRanges.fadeDuration,
+                    step: 1
+                )
                 Text("YouTube Premium이 아니면 재생 중 광고가 나올 수 있습니다.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)

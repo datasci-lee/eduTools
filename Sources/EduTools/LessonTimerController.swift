@@ -273,7 +273,10 @@ final class LessonTimerController: NSObject, NSMenuDelegate {
         menu.addItem(sizeItem)
 
         let opacityMenu = NSMenu(title: "투명도")
-        for percent in [100, 80, 60, 40] {
+        let opacityRange = SettingsRanges.lessonBadgeOpacity
+        let maximumOpacityPercent = Int(opacityRange.upperBound * 100)
+        let minimumOpacityPercent = Int(opacityRange.lowerBound * 100)
+        for percent in stride(from: maximumOpacityPercent, through: minimumOpacityPercent, by: -20) {
             let item = NSMenuItem(
                 title: "\(percent)%",
                 action: #selector(selectOpacity(_:)),
@@ -371,7 +374,10 @@ final class LessonTimerController: NSObject, NSMenuDelegate {
             NSLog("EduTools: lesson timer opacity menu has no value")
             return
         }
-        settingsStore.update { $0.timer.lessonBadgeOpacity = min(max(opacity, 0.4), 1) }
+        let range = SettingsRanges.lessonBadgeOpacity
+        settingsStore.update {
+            $0.timer.lessonBadgeOpacity = min(max(opacity, range.lowerBound), range.upperBound)
+        }
     }
 
     @objc private func toggleDisplayMode(_ sender: Any?) {
