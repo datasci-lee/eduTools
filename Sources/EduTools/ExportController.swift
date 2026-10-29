@@ -294,10 +294,7 @@ final class ExportController {
     }
 
     private func exportBaseName(for displayUUID: String) -> String {
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
-        let safeDisplay = displayUUID.unicodeScalars.map {
-            allowed.contains($0) ? String($0) : "_"
-        }.joined()
+        let safeDisplay = fileComponent(forDisplayUUID: displayUUID)
         return "\(Self.exportDateFormatter.string(from: Date()))-\(safeDisplay)"
     }
 

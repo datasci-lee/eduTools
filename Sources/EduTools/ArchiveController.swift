@@ -212,7 +212,7 @@ final class ArchiveController {
             overlayController.finishActiveInteraction(on: displayUUID)
             do {
                 let data = try state.encodedVisibleContent(on: displayUUID)
-                let baseName = "\(time)-\(safePathComponent(displayUUID))"
+                let baseName = "\(time)-\(fileComponent(forDisplayUUID: displayUUID))"
                 let jsonURL = directory.appendingPathComponent(baseName).appendingPathExtension("json")
                 try data.write(to: jsonURL, options: .atomic)
 
@@ -308,7 +308,7 @@ final class ArchiveController {
     private func disconnectedArchiveURL(for displayUUID: String) -> URL? {
         applicationSupportRoot()?
             .appendingPathComponent("Disconnected", isDirectory: true)
-            .appendingPathComponent(safePathComponent(displayUUID))
+            .appendingPathComponent(fileComponent(forDisplayUUID: displayUUID))
             .appendingPathExtension("json")
     }
 
@@ -338,11 +338,6 @@ final class ArchiveController {
             )
             return nil
         }
-    }
-
-    private func safePathComponent(_ value: String) -> String {
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
-        return value.unicodeScalars.map { allowed.contains($0) ? String($0) : "_" }.joined()
     }
 
     private func reportFailure(title: String, message: String) {
