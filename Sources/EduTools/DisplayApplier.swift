@@ -47,40 +47,59 @@ struct DisplayPresetMenuEntry {
 }
 
 final class DisplayApplier {
-    private enum State {
+    enum State: Equatable {
         case idle
         case applying
-        case awaitingConfirmation(ConfirmationSession)
+        case awaitingConfirmation
     }
 
     private final class ConfirmationSession {
         let desiredOperations: [DisplayConfigurationOperations.Operation]
         let snapshotOperations: [DisplayConfigurationOperations.Operation]
-        let panelController: DisplayConfirmationPanelController
+        var panelController: DisplayConfirmationPanelController?
 
         init(
             desiredOperations: [DisplayConfigurationOperations.Operation],
-            snapshotOperations: [DisplayConfigurationOperations.Operation],
-            panelController: DisplayConfirmationPanelController
+            snapshotOperations: [DisplayConfigurationOperations.Operation]
         ) {
             self.desiredOperations = desiredOperations
             self.snapshotOperations = snapshotOperations
-            self.panelController = panelController
         }
     }
 
-    private enum ConfirmationDecision {
+    enum ConfirmationDecision {
         case keep
         case revert
+        case cancel
+    }
+
+    enum ConfirmationOutcome {
+        case success
+        case keepFailed(
+            keepError: DisplayConfigurationError,
+            rollbackError: DisplayConfigurationError?
+        )
+        case revertFailed(DisplayConfigurationError)
     }
 
     private let settingsStore: SettingsStore
     private let archiveController: ArchiveController
-    private var state = State.idle
+    private let displayConfigurationLayer: DisplayConfigurationApplying
+    private let now: () -> TimeInterval
+    private(set) var state = State.idle
+    private var confirmationSession: ConfirmationSession?
+    private var confirmationDeadline: TimeInterval?
 
-    init(settingsStore: SettingsStore, archiveController: ArchiveController) {
+    init(
+        settingsStore: SettingsStore,
+        archiveController: ArchiveController,
+        displayConfigurationLayer: DisplayConfigurationApplying = SystemDisplayConfigurationLayer(),
+        now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    ) {
         self.settingsStore = settingsStore
         self.archiveController = archiveController
+        self.displayConfigurationLayer = displayConfigurationLayer
+        self.now = now
     }
 
     func menuEntries() -> [DisplayPresetMenuEntry] {
@@ -139,8 +158,10 @@ final class DisplayApplier {
         case .applying:
             NSSound.beep()
             return
-        case let .awaitingConfirmation(session):
-            session.panelController.appendStatus("다른 프리셋을 적용하려면 먼저 유지하거나 되돌리세요.")
+        case .awaitingConfirmation:
+            confirmationSession?.panelController?.appendStatus(
+                "다른 프리셋을 적용하려면 먼저 유지하거나 되돌리세요."
+            )
             NSSound.beep()
             return
         }
@@ -214,11 +235,13 @@ final class DisplayApplier {
         let desiredOperations = DisplayConfigurationOperations.build(from: plan)
         let snapshotOperations = DisplayConfigurationOperations.build(from: snapshot)
         archiveController.setDisplayPresetRestorationDeferred(true)
-        switch DisplayConfigurationLayer.apply(desiredOperations, option: .appOnly) {
+        switch beginApplying(
+            desiredOperations: desiredOperations,
+            snapshotOperations: snapshotOperations
+        ) {
         case .success:
             break
         case let .failure(error):
-            state = .idle
             archiveController.setDisplayPresetRestorationDeferred(false)
             archiveController.restoreDisplaysArchivedForFailedPreset(archivedDisplayUUIDs)
             presentMessage(
@@ -230,7 +253,8 @@ final class DisplayApplier {
 
         let skippedMonitorNames = plan.missingPresetMonitors.map(\.name)
         let panelController = DisplayConfirmationPanelController(
-            interval: DisplayPresetDefaults.manualConfirmationInterval,
+            deadline: confirmationDeadline ?? now(),
+            now: now,
             skippedMonitorNames: skippedMonitorNames,
             decisionHandler: { [weak self] decision in
                 switch decision {
@@ -238,31 +262,20 @@ final class DisplayApplier {
                     self?.handleConfirmationDecision(.keep)
                 case .revert:
                     self?.handleConfirmationDecision(.revert)
+                case .cancel:
+                    self?.handleConfirmationDecision(.cancel)
+                case .expired:
+                    self?.handleConfirmationExpiration()
                 }
             }
         )
-        let session = ConfirmationSession(
-            desiredOperations: desiredOperations,
-            snapshotOperations: snapshotOperations,
-            panelController: panelController
-        )
-        state = .awaitingConfirmation(session)
+        confirmationSession?.panelController = panelController
         panelController.show(on: mainDisplayID)
     }
 
     func applicationWillTerminate() {
         precondition(Thread.isMainThread, "Display rollback must run on the main thread")
-        guard case let .awaitingConfirmation(session) = state else { return }
-        session.panelController.close()
-        let result = DisplayConfigurationLayer.apply(
-            session.snapshotOperations,
-            option: .appOnly
-        )
-        state = .idle
-        archiveController.setDisplayPresetRestorationDeferred(
-            false,
-            resumePending: false
-        )
+        guard let result = rollbackForTermination() else { return }
         if case let .failure(error) = result {
             NSLog(
                 "EduTools: display rollback during termination failed; app-only configuration will revert on exit: %@",
@@ -271,51 +284,140 @@ final class DisplayApplier {
         }
     }
 
-    private func handleConfirmationDecision(_ decision: ConfirmationDecision) {
-        precondition(Thread.isMainThread, "Display confirmation must run on the main thread")
-        guard case let .awaitingConfirmation(session) = state else { return }
-        session.panelController.close()
+    @discardableResult
+    func rollbackForTermination() -> Result<Void, DisplayConfigurationError>? {
+        guard state == .awaitingConfirmation, let session = confirmationSession else { return nil }
+        session.panelController?.close()
+        let result = displayConfigurationLayer.apply(
+            session.snapshotOperations,
+            option: .appOnly
+        )
+        finishConfirmation()
+        archiveController.setDisplayPresetRestorationDeferred(
+            false,
+            resumePending: false
+        )
+        return result
+    }
+
+    @discardableResult
+    func beginApplying(
+        desiredOperations: [DisplayConfigurationOperations.Operation],
+        snapshotOperations: [DisplayConfigurationOperations.Operation]
+    ) -> Result<Void, DisplayConfigurationError> {
+        precondition(state != .awaitingConfirmation, "A display configuration is already in progress")
+        state = .applying
+        let result = displayConfigurationLayer.apply(desiredOperations, option: .appOnly)
+        switch result {
+        case .success:
+            confirmationSession = ConfirmationSession(
+                desiredOperations: desiredOperations,
+                snapshotOperations: snapshotOperations
+            )
+            confirmationDeadline = now() + DisplayPresetDefaults.manualConfirmationInterval
+            state = .awaitingConfirmation
+        case .failure:
+            finishConfirmation()
+        }
+        return result
+    }
+
+    @discardableResult
+    func resolveConfirmation(_ decision: ConfirmationDecision) -> ConfirmationOutcome? {
+        guard state == .awaitingConfirmation, let session = confirmationSession else {
+            return nil
+        }
+        session.panelController?.close()
 
         switch decision {
         case .keep:
-            switch DisplayConfigurationLayer.apply(
+            switch displayConfigurationLayer.apply(
                 session.desiredOperations,
                 option: .permanent
             ) {
             case .success:
-                state = .idle
+                finishConfirmation()
                 archiveController.setDisplayPresetRestorationDeferred(false)
+                return .success
             case let .failure(keepError):
-                let rollbackResult = DisplayConfigurationLayer.apply(
+                let rollbackResult = displayConfigurationLayer.apply(
                     session.snapshotOperations,
                     option: .appOnly
                 )
-                state = .idle
+                finishConfirmation()
                 archiveController.setDisplayPresetRestorationDeferred(false)
                 switch rollbackResult {
                 case .success:
-                    presentMessage(
-                        title: "화면 구성을 유지하지 못했습니다",
-                        message: "영구 적용에 실패해 직전 구성으로 되돌렸습니다.\n\n\(keepError.localizedDescription)"
+                    return .keepFailed(
+                        keepError: keepError,
+                        rollbackError: nil
                     )
                 case let .failure(rollbackError):
-                    presentRollbackFailure(
-                        primaryError: keepError,
+                    return .keepFailed(
+                        keepError: keepError,
                         rollbackError: rollbackError
                     )
                 }
             }
-        case .revert:
-            let rollbackResult = DisplayConfigurationLayer.apply(
+        case .revert, .cancel:
+            let rollbackResult = displayConfigurationLayer.apply(
                 session.snapshotOperations,
                 option: .appOnly
             )
-            state = .idle
+            finishConfirmation()
             archiveController.setDisplayPresetRestorationDeferred(false)
-            if case let .failure(error) = rollbackResult {
-                presentRollbackFailure(primaryError: nil, rollbackError: error)
+            switch rollbackResult {
+            case .success:
+                return .success
+            case let .failure(error):
+                return .revertFailed(error)
             }
         }
+    }
+
+    var confirmationRemainingSeconds: Int? {
+        guard state == .awaitingConfirmation, let confirmationDeadline else { return nil }
+        return max(0, Int(ceil(confirmationDeadline - now())))
+    }
+
+    @discardableResult
+    func expireConfirmationIfNeeded() -> ConfirmationOutcome? {
+        guard confirmationRemainingSeconds == 0 else { return nil }
+        return resolveConfirmation(.revert)
+    }
+
+    private func handleConfirmationDecision(_ decision: ConfirmationDecision) {
+        precondition(Thread.isMainThread, "Display confirmation must run on the main thread")
+        guard let outcome = resolveConfirmation(decision) else { return }
+        presentFailureIfNeeded(outcome)
+    }
+
+    private func handleConfirmationExpiration() {
+        precondition(Thread.isMainThread, "Display confirmation must run on the main thread")
+        guard let outcome = expireConfirmationIfNeeded() else { return }
+        presentFailureIfNeeded(outcome)
+    }
+
+    private func presentFailureIfNeeded(_ outcome: ConfirmationOutcome) {
+        switch outcome {
+        case .success:
+            break
+        case let .keepFailed(keepError, nil):
+            presentMessage(
+                title: "화면 구성을 유지하지 못했습니다",
+                message: "영구 적용에 실패해 직전 구성으로 되돌렸습니다.\n\n\(keepError.localizedDescription)"
+            )
+        case let .keepFailed(keepError, rollbackError?):
+            presentRollbackFailure(primaryError: keepError, rollbackError: rollbackError)
+        case let .revertFailed(error):
+            presentRollbackFailure(primaryError: nil, rollbackError: error)
+        }
+    }
+
+    private func finishConfirmation() {
+        state = .idle
+        confirmationSession = nil
+        confirmationDeadline = nil
     }
 
     private func disabledEntries(
@@ -405,72 +507,80 @@ private enum DisplayConfigurationSnapshot {
     }
 }
 
-private enum DisplayConfigurationLayer {
-    enum Option {
-        case appOnly
-        case permanent
+enum DisplayConfigurationOption: Equatable {
+    case appOnly
+    case permanent
 
-        var cgValue: CGConfigureOption {
-            switch self {
-            case .appOnly: return .forAppOnly
-            case .permanent: return .permanently
-            }
-        }
-
-        var logName: String {
-            switch self {
-            case .appOnly: return "forAppOnly"
-            case .permanent: return "permanently"
-            }
+    var cgValue: CGConfigureOption {
+        switch self {
+        case .appOnly: return .forAppOnly
+        case .permanent: return .permanently
         }
     }
 
-    enum ConfigurationError: LocalizedError {
-        case invalidOrigin(displayID: UInt32, origin: DisplayPoint)
-        case beginFailed(error: CGError, cancellationError: CGError?)
-        case missingConfiguration
-        case operationFailed(
-            operation: String,
-            error: CGError,
-            cancellationError: CGError?
-        )
-        case completionFailed(option: String, error: CGError)
-
-        var errorDescription: String? {
-            switch self {
-            case let .invalidOrigin(displayID, origin):
-                return "모니터 \(displayID)의 원점 (\(origin.x), \(origin.y))을 정수 좌표로 적용할 수 없습니다."
-            case let .beginFailed(error, cancellationError):
-                return errorMessage(
-                    "화면 구성 트랜잭션을 시작하지 못했습니다",
-                    error: error,
-                    cancellationError: cancellationError
-                )
-            case .missingConfiguration:
-                return "화면 구성 트랜잭션이 유효한 구성 객체를 반환하지 않았습니다."
-            case let .operationFailed(operation, error, cancellationError):
-                return errorMessage(
-                    "화면 구성 작업에 실패했습니다: \(operation)",
-                    error: error,
-                    cancellationError: cancellationError
-                )
-            case let .completionFailed(option, error):
-                return "화면 구성 트랜잭션을 \(option) 옵션으로 완료하지 못했습니다. CoreGraphics 오류 \(error.rawValue)"
-            }
-        }
-
-        private func errorMessage(
-            _ prefix: String,
-            error: CGError,
-            cancellationError: CGError?
-        ) -> String {
-            var message = "\(prefix). CoreGraphics 오류 \(error.rawValue)"
-            if let cancellationError {
-                message += "; 취소도 실패했습니다(CoreGraphics 오류 \(cancellationError.rawValue))"
-            }
-            return message
+    var logName: String {
+        switch self {
+        case .appOnly: return "forAppOnly"
+        case .permanent: return "permanently"
         }
     }
+}
+
+enum DisplayConfigurationError: LocalizedError {
+    case invalidOrigin(displayID: UInt32, origin: DisplayPoint)
+    case beginFailed(error: CGError, cancellationError: CGError?)
+    case missingConfiguration
+    case operationFailed(
+        operation: String,
+        error: CGError,
+        cancellationError: CGError?
+    )
+    case completionFailed(option: String, error: CGError)
+
+    var errorDescription: String? {
+        switch self {
+        case let .invalidOrigin(displayID, origin):
+            return "모니터 \(displayID)의 원점 (\(origin.x), \(origin.y))을 정수 좌표로 적용할 수 없습니다."
+        case let .beginFailed(error, cancellationError):
+            return errorMessage(
+                "화면 구성 트랜잭션을 시작하지 못했습니다",
+                error: error,
+                cancellationError: cancellationError
+            )
+        case .missingConfiguration:
+            return "화면 구성 트랜잭션이 유효한 구성 객체를 반환하지 않았습니다."
+        case let .operationFailed(operation, error, cancellationError):
+            return errorMessage(
+                "화면 구성 작업에 실패했습니다: \(operation)",
+                error: error,
+                cancellationError: cancellationError
+            )
+        case let .completionFailed(option, error):
+            return "화면 구성 트랜잭션을 \(option) 옵션으로 완료하지 못했습니다. CoreGraphics 오류 \(error.rawValue)"
+        }
+    }
+
+    private func errorMessage(
+        _ prefix: String,
+        error: CGError,
+        cancellationError: CGError?
+    ) -> String {
+        var message = "\(prefix). CoreGraphics 오류 \(error.rawValue)"
+        if let cancellationError {
+            message += "; 취소도 실패했습니다(CoreGraphics 오류 \(cancellationError.rawValue))"
+        }
+        return message
+    }
+}
+
+protocol DisplayConfigurationApplying: AnyObject {
+    func apply(
+        _ operations: [DisplayConfigurationOperations.Operation],
+        option: DisplayConfigurationOption
+    ) -> Result<Void, DisplayConfigurationError>
+}
+
+final class SystemDisplayConfigurationLayer: DisplayConfigurationApplying {
 
     private enum PreparedOperation {
         case unmirror(displayID: UInt32)
@@ -489,14 +599,14 @@ private enum DisplayConfigurationLayer {
         }
     }
 
-    static func apply(
+    func apply(
         _ operations: [DisplayConfigurationOperations.Operation],
-        option: Option
-    ) -> Result<Void, ConfigurationError> {
+        option: DisplayConfigurationOption
+    ) -> Result<Void, DisplayConfigurationError> {
         let prepared: [PreparedOperation]
         do {
-            prepared = try operations.map(prepare)
-        } catch let error as ConfigurationError {
+            prepared = try operations.map(Self.prepare)
+        } catch let error as DisplayConfigurationError {
             NSLog("EduTools: display configuration rejected before begin: %@", error.localizedDescription)
             return .failure(error)
         } catch {
@@ -506,8 +616,8 @@ private enum DisplayConfigurationLayer {
         var configuration: CGDisplayConfigRef?
         let beginResult = CGBeginDisplayConfiguration(&configuration)
         guard beginResult == .success else {
-            let cancellationError = configuration.flatMap(cancel)
-            let error = ConfigurationError.beginFailed(
+            let cancellationError = configuration.flatMap(Self.cancel)
+            let error = DisplayConfigurationError.beginFailed(
                 error: beginResult,
                 cancellationError: cancellationError
             )
@@ -515,7 +625,7 @@ private enum DisplayConfigurationLayer {
             return .failure(error)
         }
         guard let configuration else {
-            let error = ConfigurationError.missingConfiguration
+            let error = DisplayConfigurationError.missingConfiguration
             NSLog("EduTools: %@", error.localizedDescription)
             return .failure(error)
         }
@@ -539,8 +649,8 @@ private enum DisplayConfigurationLayer {
                 result = CGConfigureDisplayOrigin(configuration, displayID, x, y)
             }
             guard result == .success else {
-                let cancellationError = cancel(configuration)
-                let error = ConfigurationError.operationFailed(
+                let cancellationError = Self.cancel(configuration)
+                let error = DisplayConfigurationError.operationFailed(
                     operation: operation.description,
                     error: result,
                     cancellationError: cancellationError
@@ -553,7 +663,7 @@ private enum DisplayConfigurationLayer {
         let completeResult = CGCompleteDisplayConfiguration(configuration, option.cgValue)
         guard completeResult == .success else {
             // The SDK contract invalidates `configuration` when complete returns, including failure.
-            let error = ConfigurationError.completionFailed(
+            let error = DisplayConfigurationError.completionFailed(
                 option: option.logName,
                 error: completeResult
             )
@@ -573,7 +683,7 @@ private enum DisplayConfigurationLayer {
             return .mirror(displayID: displayID, masterID: masterID)
         case let .setOrigin(displayID, origin):
             guard let x = exactCoordinate(origin.x), let y = exactCoordinate(origin.y) else {
-                throw ConfigurationError.invalidOrigin(displayID: displayID, origin: origin)
+                throw DisplayConfigurationError.invalidOrigin(displayID: displayID, origin: origin)
             }
             return .setOrigin(displayID: displayID, x: x, y: y)
         }
@@ -616,22 +726,27 @@ private final class DisplayConfirmationPanelController: NSObject, NSWindowDelega
     enum Decision {
         case keep
         case revert
+        case cancel
+        case expired
     }
 
     private let panel: DisplayConfirmationPanel
     private let countdownLabel: NSTextField
     private let statusLabel: NSTextField
     private let deadline: TimeInterval
+    private let now: () -> TimeInterval
     private let decisionHandler: (Decision) -> Void
     private var timer: Timer?
     private var didSendDecision = false
 
     init(
-        interval: TimeInterval,
+        deadline: TimeInterval,
+        now: @escaping () -> TimeInterval,
         skippedMonitorNames: [String],
         decisionHandler: @escaping (Decision) -> Void
     ) {
-        deadline = ProcessInfo.processInfo.systemUptime + interval
+        self.deadline = deadline
+        self.now = now
         self.decisionHandler = decisionHandler
         panel = DisplayConfirmationPanel(
             contentRect: NSRect(x: 0, y: 0, width: 470, height: 190),
@@ -651,7 +766,7 @@ private final class DisplayConfirmationPanelController: NSObject, NSWindowDelega
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         panel.delegate = self
-        panel.cancelHandler = { [weak self] in self?.sendDecision(.revert) }
+        panel.cancelHandler = { [weak self] in self?.sendDecision(.cancel) }
 
         let titleLabel = NSTextField(labelWithString: "화면 구성을 유지할까요?")
         titleLabel.font = .boldSystemFont(ofSize: NSFont.systemFontSize + 1)
@@ -744,7 +859,7 @@ private final class DisplayConfirmationPanelController: NSObject, NSWindowDelega
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        sendDecision(.revert)
+        sendDecision(.cancel)
         return false
     }
 
@@ -759,11 +874,11 @@ private final class DisplayConfirmationPanelController: NSObject, NSWindowDelega
     private func updateCountdown() {
         let remaining = max(
             0,
-            Int(ceil(deadline - ProcessInfo.processInfo.systemUptime))
+            Int(ceil(deadline - now()))
         )
         countdownLabel.stringValue = "\(remaining)초 후 자동으로 되돌립니다."
         if remaining == 0 {
-            sendDecision(.revert)
+            sendDecision(.expired)
         }
     }
 

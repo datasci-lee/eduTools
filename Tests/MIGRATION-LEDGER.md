@@ -54,11 +54,11 @@
 | highlighter-only stroke erasing should preserve a touched pen stroke | 542 | — | T1 | 남음(S1b) |
 | display ink and its undo history should survive a JSON round-trip | 585 | — | T1 | 남음(S1b) |
 | restoring on a different resolution should preserve normalized stroke coordinates | 608 | — | T1 | 남음(S1b) |
-| move-to-primary disconnect policy should merge source ink after destination ink | 621 | — | T2 | S2 |
+| move-to-primary disconnect policy should merge source ink after destination ink | 621 | `IntegrationTests.AppStateIntegrationTests/moveToPrimaryMergesAfterDestinationInk()` | T2 | 이관 |
 | area erasing should distinguish touching strokes from fully contained strokes | 677 | — | T1 | 남음(S1b) |
-| clear all should restore every display with one undo | 692 | — | T2 | S2 |
-| screen and board strokes should survive repeated board transitions | 709 | — | T2 | S2 |
-| each board page should keep an independent undo history | 728 | — | T2 | S2 |
+| clear all should restore every display with one undo | 692 | `IntegrationTests.AppStateIntegrationTests/clearAllRestoresEveryDisplayWithOneUndo()` | T2 | 이관 |
+| screen and board strokes should survive repeated board transitions | 709 | `IntegrationTests.AppStateIntegrationTests/repeatedBoardTransitionsPreserveScreenAndBoardInk()` | T2 | 이관 |
+| each board page should keep an independent undo history | 728 | `IntegrationTests.AppStateIntegrationTests/boardPagesKeepIndependentUndoHistories()` | T2 | 이관 |
 | a stored black stroke should display as white on the blackboard | 753 | — | T1 | 남음(S1b) |
 | lesson remaining time should equal end date minus the injected current time | 761 | — | T1 | 남음(S1c) |
 | a paused lesson timer should stay fixed and continue from that value after resume | 772 | — | T1 | 남음(S1c) |
@@ -79,5 +79,5 @@
 | settings decoding should ignore unknown keys and default missing compatible values | 1266 | — | T1 | 남음(S1c) |
 | settings export should include display presets but exclude computer-specific switches and paths | 1310 | — | T1 | 남음(S1c) |
 | known avoided global shortcuts should be reported as conflicts | 1321 | — | T1 | 남음(S1c) |
-| settings backups should rotate to the most recent five entries | 1334 | — | T2 | S2 |
+| settings backups should rotate to the most recent five entries | 1334 | `IntegrationTests.SettingsBackupIntegrationTests/backupsRotateToMostRecentFive()` | T2 | 이관 |
 | synthetic enter and exit events should guard device queries and the event-kind table should remain complete | 1362 | — | T3 | S3 |

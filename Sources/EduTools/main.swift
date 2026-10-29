@@ -3,6 +3,7 @@ import Carbon
 import Darwin
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private let defaults: UserDefaults
     private let settingsStore: SettingsStore
     private let appState: AppState
     private var statusMenu: StatusMenu?
@@ -23,9 +24,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastShortcutSettings: ShortcutGroupSettings?
 
     override init() {
-        let store = SettingsStore()
+        let resolvedDefaults: UserDefaults
+        if let suiteName = ProcessInfo.processInfo.environment["EDUTOOLS_DEFAULTS_SUITE"] {
+            if let suiteDefaults = UserDefaults(suiteName: suiteName) {
+                resolvedDefaults = suiteDefaults
+            } else {
+                NSLog(
+                    "EduTools: could not create UserDefaults suite %@; using standard defaults",
+                    suiteName
+                )
+                resolvedDefaults = .standard
+            }
+        } else {
+            resolvedDefaults = .standard
+        }
+        defaults = resolvedDefaults
+        let store = SettingsStore(defaults: resolvedDefaults)
         settingsStore = store
-        appState = AppState(settingsStore: store)
+        appState = AppState(defaults: resolvedDefaults, settingsStore: store)
         super.init()
     }
 
@@ -42,22 +58,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.presenterEffectsController = presenterEffectsController
         dispatcher.presenterEffectsController = presenterEffectsController
 
-        let helpController = HelpController(state: appState, dispatcher: dispatcher)
+        let helpController = HelpController(
+            state: appState,
+            dispatcher: dispatcher,
+            defaults: defaults
+        )
         self.helpController = helpController
         dispatcher.helpController = helpController
 
-        let settingsController = SettingsController(settingsStore: settingsStore)
+        let settingsController = SettingsController(
+            settingsStore: settingsStore,
+            defaults: defaults
+        )
         self.settingsController = settingsController
 
         let paletteController = PaletteController(
             state: appState,
             dispatcher: dispatcher,
-            settingsStore: settingsStore
+            settingsStore: settingsStore,
+            defaults: defaults
         )
         self.paletteController = paletteController
         dispatcher.paletteController = paletteController
 
-        let timerCoordinator = TimerCoordinator(settingsStore: settingsStore)
+        let timerCoordinator = TimerCoordinator(
+            defaults: defaults,
+            settingsStore: settingsStore
+        )
         self.timerCoordinator = timerCoordinator
         dispatcher.timerCoordinator = timerCoordinator
 
@@ -87,6 +114,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             state: appState,
             dispatcher: dispatcher,
             settingsStore: settingsStore,
+            defaults: defaults,
             openSettings: { [weak settingsController] in
                 settingsController?.showSettings()
             },

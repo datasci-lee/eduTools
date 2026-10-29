@@ -32,6 +32,7 @@ enum AppIcon {
     private struct CacheKey: Hashable {
         let key: String
         let isSelected: Bool
+        let resourcePath: String?
     }
 
     private enum CachedImage {
@@ -48,9 +49,14 @@ enum AppIcon {
         key: String,
         fallbackSystemName: String,
         selected: Bool = false,
+        resourceURL: URL? = Bundle.main.resourceURL,
         accessibilityDescription: String? = nil
     ) -> NSImage? {
-        let cacheKey = CacheKey(key: key, isSelected: selected)
+        let cacheKey = CacheKey(
+            key: key,
+            isSelected: selected,
+            resourcePath: resourceURL?.path
+        )
         if let cached = cache[cacheKey] {
             switch cached {
             case let .image(image): return image
@@ -62,6 +68,7 @@ enum AppIcon {
             key: key,
             fallbackSystemName: fallbackSystemName,
             selected: selected,
+            resourceURL: resourceURL,
             accessibilityDescription: accessibilityDescription
         )
         cache[cacheKey] = image.map(CachedImage.image) ?? .unavailable
@@ -77,6 +84,7 @@ enum AppIcon {
         uiColor: NSColor,
         backgroundColor: NSColor,
         visualState: AttrIconVisualState,
+        resourceURL: URL? = Bundle.main.resourceURL,
         accessibilityDescription: String? = nil
     ) -> NSImage? {
         if let image = AttrIcon.image(
@@ -94,6 +102,7 @@ enum AppIcon {
             key: key,
             fallbackSystemName: fallbackSystemName,
             selected: selected,
+            resourceURL: resourceURL,
             accessibilityDescription: accessibilityDescription
         ), let color = AttrIcon.colorComponents(uiColor)
         else {
@@ -110,18 +119,25 @@ enum AppIcon {
         AttrIcon.effectiveAppearanceDidChange()
     }
 
-    static func hasCustomAsset(key: String, selected: Bool = false) -> Bool {
-        if selected, assetURL(named: "\(key).selected") != nil {
+    static func hasCustomAsset(
+        key: String,
+        selected: Bool = false,
+        resourceURL: URL? = Bundle.main.resourceURL
+    ) -> Bool {
+        if selected, assetURL(named: "\(key).selected", resourceURL: resourceURL) != nil {
             return true
         }
-        return assetURL(named: key) != nil
+        return assetURL(named: key, resourceURL: resourceURL) != nil
     }
 
-    static func auditBundledNames(radialPaletteKeys: Set<String>) {
+    static func auditBundledNames(
+        radialPaletteKeys: Set<String>,
+        resourceURL: URL? = Bundle.main.resourceURL
+    ) {
         guard !didAuditBundledNames else { return }
         didAuditBundledNames = true
 
-        guard let directoryURL = iconDirectoryURL,
+        guard let directoryURL = iconDirectoryURL(resourceURL: resourceURL),
               FileManager.default.fileExists(atPath: directoryURL.path)
         else {
             return
@@ -172,24 +188,27 @@ enum AppIcon {
         }
     }
 
-    private static var iconDirectoryURL: URL? {
-        Bundle.main.resourceURL?.appendingPathComponent(iconDirectoryName, isDirectory: true)
+    private static func iconDirectoryURL(resourceURL: URL?) -> URL? {
+        resourceURL?.appendingPathComponent(iconDirectoryName, isDirectory: true)
     }
 
     private static func loadImage(
         key: String,
         fallbackSystemName: String,
         selected: Bool,
+        resourceURL: URL?,
         accessibilityDescription: String?
     ) -> NSImage? {
-        if selected, let selectedURL = assetURL(named: "\(key).selected") {
+        if selected,
+           let selectedURL = assetURL(named: "\(key).selected", resourceURL: resourceURL)
+        {
             return decodedImage(
                 at: selectedURL,
                 fallbackSystemName: fallbackSystemName,
                 accessibilityDescription: accessibilityDescription
             )
         }
-        if let regularURL = assetURL(named: key) {
+        if let regularURL = assetURL(named: key, resourceURL: resourceURL) {
             return decodedImage(
                 at: regularURL,
                 fallbackSystemName: fallbackSystemName,
@@ -202,8 +221,8 @@ enum AppIcon {
         )
     }
 
-    private static func assetURL(named name: String) -> URL? {
-        guard let directoryURL = iconDirectoryURL else { return nil }
+    private static func assetURL(named name: String, resourceURL: URL?) -> URL? {
+        guard let directoryURL = iconDirectoryURL(resourceURL: resourceURL) else { return nil }
         for pathExtension in supportedExtensions {
             let url = directoryURL
                 .appendingPathComponent(name)

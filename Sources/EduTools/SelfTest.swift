@@ -431,26 +431,6 @@ func runSelfTests() -> Int32 {
         "restoring on a different resolution should preserve normalized stroke coordinates"
     )
 
-    let movePolicyState = AppState()
-    movePolicyState.addStroke(filterPen, to: "primary-display")
-    movePolicyState.addStroke(archiveFirstStroke, to: "removed-display")
-    movePolicyState.addStroke(archiveSecondStroke, to: "removed-display")
-    let movePolicyMerged = movePolicyState.moveScreenInk(
-        from: "removed-display",
-        to: "primary-display"
-    )
-    runner.expect(
-        movePolicyMerged
-            && movePolicyState.screenStrokes(for: "removed-display").isEmpty
-            && movePolicyState.screenStrokes(for: "primary-display").map(\.identifier)
-                == [
-                    filterPen.identifier,
-                    archiveFirstStroke.identifier,
-                    archiveSecondStroke.identifier,
-                ],
-        "move-to-primary disconnect policy should merge source ink after destination ink"
-    )
-
     let areaCanvas = CGSize(width: 100, height: 100)
     let insideAreaStroke = InkStroke(
         tool: .pen,
@@ -499,60 +479,6 @@ func runSelfTests() -> Int32 {
         touchingAreaResult.isEmpty
             && containedAreaResult.map(\.identifier) == [crossingAreaStroke.identifier],
         "area erasing should distinguish touching strokes from fully contained strokes"
-    )
-
-    let clearState = AppState()
-    clearState.addStroke(filterPen, to: "display-a")
-    clearState.addStroke(filterHighlighter, to: "display-b")
-    let clearedAll = clearState.clearAllInk()
-    let allDisplaysWereCleared = clearState.strokes(for: "display-a").isEmpty
-        && clearState.strokes(for: "display-b").isEmpty
-    let restoredAll = clearState.undo(on: "display-a")
-        && clearState.strokes(for: "display-a").map(\.identifier) == [filterPen.identifier]
-        && clearState.strokes(for: "display-b").map(\.identifier) == [filterHighlighter.identifier]
-    runner.expect(
-        clearedAll && allDisplaysWereCleared && restoredAll,
-        "clear all should restore every display with one undo"
-    )
-
-    let transitionState = AppState()
-    transitionState.addStroke(filterPen, to: "transition-display")
-    transitionState.toggleBoard(.white, on: "transition-display")
-    transitionState.addStroke(filterHighlighter, to: "transition-display")
-    let boardWasVisible = transitionState.strokes(for: "transition-display").map(\.identifier)
-        == [filterHighlighter.identifier]
-    transitionState.toggleBoard(.white, on: "transition-display")
-    let screenWasRestored = transitionState.strokes(for: "transition-display").map(\.identifier)
-        == [filterPen.identifier]
-    transitionState.toggleBoard(.white, on: "transition-display")
-    let boardWasRestored = transitionState.strokes(for: "transition-display").map(\.identifier)
-        == [filterHighlighter.identifier]
-    runner.expect(
-        boardWasVisible && screenWasRestored && boardWasRestored,
-        "screen and board strokes should survive repeated board transitions"
-    )
-
-    let pageState = AppState()
-    pageState.toggleBoard(.white, on: "page-display")
-    pageState.addStroke(filterPen, to: "page-display")
-    let createdSecondPage = pageState.moveToNextBoardPage(on: "page-display")
-    pageState.addStroke(filterHighlighter, to: "page-display")
-    let undidSecondPage = pageState.undo(on: "page-display")
-        && pageState.strokes(for: "page-display").isEmpty
-    let returnedToFirstPage = pageState.moveToPreviousBoardPage(on: "page-display")
-        && pageState.strokes(for: "page-display").map(\.identifier) == [filterPen.identifier]
-    let undidFirstPage = pageState.undo(on: "page-display")
-        && pageState.strokes(for: "page-display").isEmpty
-    let secondPageRemainedIndependent = pageState.moveToNextBoardPage(on: "page-display")
-        && pageState.strokes(for: "page-display").isEmpty
-        && pageState.boardPagePosition(on: "page-display") == BoardPagePosition(current: 2, total: 2)
-    runner.expect(
-        createdSecondPage
-            && undidSecondPage
-            && returnedToFirstPage
-            && undidFirstPage
-            && secondPageRemainedIndependent,
-        "each board page should keep an independent undo history"
     )
 
     let blackStroke = InkStroke(
@@ -1142,19 +1068,6 @@ func runSelfTests() -> Int32 {
     runner.expect(
         ShortcutConflictDetector.hasAvoidedConflict("AppMod+D"),
         "known avoided global shortcuts should be reported as conflicts"
-    )
-
-    let backupDefaults = UserDefaults(suiteName: "EduTools.SelfTest.\(UUID().uuidString)")!
-    let backupStore = SettingsBackupStore(defaults: backupDefaults)
-    for value in 1...6 {
-        var settings = AppSettings.default
-        settings.timer.lessonDefaultMinutes = value
-        try? backupStore.append(settings)
-    }
-    let latestBackup = try? backupStore.popLatest()
-    runner.expect(
-        backupStore.count == 4 && latestBackup?.timer.lessonDefaultMinutes == 6,
-        "settings backups should rotate to the most recent five entries"
     )
 
     let mouseEntered = NSEvent.enterExitEvent(
