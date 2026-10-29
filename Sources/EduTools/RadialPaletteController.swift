@@ -23,6 +23,7 @@ private enum RadialPaletteGroupID: Int, CaseIterable {
 private enum RadialPaletteEntryAction {
     case command(AppCommand)
     case openSettings
+    case showDisplayPresets
     case setPaletteStyle(PaletteStyle)
     case saveFavorite
     case applyFavorite(index: Int, favorite: FavoriteTool)
@@ -31,17 +32,20 @@ private enum RadialPaletteEntryAction {
 private struct RadialPaletteEntry {
     let action: RadialPaletteEntryAction
     let fallbackName: String?
+    let fallbackIconKey: String?
     let fallbackIconName: String?
     let isEnabled: Bool
 
     init(
         action: RadialPaletteEntryAction,
         fallbackName: String?,
+        fallbackIconKey: String? = nil,
         fallbackIconName: String?,
         isEnabled: Bool = true
     ) {
         self.action = action
         self.fallbackName = fallbackName
+        self.fallbackIconKey = fallbackIconKey
         self.fallbackIconName = fallbackIconName
         self.isEnabled = isEnabled
     }
@@ -54,6 +58,13 @@ private struct RadialPaletteEntry {
         action: .openSettings,
         fallbackName: "설정 열기",
         fallbackIconName: "gearshape"
+    )
+
+    static let displayPresets = RadialPaletteEntry(
+        action: .showDisplayPresets,
+        fallbackName: "화면 구성",
+        fallbackIconKey: "display.preset.1",
+        fallbackIconName: "display.2"
     )
 
     static func paletteStyle(_ style: PaletteStyle) -> RadialPaletteEntry {
@@ -101,6 +112,7 @@ private struct RadialPaletteEntry {
         }
         switch action {
         case .openSettings: return "palette.settings"
+        case .showDisplayPresets: return "palette.display-presets"
         case let .setPaletteStyle(style): return "palette.style.\(style.rawValue)"
         case .saveFavorite: return "palette.favorite.save"
         case let .applyFavorite(index, _): return "palette.favorite.\(index)"
@@ -111,6 +123,10 @@ private struct RadialPaletteEntry {
 
     var name: String {
         definition?.name ?? fallbackName ?? identifier
+    }
+
+    var iconKey: String {
+        definition?.id ?? fallbackIconKey ?? identifier
     }
 
     var iconName: String {
@@ -216,6 +232,7 @@ private enum RadialPaletteCatalog {
                 .command(.togglePassThroughMode),
                 .command(.toggleZoom),
                 .command(.toggleCursorHighlight),
+                .displayPresets,
             ]
         ),
         RadialPaletteGroupDefinition(
@@ -230,7 +247,7 @@ private enum RadialPaletteCatalog {
 
     static var iconKeys: Set<String> {
         Set(groups.flatMap { group in
-            [group.iconKey] + group.entries.map(\.identifier)
+            [group.iconKey] + group.entries.map(\.iconKey)
         })
     }
 
@@ -269,7 +286,32 @@ private struct RadialPaletteOption {
     let color: NSColor?
     let shortcut: String
     let isSelected: Bool
+    let isEnabled: Bool
     let action: () -> Void
+
+    init(
+        identifier: String,
+        name: String,
+        shortLabel: String,
+        iconKey: String?,
+        iconName: String?,
+        color: NSColor?,
+        shortcut: String,
+        isSelected: Bool,
+        isEnabled: Bool = true,
+        action: @escaping () -> Void
+    ) {
+        self.identifier = identifier
+        self.name = name
+        self.shortLabel = shortLabel
+        self.iconKey = iconKey
+        self.iconName = iconName
+        self.color = color
+        self.shortcut = shortcut
+        self.isSelected = isSelected
+        self.isEnabled = isEnabled
+        self.action = action
+    }
 }
 
 private struct RadialPaletteOptionGroup {
@@ -340,7 +382,8 @@ private enum RadialPaletteFocus: Equatable {
 private func nextRadialPaletteFocus(
     in cells: [RadialPaletteCell],
     from current: RadialPaletteFocus,
-    for key: RadialPaletteNavigationKey
+    for key: RadialPaletteNavigationKey,
+    selectedEntryIdentifier: String?
 ) -> RadialPaletteFocus {
     let enabledCells = cells.filter(\.isEnabled)
 
@@ -348,15 +391,30 @@ private func nextRadialPaletteFocus(
         enabledCells.first { $0.ring == ring && $0.isSelected }
     }
 
-    func selectedToolCell() -> RadialPaletteCell? {
-        enabledCells.first { cell in
-            guard cell.ring == .entry, cell.isSelected,
-                  case let .entry(entry) = cell.action
-            else {
-                return false
-            }
-            return entry.inkTool != nil
+    func selectedEntryPriority(for cell: RadialPaletteCell) -> Int? {
+        guard cell.ring == .entry,
+              case let .entry(entry) = cell.action
+        else {
+            return nil
         }
+        if entry.identifier == selectedEntryIdentifier {
+            return 0
+        }
+        if cell.isSelected && entry.inkTool != nil {
+            return 1
+        }
+        return nil
+    }
+
+    func selectedEntryCell() -> RadialPaletteCell? {
+        for priority in 0...1 {
+            if let cell = enabledCells.first(where: { cell in
+                selectedEntryPriority(for: cell) == priority
+            }) {
+                return cell
+            }
+        }
+        return nil
     }
 
     func firstCell(in ring: RadialPaletteRing) -> RadialPaletteCell? {
@@ -382,7 +440,7 @@ private func nextRadialPaletteFocus(
             case .entry:
                 return focus(for: selectedCell(in: .group)) ?? current
             case .option:
-                return focus(for: selectedToolCell()) ?? current
+                return focus(for: selectedEntryCell()) ?? current
             }
         }
 
@@ -396,12 +454,9 @@ private func nextRadialPaletteFocus(
             }
             switch cell.ring {
             case .group:
-                return focus(for: selectedToolCell() ?? firstCell(in: .entry)) ?? current
+                return focus(for: selectedEntryCell() ?? firstCell(in: .entry)) ?? current
             case .entry:
-                guard cell.isSelected,
-                      case let .entry(entry) = cell.action,
-                      entry.inkTool != nil
-                else {
+                guard selectedEntryPriority(for: cell) != nil else {
                     return current
                 }
                 return focus(for: firstCell(in: .option)) ?? current
@@ -468,6 +523,8 @@ private final class RadialPaletteTooltip {
         glassContentView.layer?.masksToBounds = true
         label.font = .systemFont(ofSize: 12, weight: .medium)
         label.textColor = RadialPaletteGlassStyle.primaryContentColor
+        label.maximumNumberOfLines = 2
+        label.usesSingleLineMode = false
         label.translatesAutoresizingMaskIntoConstraints = false
         glassContentView.addSubview(label)
         NSLayoutConstraint.activate([
@@ -726,11 +783,15 @@ final class RadialPaletteController: NSObject {
     private let settingsStore: SettingsStore
     private let defaults: UserDefaults
     private let openSettings: () -> Void
+    private let displayPresetEntries: () -> [DisplayPresetMenuEntry]
+    private let applyDisplayPreset: (Int) -> Void
+    private let openDisplaySettings: () -> Void
     private let panel: RadialPalettePanel
     private let paletteView = RadialPaletteView(frame: .zero)
     private let tooltip: RadialPaletteTooltip
     private var selectedGroup = RadialPaletteGroupID.writing
     private var selectedEntryIdentifier: String?
+    private var cachedDisplayPresetEntries: [DisplayPresetMenuEntry]?
     private var isExpanded = false
     private var showsKeyCaps = false
     private var keyboardFocus: RadialPaletteFocus?
@@ -764,13 +825,19 @@ final class RadialPaletteController: NSObject {
         dispatcher: AppCommandDispatcher,
         settingsStore: SettingsStore,
         defaults: UserDefaults = .standard,
-        openSettings: @escaping () -> Void
+        openSettings: @escaping () -> Void,
+        displayPresetEntries: @escaping () -> [DisplayPresetMenuEntry],
+        applyDisplayPreset: @escaping (Int) -> Void,
+        openDisplaySettings: @escaping () -> Void
     ) {
         self.state = state
         self.dispatcher = dispatcher
         self.settingsStore = settingsStore
         self.defaults = defaults
         self.openSettings = openSettings
+        self.displayPresetEntries = displayPresetEntries
+        self.applyDisplayPreset = applyDisplayPreset
+        self.openDisplaySettings = openDisplaySettings
         tooltip = RadialPaletteTooltip(
             glassOpacity: settingsStore.settings.tools.paletteGlassOpacity
         )
@@ -938,15 +1005,19 @@ final class RadialPaletteController: NSObject {
         if key == .deeper,
            let cell = cell(for: current, in: cells),
            case let .entry(entry) = cell.action,
-           entry.inkTool != nil,
            selectedEntryIdentifier != entry.identifier,
-           !optionGroups(for: entry).isEmpty
+           entryCanOpenOptions(entry)
         {
-            // Selecting a tool here is intentionally the same dispatcher-backed action as a click.
+            // Selecting an option-bearing entry here follows the same action as a click.
             activate(entry)
             cells = layoutCells()
         }
-        let next = nextRadialPaletteFocus(in: cells, from: current, for: key)
+        let next = nextRadialPaletteFocus(
+            in: cells,
+            from: current,
+            for: key,
+            selectedEntryIdentifier: selectedEntryIdentifier
+        )
 
         if (key == .previous || key == .next),
            next != current,
@@ -965,6 +1036,18 @@ final class RadialPaletteController: NSObject {
     }
 
     private func initialKeyboardFocus(in cells: [RadialPaletteCell]) -> RadialPaletteFocus? {
+        if let selectedEntryIdentifier,
+           let selectedEntryCell = cells.first(where: { cell in
+               guard cell.isEnabled, cell.ring == .entry,
+                     case let .entry(entry) = cell.action
+               else {
+                   return false
+               }
+               return entry.identifier == selectedEntryIdentifier
+           })
+        {
+            return .cell(selectedEntryCell.identifier)
+        }
         let selectedToolCell = cells.first { cell in
             guard cell.isEnabled, cell.ring == .entry, cell.isSelected,
                   case let .entry(entry) = cell.action
@@ -1112,6 +1195,7 @@ final class RadialPaletteController: NSObject {
 
     private func collapse() {
         resetKeyboardNavigation()
+        cachedDisplayPresetEntries = nil
         guard isExpanded else {
             tooltip.hide()
             return
@@ -1145,7 +1229,7 @@ final class RadialPaletteController: NSObject {
             switch cell.action {
             case let .group(group):
                 selectedGroup = group
-                selectedEntryIdentifier = nil
+                setSelectedEntryIdentifier(nil)
             case let .entry(entry):
                 activate(entry)
             case let .option(option):
@@ -1160,10 +1244,13 @@ final class RadialPaletteController: NSObject {
         case let .command(command):
             dispatcher.execute(command, scope: .annotation)
             if entry.inkTool != nil {
-                selectedEntryIdentifier = entry.identifier
+                setSelectedEntryIdentifier(entry.identifier)
             }
         case .openSettings:
             openSettings()
+        case .showDisplayPresets:
+            setSelectedEntryIdentifier(entry.identifier)
+            _ = cacheDisplayPresetEntries()
         case let .setPaletteStyle(style):
             settingsStore.update { $0.tools.paletteStyle = style }
         case .saveFavorite:
@@ -1172,7 +1259,7 @@ final class RadialPaletteController: NSObject {
             isApplyingFavorite = true
             defer { isApplyingFavorite = false }
             if state.applyFavorite(favorite) {
-                selectedEntryIdentifier = entry.identifier
+                setSelectedEntryIdentifier(entry.identifier)
             }
         }
     }
@@ -1208,7 +1295,7 @@ final class RadialPaletteController: NSObject {
             didRemove = true
         }
         guard case .success = removed, didRemove else { return false }
-        selectedEntryIdentifier = nil
+        setSelectedEntryIdentifier(nil)
         keyboardFocus = .cell("entry.palette.favorite.save")
         tooltip.hide()
         paletteView.redraw()
@@ -1306,7 +1393,13 @@ final class RadialPaletteController: NSObject {
     private func synchronizePathWithCurrentTool() {
         guard let path = RadialPaletteCatalog.path(for: state.currentTool) else { return }
         selectedGroup = path.group.id
-        selectedEntryIdentifier = path.entry.identifier
+        setSelectedEntryIdentifier(path.entry.identifier)
+    }
+
+    private func setSelectedEntryIdentifier(_ identifier: String?) {
+        guard selectedEntryIdentifier != identifier else { return }
+        selectedEntryIdentifier = identifier
+        cachedDisplayPresetEntries = nil
     }
 
     private func restorePosition() {
@@ -1560,7 +1653,7 @@ final class RadialPaletteController: NSObject {
                             endAngle: cellEnd
                         ),
                         name: entry.name,
-                        iconKey: entry.identifier,
+                        iconKey: entry.iconKey,
                         iconName: entry.iconName,
                         shortLabel: "",
                         shortcut: entry.shortcut,
@@ -1602,7 +1695,7 @@ final class RadialPaletteController: NSObject {
                             propertyName: optionGroup.name,
                             color: option.color,
                             isSelected: option.isSelected,
-                            isEnabled: true,
+                            isEnabled: option.isEnabled,
                             action: .option(option)
                         )
                     )
@@ -1640,6 +1733,9 @@ final class RadialPaletteController: NSObject {
     }
 
     private func optionGroups(for entry: RadialPaletteEntry) -> [RadialPaletteOptionGroup] {
+        if case .showDisplayPresets = entry.action {
+            return [displayPresetOptions()]
+        }
         guard let tool = entry.inkTool else { return [] }
         switch tool {
         case .pen:
@@ -1696,6 +1792,68 @@ final class RadialPaletteController: NSObject {
         case .select, .cover:
             return []
         }
+    }
+
+    private func entryCanOpenOptions(_ entry: RadialPaletteEntry) -> Bool {
+        if case .showDisplayPresets = entry.action {
+            return true
+        }
+        return entry.inkTool != nil && !optionGroups(for: entry).isEmpty
+    }
+
+    private func displayPresetOptions() -> RadialPaletteOptionGroup {
+        let entries = cachedDisplayPresetEntries ?? cacheDisplayPresetEntries()
+        let options: [RadialPaletteOption]
+        if entries.isEmpty {
+            options = [
+                RadialPaletteOption(
+                    identifier: "display.preset.empty",
+                    name: "프리셋 없음 — 설정에서 추가",
+                    shortLabel: "＋",
+                    iconKey: nil,
+                    iconName: nil,
+                    color: nil,
+                    shortcut: "",
+                    isSelected: false,
+                    action: { [weak self] in self?.openDisplaySettings() }
+                ),
+            ]
+        } else {
+            options = entries.map { entry in
+                let name = entry.disabledReason.map { "\(entry.name)\n\($0)" } ?? entry.name
+                return RadialPaletteOption(
+                    identifier: "display.preset.\(entry.index + 1)",
+                    name: name,
+                    shortLabel: String(entry.index + 1),
+                    iconKey: nil,
+                    iconName: nil,
+                    color: nil,
+                    shortcut: "",
+                    isSelected: entry.isCurrent,
+                    isEnabled: entry.isEnabled,
+                    action: { [weak self] in
+                        guard let self else { return }
+                        collapse()
+                        applyDisplayPreset(entry.index)
+                    }
+                )
+            }
+        }
+        return RadialPaletteOptionGroup(name: "화면 구성", options: options)
+    }
+
+    private func cacheDisplayPresetEntries() -> [DisplayPresetMenuEntry] {
+        let entries = displayPresetEntries()
+        if entries.count > DisplayPresetDefaults.maximumPresetCount {
+            NSLog(
+                "EduTools: radial palette received %d display presets; showing the first %d",
+                entries.count,
+                DisplayPresetDefaults.maximumPresetCount
+            )
+        }
+        let cachedEntries = Array(entries.prefix(DisplayPresetDefaults.maximumPresetCount))
+        cachedDisplayPresetEntries = cachedEntries
+        return cachedEntries
     }
 
     private func rememberedWidth(for tool: InkTool) -> CGFloat {
