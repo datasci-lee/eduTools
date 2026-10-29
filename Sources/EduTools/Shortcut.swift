@@ -308,18 +308,7 @@ struct ShortcutBinding {
         modifiers: NSEvent.ModifierFlags = [],
         keyCap: String
     ) -> ShortcutBinding {
-        ShortcutBinding(
-            scope: .annotation,
-            keyCode: UInt16(keyCode),
-            modifiers: modifiers,
-            keyEquivalent: keyEquivalent,
-            keyCap: keyCap,
-            serializedGlobalShortcut: nil,
-            portableString: PortableShortcut.serialized(
-                keyCode: UInt16(keyCode),
-                modifiers: modifiers
-            ) ?? keyCap
-        )
+        local(scope: .annotation, keyCode: keyCode, keyEquivalent: keyEquivalent, modifiers: modifiers, keyCap: keyCap)
     }
 
     static func zoom(
@@ -328,8 +317,18 @@ struct ShortcutBinding {
         modifiers: NSEvent.ModifierFlags = [],
         keyCap: String
     ) -> ShortcutBinding {
+        local(scope: .zoom, keyCode: keyCode, keyEquivalent: keyEquivalent, modifiers: modifiers, keyCap: keyCap)
+    }
+
+    private static func local(
+        scope: ShortcutScope,
+        keyCode: Int,
+        keyEquivalent: String,
+        modifiers: NSEvent.ModifierFlags,
+        keyCap: String
+    ) -> ShortcutBinding {
         ShortcutBinding(
-            scope: .zoom,
+            scope: scope,
             keyCode: UInt16(keyCode),
             modifiers: modifiers,
             keyEquivalent: keyEquivalent,

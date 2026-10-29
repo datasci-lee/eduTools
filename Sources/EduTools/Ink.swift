@@ -460,12 +460,7 @@ final class InkLayerState: Codable {
                 debugDescription: "Undo limit must be greater than zero"
             )
         }
-        if undoCommands.count > undoLimit {
-            undoCommands.removeFirst(undoCommands.count - undoLimit)
-        }
-        if redoCommands.count > undoLimit {
-            redoCommands.removeFirst(redoCommands.count - undoLimit)
-        }
+        trimCommandsToLimit()
     }
 
     func encode(to encoder: Encoder) throws {
@@ -479,10 +474,17 @@ final class InkLayerState: Codable {
     func execute(_ command: InkCommand) {
         command.apply(to: &layers)
         undoCommands.append(command)
+        trimCommandsToLimit()
+        redoCommands.removeAll(keepingCapacity: true)
+    }
+
+    private func trimCommandsToLimit() {
         if undoCommands.count > undoLimit {
             undoCommands.removeFirst(undoCommands.count - undoLimit)
         }
-        redoCommands.removeAll(keepingCapacity: true)
+        if redoCommands.count > undoLimit {
+            redoCommands.removeFirst(redoCommands.count - undoLimit)
+        }
     }
 
     @discardableResult
@@ -535,12 +537,7 @@ final class InkLayerState: Codable {
         redoCommands.append(
             contentsOf: archivedState.redoCommands.compactMap { $0.command(for: displayUUID) }
         )
-        if undoCommands.count > undoLimit {
-            undoCommands.removeFirst(undoCommands.count - undoLimit)
-        }
-        if redoCommands.count > undoLimit {
-            redoCommands.removeFirst(redoCommands.count - undoLimit)
-        }
+        trimCommandsToLimit()
     }
 
     func removeDisplay(_ displayUUID: String) {
