@@ -36,6 +36,12 @@ let package = Package(
       path: "Tests/GUITests",
       swiftSettings: [.swiftLanguageMode(.v5)]
     ),
+    .testTarget(
+      name: "E2ETests",
+      dependencies: ["EduTools", "TestSupport"],
+      path: "Tests/E2ETests",
+      swiftSettings: [.swiftLanguageMode(.v5)]
+    ),
   ],
   swiftLanguageModes: [.v5]
 )

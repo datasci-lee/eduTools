@@ -12,7 +12,7 @@
 | T1 단위 | 입력→출력 순수 로직 | 헤드리스, 개발자 | `scripts/test.sh unit` |
 | T2 통합 | 모듈 합성, 임시 I/O, 설정·골든, 가짜 계층 | 헤드리스, 개발자 | `scripts/test.sh integration` |
 | T3 GUI | 실제 뷰·창과 합성 이벤트 | WindowServer, 사용자 맥 | `scripts/test.sh gui` |
-| T4 E2E | 실제 앱·OS 입력·AX·화면 픽셀 | 접근성·화면 기록 권한, 사용자 | 예정(S4) |
+| T4 E2E | 실제 앱·OS 입력·AX·화면 픽셀 | 접근성·화면 기록 권한, 사용자 | `scripts/test.sh e2e` · [`e2e.md`](e2e.md) |
 | T5 릴리스 | 번들·서명·plist·리소스 개수·속성 레이어 정합·자체 시험 코드 탐지·DMG | 모든 맥, 릴리스 담당 | [`scripts/verify-bundle.sh`](../../scripts/verify-bundle.sh) |
 | T6 수동 | Pencil·Sidecar·다중 모니터·프로젝터·권한 | 실제 장비, 사용자 | [`manual-checklist.md`](manual-checklist.md) |
 
@@ -44,13 +44,13 @@
 
 모든 변경의 G1은 `scripts/test.sh unit integration`이며 종료코드 0과 실패 0이 필요하다. `./build.sh test`는 T0 앱 빌드·잔여 SelfTest·G1을 묶는다. 입력·뷰 변경의 G2는 사용자 WindowServer에서 T3를 실행한다. 릴리스 G3는 G1·G2에 T4 스모크, T5, T6 기록을 더한다. 개발자는 헤드리스 G1과 변이 증거를 책임지고, 사용자는 권한·화면·실장비가 필요한 G2/G3를 확인한다.
 
-T3의 `scripts/test.sh gui`는 사용자 맥 전용이며 WindowServer 연결이 없으면 실패나 통과 대신 `UNRUNNABLE`과 종료코드 3을 반환한다.
+T3의 `scripts/test.sh gui`는 사용자 맥 전용이다. T4의 `scripts/test.sh e2e`는 실제 앱을 임시 데이터 디렉터리와 고유 UserDefaults suite로 실행하고 OS 입력·AX·화면 픽셀을 확인한다. WindowServer 또는 필요한 권한이 없으면 실패나 통과 대신 `UNRUNNABLE`과 종료코드 3을 반환한다. 둘 다 `all`에는 포함하지 않는다.
 
 ## 정책과 단계
 
 - 위험 근거 없는 시험, 같은 동작의 사례 나열, 소스 문구 고정 시험, 기존 시험 약화·삭제·skip은 금지한다.
 - 결정론을 위해 시계·난수·경로를 주입하고 정렬을 고정한다. 플레이키 실패는 재시도로 덮지 않는다.
 - 골든 갱신은 명시적 갱신 모드와 diff 검수를 거친다. 커버리지는 게이트가 아니라 영향 영역의 빈 곳을 찾는 지도다.
-- S1은 SwiftPM·지원 도구·단축키/줌/기하 이관, S1b/c는 나머지 SelfTest 이관, S2는 통합 이음새, S3는 GUI, S4는 E2E, S6는 문서 동기화다. S5의 릴리스 검증·수동 체크리스트·크래시 대장은 완료했고, CI(GitHub Actions)는 러너의 macOS 26 지원 여부를 확인한 뒤 제안하므로 미정이다.
-- [`manual-checklist.md`](manual-checklist.md)는 실제 장비·권한·사용자 흐름의 수동 판정 절차를 담고, [`crash-regressions.md`](crash-regressions.md)는 크래시의 증상·원인·수정·재현 시험을 추적한다. `e2e.md`만 예정(S4)이다.
+- S1은 SwiftPM·지원 도구·단축키/줌/기하 이관, S1b/c는 나머지 SelfTest 이관, S2는 통합 이음새, S3는 GUI다. S4 E2E는 실제 진입점과 9개 스모크 시나리오를 제공한다. S6는 문서 동기화다. S5의 릴리스 검증·수동 체크리스트·크래시 대장은 완료했고, CI(GitHub Actions)는 러너의 macOS 26 지원 여부를 확인한 뒤 제안하므로 미정이다.
+- [`e2e.md`](e2e.md)는 T4 권한·격리·입력 장악 위험과 시나리오를, [`manual-checklist.md`](manual-checklist.md)는 실제 장비·권한·사용자 흐름의 수동 판정 절차를 담는다. [`crash-regressions.md`](crash-regressions.md)는 크래시의 증상·원인·수정·재현 시험을 추적한다.
 - 앱 번들에는 자체 시험 코드가 아직 포함되어 있다. S1b/c에서 제거할 예정이며, [`scripts/verify-bundle.sh`](../../scripts/verify-bundle.sh)는 현재 이를 INFO로 표시하고 이관 완료 후 FAIL로 승격한다.
