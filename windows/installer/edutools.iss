@@ -52,9 +52,6 @@ english.UninstallAppTitle=EduTools 제거
 english.UninstallAppFullTitle=EduTools 제거
 #endif
 
-[Tasks]
-Name: "startup"; Description: "로그인할 때 자동 실행"; GroupDescription: "추가 작업:"; Flags: unchecked
-
 [Files]
 Source: "{#ExePath}"; DestDir: "{app}"; DestName: "edutools.exe"; Flags: ignoreversion restartreplace
 
@@ -62,7 +59,6 @@ Source: "{#ExePath}"; DestDir: "{app}"; DestName: "edutools.exe"; Flags: ignorev
 Name: "{group}\EduTools"; Filename: "{app}\edutools.exe"; WorkingDir: "{app}"
 
 [Registry]
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "EduTools"; ValueData: """{app}\edutools.exe"""; Tasks: startup; Flags: uninsdeletevalue
 Root: HKCU; Subkey: "Software\Classes\.pansetting"; ValueType: string; ValueData: "EduTools.Settings"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\EduTools.Settings"; ValueType: string; ValueData: "EduTools 설정 파일"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\EduTools.Settings\DefaultIcon"; ValueType: string; ValueData: """{app}\edutools.exe"",0"; Flags: uninsdeletekey
@@ -74,6 +70,13 @@ var
 
 function InitializeUninstall(): Boolean;
 begin
+  // 무인 제거(/VERYSILENT)는 대화상자 없이 사용자 설정을 보존한다(기본값 = 아니오).
+  if UninstallSilent then
+  begin
+    DeleteUserSettings := False;
+    Result := True;
+    Exit;
+  end;
   DeleteUserSettings :=
     MsgBox(
       'EduTools 사용자 설정도 삭제하시겠습니까?' + #13#10 +
@@ -88,6 +91,7 @@ procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usPostUninstall then
   begin
+    // 자동 실행 값은 앱 설정 창이 정본이므로 설치기는 쓰지 않고 제거 때만 지운다.
     RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'EduTools');
     if DeleteUserSettings then
       DelTree(ExpandConstant('{userappdata}\EduTools'), True, True, True);
