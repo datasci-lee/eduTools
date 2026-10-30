@@ -1,15 +1,17 @@
 use crate::log::Logger;
 use crate::monitor::{Monitor, MonitorRect};
-use crate::render::px_per_dip;
+use crate::render::{px_per_dip, COVER_STROKE_COLOR};
 use edutools_core::eraser::{
     EraserAreaShape, EraserEngine, EraserGesture, EraserHitRule, EraserMode, EraserSettings,
     EraserTargetFilter,
 };
 use edutools_core::ink::{
-    InkGeometry, InkPoint, InkStroke, InkStrokeContent, InkStrokeTool, InkTool, Point, Rect, Size,
+    ArrowStyle, InkGeometry, InkPoint, InkShapeKind, InkStroke, InkStrokeContent, InkStrokeTool,
+    InkTool, Point, Rect, Size,
 };
 use edutools_core::laser::{LaserPoint, LaserTrail};
 use edutools_core::settings::AppSettings;
+use edutools_core::shape::ShapeRecognizer;
 use edutools_core::state::AppState;
 use std::cmp::Ordering;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -17,7 +19,9 @@ use std::sync::OnceLock;
 use windows::core::Result;
 use windows::Win32::Foundation::POINT;
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetAsyncKeyState, GetKeyState, VK_LBUTTON, VK_RBUTTON, VK_SHIFT,
+};
 use windows::Win32::UI::Input::Pointer::{
     GetPointerInfo, GetPointerInfoHistory, GetPointerPenInfo, GetPointerPenInfoHistory,
     POINTER_CHANGE_FIRSTBUTTON_DOWN, POINTER_CHANGE_FIRSTBUTTON_UP,
@@ -60,6 +64,8 @@ impl PointerDevice {
 #[derive(Clone, Debug)]
 pub struct InkInputConfig {
     pub current_tool: InkTool,
+    pub arrow_style: ArrowStyle,
+    pub shape_recognition_enabled: bool,
     pub current_color_index: Option<i64>,
     pub current_color: Option<[f64; 4]>,
     pub current_width: Option<f64>,
@@ -84,6 +90,8 @@ impl InkInputConfig {
             .map(|color| [color.red, color.green, color.blue, 1.0]);
         Self {
             current_tool: state.current_tool(),
+            arrow_style: state.arrow_style(),
+            shape_recognition_enabled: settings.tools.shape_recognition_enabled,
             current_color_index,
             current_color,
             current_width: memory.map(|memory| memory.size),
@@ -112,6 +120,7 @@ pub struct StrokeReplacement {
 #[derive(Default)]
 pub struct InputOutcome {
     pub finished: Vec<InkStroke>,
+    pub recognized: Option<InkStroke>,
     pub replacement: Option<StrokeReplacement>,
     pub redraw: bool,
 }
@@ -135,6 +144,9 @@ pub struct LaserRenderState {
 
 struct ActiveStroke {
     stroke: InkStroke,
+    is_straight: bool,
+    canvas_size: Size,
+    recognized: Option<InkStroke>,
 }
 
 struct ActiveEraser {
@@ -253,6 +265,8 @@ pub struct InkInputController {
     dpi: u32,
     owner: Option<InputOwner>,
     active_stroke: Option<ActiveStroke>,
+    recognition_timer_waiting: bool,
+    recognition_timer_reset_requested: bool,
     active_eraser: Option<ActiveEraser>,
     eraser_cursor: Option<Point>,
     laser: LaserInputState,
@@ -273,6 +287,8 @@ impl InkInputController {
             dpi: 96,
             owner: None,
             active_stroke: None,
+            recognition_timer_waiting: false,
+            recognition_timer_reset_requested: false,
             active_eraser: None,
             eraser_cursor: None,
             laser: LaserInputState::default(),
@@ -281,11 +297,24 @@ impl InkInputController {
     }
 
     pub fn update_context(&mut self, annotation_enabled: bool, config: InkInputConfig) {
+        let tool_changed = self.config.current_tool != config.current_tool;
+        let recognition_disabled =
+            self.config.shape_recognition_enabled && !config.shape_recognition_enabled;
         let clear_laser = !annotation_enabled
             || (self.config.current_tool == InkTool::Laser
                 && config.current_tool != InkTool::Laser);
         self.annotation_enabled = annotation_enabled;
         self.config = config;
+        if !annotation_enabled || tool_changed || recognition_disabled {
+            let reason = if !annotation_enabled {
+                "판서 끔"
+            } else if tool_changed {
+                "도구 변경"
+            } else {
+                "도형 인식 끔"
+            };
+            self.cancel_recognition(reason);
+        }
         if clear_laser && self.laser.has_visual() {
             self.logger
                 .event("레이저 상태: 도구 전환/판서 끔으로 clear");
@@ -310,8 +339,35 @@ impl InkInputController {
         self.config.highlighter_opacity
     }
 
-    pub fn active_stroke(&self) -> Option<&InkStroke> {
-        self.active_stroke.as_ref().map(|active| &active.stroke)
+    pub fn active_stroke(&self) -> Option<InkStroke> {
+        self.active_stroke.as_ref().map(effective_stroke)
+    }
+
+    pub fn recognition_timer_needed(&self) -> bool {
+        self.recognition_timer_waiting
+    }
+
+    pub fn take_recognition_timer_reset(&mut self) -> bool {
+        std::mem::take(&mut self.recognition_timer_reset_requested)
+    }
+
+    pub fn recognize_active(&mut self) {
+        self.recognition_timer_waiting = false;
+        self.recognition_timer_reset_requested = false;
+        if !self.recognition_is_eligible() {
+            return;
+        }
+        let Some(active) = self.active_stroke.as_mut() else {
+            return;
+        };
+        active.recognized = ShapeRecognizer::corrected_stroke(&active.stroke, active.canvas_size);
+        if let Some(candidate) = active.recognized.as_ref() {
+            self.logger.event(&format!(
+                "도형 인식 후보 생성: monitor={} kind={}",
+                self.monitor_key,
+                stroke_shape_label(candidate)
+            ));
+        }
     }
 
     pub fn eraser_render_state(&self) -> Option<EraserRenderState> {
@@ -560,25 +616,50 @@ impl InkInputController {
             return Ok(outcome);
         }
 
-        let (stroke_tool, uses_pressure) = match self.config.current_tool {
-            InkTool::Pen => (InkStrokeTool::Pen, true),
-            InkTool::Highlighter => (InkStrokeTool::Highlighter, false),
+        let (stroke_tool, uses_pressure, content) = match self.config.current_tool {
+            InkTool::Pen => (InkStrokeTool::Pen, true, InkStrokeContent::Freehand),
+            InkTool::Highlighter => (
+                InkStrokeTool::Highlighter,
+                false,
+                InkStrokeContent::Freehand,
+            ),
+            InkTool::Arrow => (
+                InkStrokeTool::Shape,
+                false,
+                InkStrokeContent::Shape(InkShapeKind::Arrow(self.config.arrow_style)),
+            ),
+            InkTool::Rectangle => (
+                InkStrokeTool::Shape,
+                false,
+                InkStrokeContent::Shape(InkShapeKind::Rectangle),
+            ),
+            InkTool::Ellipse => (
+                InkStrokeTool::Shape,
+                false,
+                InkStrokeContent::Shape(InkShapeKind::Ellipse),
+            ),
+            InkTool::Cover => (InkStrokeTool::Cover, false, InkStrokeContent::Cover),
             other => {
                 self.logger
                     .event(&format!("무시한 입력: 미구현 도구: {other:?}"));
                 return Ok(outcome);
             }
         };
-        let Some(color) = self.config.current_color else {
-            self.logger.event(&format!(
-                "무시한 입력: 도구 색 인덱스 범위 밖 ({:?})",
-                self.config.current_color_index
-            ));
-            return Ok(outcome);
-        };
-        let Some(width) = self.config.current_width else {
-            self.logger.event("무시한 입력: 도구 굵기 설정 없음");
-            return Ok(outcome);
+        let (color, width) = if stroke_tool == InkStrokeTool::Cover {
+            (COVER_STROKE_COLOR, 1.0)
+        } else {
+            let Some(color) = self.config.current_color else {
+                self.logger.event(&format!(
+                    "무시한 입력: 도구 색 인덱스 범위 밖 ({:?})",
+                    self.config.current_color_index
+                ));
+                return Ok(outcome);
+            };
+            let Some(width) = self.config.current_width else {
+                self.logger.event("무시한 입력: 도구 굵기 설정 없음");
+                return Ok(outcome);
+            };
+            (color, width)
         };
 
         let history = pointer_history(snapshot.pointer_id, snapshot.device, monitor.rect)?;
@@ -590,32 +671,68 @@ impl InkInputController {
             return Ok(outcome);
         }
         let uses_pressure = uses_pressure && snapshot.device == PointerDevice::Pen;
+        let is_straight = shift_is_pressed()
+            && matches!(
+                stroke_tool,
+                InkStrokeTool::Pen | InkStrokeTool::Highlighter | InkStrokeTool::Shape
+            );
         let identifier = format!(
             "win-{}-{}-{}",
             history.points[0].timestamp,
             snapshot.pointer_id,
             STROKE_SEQUENCE.fetch_add(1, AtomicOrdering::Relaxed)
         );
+        let points = if matches!(&content, InkStrokeContent::Freehand) {
+            history.points
+        } else {
+            let first = history.points[0].clone();
+            let last = history
+                .points
+                .last()
+                .cloned()
+                .unwrap_or_else(|| first.clone());
+            vec![first, last]
+        };
         let stroke = InkStroke::new(
             identifier,
             stroke_tool,
             color,
             width,
             uses_pressure,
-            history.points,
-            InkStrokeContent::Freehand,
+            points,
+            content,
         );
-        self.logger.event(&format!(
-            "획 시작: monitor={} pointerId={} device={:?} tool={:?} colorIndex={} width={}",
-            self.monitor_key,
-            snapshot.pointer_id,
-            snapshot.device,
-            self.config.current_tool,
-            self.config.current_color_index.unwrap_or(-1),
-            width
-        ));
+        match &stroke.content {
+            InkStrokeContent::Shape(kind) => self.logger.event(&format!(
+                "도형 제스처 시작: monitor={} kind={} constrained={is_straight}",
+                self.monitor_key,
+                shape_kind_label(*kind)
+            )),
+            InkStrokeContent::Cover => self.logger.event(&format!(
+                "가리개 제스처 시작: monitor={}",
+                self.monitor_key
+            )),
+            _ => self.logger.event(&format!(
+                "획 시작: monitor={} pointerId={} device={:?} tool={:?} colorIndex={} width={} straight={is_straight}",
+                self.monitor_key,
+                snapshot.pointer_id,
+                snapshot.device,
+                self.config.current_tool,
+                self.config.current_color_index.unwrap_or(-1),
+                width
+            )),
+        }
         self.owner = Some(owner);
-        self.active_stroke = Some(ActiveStroke { stroke });
+        self.active_stroke = Some(ActiveStroke {
+            stroke,
+            is_straight,
+            canvas_size: Size {
+                width: f64::from(monitor.rect.width()),
+                height: f64::from(monitor.rect.height()),
+            },
+            recognized: None,
+        });
+        self.schedule_recognition_if_needed();
         outcome.redraw = true;
         if history.canceled || snapshot.canceled {
             merge_outcome(
@@ -662,7 +779,16 @@ impl InkInputController {
             outcome.redraw = true;
         } else if let Some(active) = self.active_stroke.as_mut() {
             let history = pointer_history(snapshot.pointer_id, snapshot.device, monitor.rect)?;
-            merge_points(&mut active.stroke.points, history.points);
+            let points_added = match &active.stroke.content {
+                InkStrokeContent::Shape(_) | InkStrokeContent::Cover => history
+                    .points
+                    .last()
+                    .is_some_and(|point| set_stroke_endpoint(&mut active.stroke, point.clone())),
+                _ => merge_points(&mut active.stroke.points, history.points),
+            };
+            if points_added {
+                self.schedule_recognition_if_needed();
+            }
             outcome.redraw = true;
         } else if self.laser.trailing {
             if snapshot_uses_eraser(self.config.current_tool, &snapshot) {
@@ -799,10 +925,12 @@ impl InkInputController {
     fn finish_owned(&mut self, reason: &str, hide_laser_point: bool) -> InputOutcome {
         let owner = self.owner.take();
         let mut outcome = InputOutcome::default();
-        if let Some(stroke) = self.take_active_stroke(reason, owner) {
+        let had_stroke = self.active_stroke.is_some();
+        if let Some((stroke, recognized)) = self.take_active_stroke(reason, owner) {
             outcome.finished.push(stroke);
-            outcome.redraw = true;
+            outcome.recognized = recognized;
         }
+        outcome.redraw |= had_stroke;
         let had_eraser = self.active_eraser.is_some();
         outcome.replacement = self.take_active_eraser(reason, owner);
         outcome.redraw |= had_eraser;
@@ -816,34 +944,80 @@ impl InkInputController {
         outcome
     }
 
-    fn take_active_stroke(&mut self, reason: &str, owner: Option<InputOwner>) -> Option<InkStroke> {
+    fn take_active_stroke(
+        &mut self,
+        reason: &str,
+        owner: Option<InputOwner>,
+    ) -> Option<(InkStroke, Option<InkStroke>)> {
         let active = self.active_stroke.take()?;
-        let (minimum, maximum) = active
-            .stroke
-            .points
-            .iter()
-            .map(|point| point.pressure)
-            .fold(
-                (f64::INFINITY, f64::NEG_INFINITY),
-                |(minimum, maximum), value| (minimum.min(value), maximum.max(value)),
-            );
+        self.recognition_timer_waiting = false;
+        self.recognition_timer_reset_requested = false;
+        let stroke = effective_stroke(&active);
+        let recognized = if reason == "WM_POINTERUP" {
+            active.recognized
+        } else {
+            if let Some(candidate) = active.recognized.as_ref() {
+                self.logger.event(&format!(
+                    "도형 인식 후보 폐기: monitor={} kind={} reason={reason}",
+                    self.monitor_key,
+                    stroke_shape_label(candidate)
+                ));
+            }
+            None
+        };
+        if matches!(&stroke.content, InkStrokeContent::Cover) {
+            let first = stroke.points.first()?.location;
+            let last = stroke.points.last()?.location;
+            let size = cover_size(first, last, active.canvas_size);
+            if !cover_meets_minimum_size(first, last, active.canvas_size) {
+                self.logger.event(&format!(
+                    "가리개 버림: monitor={} size={:.2}x{:.2}px minimum=4x4px",
+                    self.monitor_key, size.width, size.height
+                ));
+                return None;
+            }
+            self.logger.event(&format!(
+                "가리개 확정: monitor={} size={:.2}x{:.2}px",
+                self.monitor_key, size.width, size.height
+            ));
+            return Some((stroke, None));
+        }
+        if let InkStrokeContent::Shape(kind) = &stroke.content {
+            self.logger.event(&format!(
+                "도형 확정: monitor={} kind={} constrained={}",
+                self.monitor_key,
+                shape_kind_label(*kind),
+                active.is_straight
+            ));
+            return Some((stroke, None));
+        }
+        let (minimum, maximum) = stroke.points.iter().map(|point| point.pressure).fold(
+            (f64::INFINITY, f64::NEG_INFINITY),
+            |(minimum, maximum), value| (minimum.min(value), maximum.max(value)),
+        );
         self.logger.event(&format!(
             "획 확정: monitor={} pointerId={} reason={reason} points={} uses_pressure={} pressure={minimum:.3}..{maximum:.3}",
             self.monitor_key,
             owner.map_or(0, |owner| owner.pointer_id),
-            active.stroke.points.len(),
-            active.stroke.uses_pressure
+            stroke.points.len(),
+            stroke.uses_pressure
         ));
-        if active.stroke.tool == InkStrokeTool::Highlighter {
+        if active.is_straight {
+            self.logger.event(&format!(
+                "Shift 직선 적용: monitor={} tool={:?}",
+                self.monitor_key, stroke.tool
+            ));
+        }
+        if stroke.tool == InkStrokeTool::Highlighter {
             self.logger.event(&format!(
                 "형광펜 획 확정: monitor={} points={} width={} opacity={}",
                 self.monitor_key,
-                active.stroke.points.len(),
-                active.stroke.width,
+                stroke.points.len(),
+                stroke.width,
                 self.config.highlighter_opacity
             ));
         }
-        Some(active.stroke)
+        Some((stroke, recognized))
     }
 
     fn take_active_eraser(
@@ -918,12 +1092,149 @@ impl InkInputController {
         }
     }
 
+    fn recognition_is_eligible(&self) -> bool {
+        self.annotation_enabled
+            && self.config.current_tool == InkTool::Pen
+            && self.config.shape_recognition_enabled
+            && self.active_stroke.as_ref().is_some_and(|active| {
+                active.stroke.tool == InkStrokeTool::Pen
+                    && matches!(&active.stroke.content, InkStrokeContent::Freehand)
+                    && !active.is_straight
+                    && active.stroke.points.len() >= 2
+            })
+    }
+
+    fn schedule_recognition_if_needed(&mut self) {
+        if !self.recognition_is_eligible() {
+            self.recognition_timer_waiting = false;
+            self.recognition_timer_reset_requested = false;
+            return;
+        }
+        if let Some(candidate) = self
+            .active_stroke
+            .as_mut()
+            .and_then(|active| active.recognized.take())
+        {
+            self.logger.event(&format!(
+                "도형 인식 후보 폐기: monitor={} kind={} reason=새 점",
+                self.monitor_key,
+                stroke_shape_label(&candidate)
+            ));
+        }
+        self.recognition_timer_waiting = true;
+        self.recognition_timer_reset_requested = true;
+    }
+
+    fn cancel_recognition(&mut self, reason: &str) {
+        if let Some(candidate) = self
+            .active_stroke
+            .as_mut()
+            .and_then(|active| active.recognized.take())
+        {
+            self.logger.event(&format!(
+                "도형 인식 후보 폐기: monitor={} kind={} reason={reason}",
+                self.monitor_key,
+                stroke_shape_label(&candidate)
+            ));
+        }
+        self.recognition_timer_waiting = false;
+        self.recognition_timer_reset_requested = false;
+    }
+
     fn scaled_eraser_settings(&self) -> Option<EraserSettings> {
         self.config.eraser_settings.map(|mut settings| {
             settings.diameter *= px_per_dip(self.dpi);
             settings
         })
     }
+}
+
+fn effective_stroke(active: &ActiveStroke) -> InkStroke {
+    let mut stroke = active.stroke.clone();
+    if !active.is_straight {
+        return stroke;
+    }
+    let (Some(first), Some(last)) = (
+        stroke.points.first().cloned(),
+        stroke.points.last().cloned(),
+    ) else {
+        return stroke;
+    };
+    let start = InkGeometry::screen_point(first.location, active.canvas_size);
+    let proposed = InkGeometry::screen_point(last.location, active.canvas_size);
+    let endpoint = match &stroke.content {
+        InkStrokeContent::Shape(kind) => shape_endpoint(*kind, true, start, proposed),
+        InkStrokeContent::Freehand if stroke.tool == InkStrokeTool::Pen => {
+            InkGeometry::snapped_pen_endpoint(start, proposed)
+        }
+        InkStrokeContent::Freehand if stroke.tool == InkStrokeTool::Highlighter => {
+            InkGeometry::snapped_highlighter_endpoint(start, proposed)
+        }
+        _ => proposed,
+    };
+    stroke.points = vec![
+        first,
+        InkPoint::new(
+            InkGeometry::normalized_point(endpoint, active.canvas_size),
+            last.pressure,
+            last.timestamp,
+        ),
+    ];
+    stroke
+}
+
+fn shape_endpoint(
+    kind: InkShapeKind,
+    is_constrained: bool,
+    start: Point,
+    proposed: Point,
+) -> Point {
+    if !is_constrained {
+        return proposed;
+    }
+    match kind {
+        InkShapeKind::Line | InkShapeKind::Arrow(_) => {
+            InkGeometry::snapped_pen_endpoint(start, proposed)
+        }
+        InkShapeKind::Rectangle | InkShapeKind::Ellipse => {
+            InkGeometry::snapped_square_endpoint(start, proposed)
+        }
+    }
+}
+
+fn cover_size(start: Point, end: Point, canvas_size: Size) -> Size {
+    let start = InkGeometry::screen_point(start, canvas_size);
+    let end = InkGeometry::screen_point(end, canvas_size);
+    Size {
+        width: (end.x - start.x).abs(),
+        height: (end.y - start.y).abs(),
+    }
+}
+
+fn cover_meets_minimum_size(start: Point, end: Point, canvas_size: Size) -> bool {
+    let size = cover_size(start, end, canvas_size);
+    size.width >= 4.0 && size.height >= 4.0
+}
+
+fn shape_kind_label(kind: InkShapeKind) -> &'static str {
+    match kind {
+        InkShapeKind::Line => "line",
+        InkShapeKind::Arrow(ArrowStyle::Single) => "arrow-single",
+        InkShapeKind::Arrow(ArrowStyle::Double) => "arrow-double",
+        InkShapeKind::Rectangle => "rectangle",
+        InkShapeKind::Ellipse => "ellipse",
+    }
+}
+
+pub(crate) fn stroke_shape_label(stroke: &InkStroke) -> &'static str {
+    match &stroke.content {
+        InkStrokeContent::Shape(kind) => shape_kind_label(*kind),
+        _ => "none",
+    }
+}
+
+fn shift_is_pressed() -> bool {
+    (unsafe { GetKeyState(VK_SHIFT.0 as i32) } as u16 & 0x8000) != 0
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1168,6 +1479,10 @@ fn removed_original_count(before: &[InkStroke], after: &[InkStroke]) -> usize {
 
 fn merge_outcome(target: &mut InputOutcome, mut incoming: InputOutcome) {
     target.finished.append(&mut incoming.finished);
+    if incoming.recognized.is_some() {
+        debug_assert!(target.recognized.is_none());
+        target.recognized = incoming.recognized;
+    }
     if incoming.replacement.is_some() {
         debug_assert!(target.replacement.is_none());
         target.replacement = incoming.replacement;
@@ -1277,7 +1592,8 @@ fn history_order(first: &HistorySample, second: &HistorySample) -> Ordering {
         .then(first.performance_count.cmp(&second.performance_count))
 }
 
-fn merge_points(existing: &mut Vec<InkPoint>, incoming: Vec<InkPoint>) {
+fn merge_points(existing: &mut Vec<InkPoint>, incoming: Vec<InkPoint>) -> bool {
+    let before = existing.len();
     existing.extend(incoming);
     existing.sort_by(|first, second| {
         first
@@ -1292,10 +1608,32 @@ fn merge_points(existing: &mut Vec<InkPoint>, incoming: Vec<InkPoint>) {
                 && candidate.location == point.location
                 && candidate.pressure == point.pressure
         }) {
+            // Swift appendActivePoint: a point at the previous location is not a new point
+            // (keeps the pen-up at a resting position from discarding the recognition candidate).
+            if deduplicated.len() >= 2
+                && deduplicated
+                    .last()
+                    .is_some_and(|last: &InkPoint| last.location == point.location)
+            {
+                continue;
+            }
             deduplicated.push(point);
         }
     }
     *existing = deduplicated;
+    existing.len() > before
+}
+
+fn set_stroke_endpoint(stroke: &mut InkStroke, point: InkPoint) -> bool {
+    let Some(endpoint) = stroke.points.last_mut() else {
+        stroke.points.push(point);
+        return true;
+    };
+    if *endpoint == point {
+        return false;
+    }
+    *endpoint = point;
+    true
 }
 
 fn append_unique_points(existing: &mut Vec<Point>, incoming: Vec<Point>) {
@@ -1348,11 +1686,11 @@ pub fn pointer_id_from_wparam(wparam: usize) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        history_order, laser_action, normalized_monitor_point, normalized_pressure,
-        ownership_on_down, uses_eraser, HistorySample, LaserAction, MonitorRect,
-        OwnershipTransition, PointerDevice, PointerPhase,
+        cover_meets_minimum_size, history_order, laser_action, normalized_monitor_point,
+        normalized_pressure, ownership_on_down, shape_endpoint, uses_eraser, HistorySample,
+        LaserAction, MonitorRect, OwnershipTransition, PointerDevice, PointerPhase,
     };
-    use edutools_core::ink::{InkGeometry, InkTool, Size};
+    use edutools_core::ink::{ArrowStyle, InkGeometry, InkShapeKind, InkTool, Point, Size};
     use windows::Win32::Foundation::POINT;
 
     #[test]
@@ -1605,6 +1943,69 @@ mod tests {
             history.map(|sample| (sample.timestamp_ms, sample.performance_count)),
             [(10, 100), (10, 200), (20, 400), (30, 300)]
         );
+    }
+
+    #[test]
+    fn shape_constraint_and_cover_minimum_table() {
+        let start = Point { x: 10.0, y: 20.0 };
+        let proposed = Point { x: 42.0, y: 35.0 };
+        for (name, kind, constrained, expected) in [
+            (
+                "arrow-constrained-like-pen",
+                InkShapeKind::Arrow(ArrowStyle::Single),
+                true,
+                InkGeometry::snapped_pen_endpoint(start, proposed),
+            ),
+            (
+                "rectangle-constrained-square",
+                InkShapeKind::Rectangle,
+                true,
+                InkGeometry::snapped_square_endpoint(start, proposed),
+            ),
+            (
+                "ellipse-unconstrained",
+                InkShapeKind::Ellipse,
+                false,
+                proposed,
+            ),
+        ] {
+            assert_eq!(
+                shape_endpoint(kind, constrained, start, proposed),
+                expected,
+                "{name}"
+            );
+        }
+
+        let canvas = Size {
+            width: 1_000.0,
+            height: 800.0,
+        };
+        for (name, start, end, expected) in [
+            (
+                "both-at-minimum",
+                Point { x: 0.0, y: 0.0 },
+                Point { x: 0.004, y: 0.005 },
+                true,
+            ),
+            (
+                "width-under-minimum",
+                Point { x: 0.0, y: 0.0 },
+                Point { x: 0.003, y: 0.005 },
+                false,
+            ),
+            (
+                "height-under-minimum",
+                Point { x: 0.0, y: 0.0 },
+                Point { x: 0.004, y: 0.004 },
+                false,
+            ),
+        ] {
+            assert_eq!(
+                cover_meets_minimum_size(start, end, canvas),
+                expected,
+                "{name}"
+            );
+        }
     }
 
     fn sample(timestamp_ms: u32, performance_count: u64) -> HistorySample {

@@ -1,5 +1,10 @@
 //! Shape recognition, lasso selection, selection transforms, and screen covers.
 
+use crate::ink::{
+    InkGeometry, InkPoint, InkShapeKind, InkStroke, InkStrokeContent, InkStrokeTool,
+    Point as InkLocation, Size,
+};
+
 // Swift: CGPoint
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Point {
@@ -147,6 +152,71 @@ impl ShapeRecognizer {
             return Some(ShapeKind::Ellipse);
         }
         None
+    }
+
+    // Swift: ShapeRecognizer.correctedStroke(from:canvasSize:)
+    pub fn corrected_stroke(stroke: &InkStroke, canvas_size: Size) -> Option<InkStroke> {
+        if !matches!(&stroke.content, InkStrokeContent::Freehand)
+            || canvas_size.width <= 0.0
+            || canvas_size.height <= 0.0
+        {
+            return None;
+        }
+        let screen_points = stroke
+            .points
+            .iter()
+            .map(|point| {
+                let location = InkGeometry::screen_point(point.location, canvas_size);
+                Point::new(location.x, location.y)
+            })
+            .collect::<Vec<_>>();
+        let shape = Self::recognize(&screen_points)?;
+        let first = stroke.points.first()?.clone();
+        let last = stroke.points.last()?.clone();
+        let kind = match shape {
+            ShapeKind::Line => InkShapeKind::Line,
+            ShapeKind::Rectangle => InkShapeKind::Rectangle,
+            ShapeKind::Ellipse => InkShapeKind::Ellipse,
+        };
+        let points = match shape {
+            ShapeKind::Line => vec![first, last],
+            ShapeKind::Rectangle | ShapeKind::Ellipse => {
+                let bounds = Rect::from_points(&screen_points)?;
+                vec![
+                    InkPoint::new(
+                        InkGeometry::normalized_point(
+                            InkLocation {
+                                x: bounds.x,
+                                y: bounds.y,
+                            },
+                            canvas_size,
+                        ),
+                        1.0,
+                        first.timestamp,
+                    ),
+                    InkPoint::new(
+                        InkGeometry::normalized_point(
+                            InkLocation {
+                                x: bounds.x + bounds.width,
+                                y: bounds.y + bounds.height,
+                            },
+                            canvas_size,
+                        ),
+                        1.0,
+                        last.timestamp,
+                    ),
+                ]
+            }
+        };
+        Some(InkStroke::new(
+            stroke.identifier.clone(),
+            InkStrokeTool::Shape,
+            stroke.color,
+            stroke.width,
+            false,
+            points,
+            InkStrokeContent::Shape(kind),
+        ))
     }
 }
 
@@ -472,5 +542,107 @@ impl SelectionEngine {
             .filter(|item| LassoGeometry::selects(&item.points, polygon, hit_rule))
             .map(|item| item.id)
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ShapeRecognizer;
+    use crate::ink::{
+        ArrowStyle, InkPoint, InkShapeKind, InkStroke, InkStrokeContent, InkStrokeTool, Point, Size,
+    };
+
+    #[derive(Clone, Copy)]
+    enum Expected {
+        Shape(InkShapeKind, [Point; 2]),
+        None,
+    }
+
+    #[test]
+    fn corrected_stroke_table() {
+        let cases = [
+            (
+                "closed-rectangle",
+                freehand(
+                    "rectangle-id",
+                    &[(0.2, 0.3), (0.8, 0.3), (0.8, 0.7), (0.2, 0.7), (0.2, 0.3)],
+                ),
+                Expected::Shape(
+                    InkShapeKind::Rectangle,
+                    [Point { x: 0.2, y: 0.3 }, Point { x: 0.8, y: 0.7 }],
+                ),
+            ),
+            (
+                "straight-line",
+                freehand("line-id", &[(0.1, 0.2), (0.5, 0.5), (0.9, 0.8)]),
+                Expected::Shape(
+                    InkShapeKind::Line,
+                    [Point { x: 0.1, y: 0.2 }, Point { x: 0.9, y: 0.8 }],
+                ),
+            ),
+            (
+                "arrow-path-is-not-corrected",
+                freehand(
+                    "arrow-id",
+                    &[(0.1, 0.5), (0.8, 0.5), (0.65, 0.4), (0.8, 0.5), (0.65, 0.6)],
+                ),
+                Expected::None,
+            ),
+            (
+                "non-freehand",
+                InkStroke::new(
+                    "shape-id",
+                    InkStrokeTool::Shape,
+                    [0.1, 0.2, 0.3, 1.0],
+                    6.0,
+                    false,
+                    vec![
+                        InkPoint::new(Point { x: 0.1, y: 0.1 }, 1.0, 10.0),
+                        InkPoint::new(Point { x: 0.9, y: 0.9 }, 1.0, 20.0),
+                    ],
+                    InkStrokeContent::Shape(InkShapeKind::Arrow(ArrowStyle::Single)),
+                ),
+                Expected::None,
+            ),
+        ];
+
+        for (name, stroke, expected) in cases {
+            let corrected = ShapeRecognizer::corrected_stroke(
+                &stroke,
+                Size {
+                    width: 1_000.0,
+                    height: 800.0,
+                },
+            );
+            match expected {
+                Expected::None => assert!(corrected.is_none(), "{name}"),
+                Expected::Shape(kind, points) => {
+                    let corrected = corrected.unwrap_or_else(|| panic!("{name}"));
+                    assert_eq!(corrected.identifier, stroke.identifier, "{name}");
+                    assert_eq!(corrected.tool, InkStrokeTool::Shape, "{name}");
+                    assert_eq!(corrected.content, InkStrokeContent::Shape(kind), "{name}");
+                    assert!(!corrected.uses_pressure, "{name}");
+                    assert_eq!(corrected.points.len(), 2, "{name}");
+                    assert_eq!(corrected.points[0].location, points[0], "{name}");
+                    assert_eq!(corrected.points[1].location, points[1], "{name}");
+                }
+            }
+        }
+    }
+
+    fn freehand(identifier: &str, points: &[(f64, f64)]) -> InkStroke {
+        InkStroke::new(
+            identifier,
+            InkStrokeTool::Pen,
+            [0.1, 0.2, 0.3, 1.0],
+            6.0,
+            true,
+            points
+                .iter()
+                .enumerate()
+                .map(|(index, &(x, y))| InkPoint::new(Point { x, y }, 0.5, 10.0 + index as f64))
+                .collect(),
+            InkStrokeContent::Freehand,
+        )
     }
 }

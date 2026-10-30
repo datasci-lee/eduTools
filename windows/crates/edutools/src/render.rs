@@ -6,7 +6,8 @@ use edutools_core::eraser::{
     EraserTargetFilter,
 };
 use edutools_core::ink::{
-    InkGeometry, InkPoint, InkStroke, InkStrokeContent, InkStrokeTool, PathCommand, Point, Size,
+    ArrowStyle, InkGeometry, InkPoint, InkShapeKind, InkStroke, InkStrokeContent, InkStrokeTool,
+    PathCommand, Point, Size,
 };
 use windows::core::{Error, Interface, Result};
 use windows::Win32::Foundation::{E_FAIL, E_INVALIDARG, HMODULE, HWND, RECT};
@@ -17,7 +18,7 @@ use windows::Win32::Graphics::Direct2D::Common::{
 };
 use windows::Win32::Graphics::Direct2D::{
     CLSID_D2D1Shadow, D2D1CreateDevice, ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext, ID2D1Effect,
-    ID2D1Factory, ID2D1Image, ID2D1Layer, ID2D1PathGeometry, ID2D1StrokeStyle,
+    ID2D1Factory, ID2D1GeometrySink, ID2D1Image, ID2D1Layer, ID2D1PathGeometry, ID2D1StrokeStyle,
     D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
     D2D1_BITMAP_OPTIONS_CPU_READ, D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
     D2D1_CAP_STYLE_FLAT, D2D1_CAP_STYLE_ROUND, D2D1_DASH_STYLE_CUSTOM, D2D1_DASH_STYLE_SOLID,
@@ -45,6 +46,11 @@ use windows::Win32::Graphics::Dxgi::{
 use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
 
 const TARGET_DPI: f32 = 96.0;
+// macOS systemGray/separator 근사.
+pub const COVER_STROKE_COLOR: [f64; 4] = [142.0 / 255.0, 142.0 / 255.0, 147.0 / 255.0, 1.0];
+const COVER_FILL_ALPHA: f32 = 0.96;
+const COVER_BORDER_ALPHA: f32 = 0.1;
+const COVER_BORDER_WIDTH_DIP: f64 = 1.0;
 
 #[derive(Clone, Copy, Debug)]
 struct PixelSample {
@@ -360,6 +366,137 @@ impl OverlayRenderer {
                     sample.x, sample.y, sample.bgra
                 ));
             }
+        }
+
+        let rectangle = selftest_vector_stroke(
+            "rectangle",
+            InkStrokeContent::Shape(InkShapeKind::Rectangle),
+            Point { x: 0.25, y: 0.25 },
+            Point { x: 0.75, y: 0.75 },
+            8.0,
+        );
+        self.draw_strokes_to_bitmap(
+            &frame,
+            std::slice::from_ref(&rectangle),
+            minimum_ratio,
+            highlighter_opacity,
+            true,
+        )?;
+        self.restore_swap_target()?;
+        let rectangle_samples = read_pixel_samples(
+            &self.context,
+            &frame,
+            &[
+                (self.width / 4, self.height / 2),
+                (self.width / 2, self.height / 2),
+            ],
+        )?;
+        if rectangle_samples[0].bgra[3] == 0 {
+            failures.push(format!(
+                "사각형: 테두리 BGRA={:?}, alpha가 0임",
+                rectangle_samples[0].bgra
+            ));
+        }
+        if rectangle_samples[1].bgra[3] != 0 {
+            failures.push(format!(
+                "사각형: 내부 BGRA={:?}, alpha가 0이 아님",
+                rectangle_samples[1].bgra
+            ));
+        }
+
+        let ellipse = selftest_vector_stroke(
+            "ellipse",
+            InkStrokeContent::Shape(InkShapeKind::Ellipse),
+            Point { x: 0.25, y: 0.25 },
+            Point { x: 0.75, y: 0.75 },
+            8.0,
+        );
+        self.draw_strokes_to_bitmap(
+            &frame,
+            std::slice::from_ref(&ellipse),
+            minimum_ratio,
+            highlighter_opacity,
+            true,
+        )?;
+        self.restore_swap_target()?;
+        let ellipse_samples = read_pixel_samples(
+            &self.context,
+            &frame,
+            &[
+                (self.width / 2, self.height / 2),
+                (self.width / 2, self.height / 4),
+            ],
+        )?;
+        if ellipse_samples[0].bgra[3] != 0 {
+            failures.push(format!(
+                "원: 중심 BGRA={:?}, alpha가 0이 아님",
+                ellipse_samples[0].bgra
+            ));
+        }
+        if ellipse_samples[1].bgra[3] == 0 {
+            failures.push(format!(
+                "원: 테두리 BGRA={:?}, alpha가 0임",
+                ellipse_samples[1].bgra
+            ));
+        }
+
+        let arrow_width = 8.0;
+        let arrow = selftest_vector_stroke(
+            "arrow",
+            InkStrokeContent::Shape(InkShapeKind::Arrow(ArrowStyle::Single)),
+            Point { x: 0.25, y: 0.5 },
+            Point { x: 0.75, y: 0.5 },
+            arrow_width,
+        );
+        self.draw_strokes_to_bitmap(
+            &frame,
+            std::slice::from_ref(&arrow),
+            minimum_ratio,
+            highlighter_opacity,
+            true,
+        )?;
+        self.restore_swap_target()?;
+        let arrow_head_length = 10.0_f64.max(arrow_width * 4.0) * px_per_dip(self.dpi);
+        let arrow_tip = Point {
+            x: f64::from(self.width) * 0.75,
+            y: f64::from(self.height) * 0.5,
+        };
+        let arrow_head_sample = [(
+            (arrow_tip.x - (std::f64::consts::PI / 7.0).cos() * arrow_head_length * 0.5).round()
+                as u32,
+            (arrow_tip.y + (std::f64::consts::PI / 7.0).sin() * arrow_head_length * 0.5).round()
+                as u32,
+        )];
+        let arrow_sample = read_pixel_samples(&self.context, &frame, &arrow_head_sample)?[0];
+        if arrow_sample.bgra[3] == 0 {
+            failures.push(format!(
+                "화살표: 머리 BGRA={:?}, alpha가 0임",
+                arrow_sample.bgra
+            ));
+        }
+
+        let cover = selftest_vector_stroke(
+            "cover",
+            InkStrokeContent::Cover,
+            Point { x: 0.25, y: 0.25 },
+            Point { x: 0.75, y: 0.75 },
+            COVER_BORDER_WIDTH_DIP,
+        );
+        self.draw_strokes_to_bitmap(
+            &frame,
+            std::slice::from_ref(&cover),
+            minimum_ratio,
+            highlighter_opacity,
+            true,
+        )?;
+        self.restore_swap_target()?;
+        let cover_sample =
+            read_pixel_samples(&self.context, &frame, &[(self.width / 2, self.height / 2)])?[0];
+        if cover_sample.bgra[3] <= 229 {
+            failures.push(format!(
+                "가리개: 중심 BGRA={:?}, alpha가 0.9 이하임",
+                cover_sample.bgra
+            ));
         }
 
         let eraser_stroke = InkStroke::new(
@@ -918,6 +1055,11 @@ impl OverlayRenderer {
         minimum_ratio: f64,
         highlighter_opacity: f64,
     ) -> Result<()> {
+        match &stroke.content {
+            InkStrokeContent::Shape(kind) => return self.draw_shape(stroke, *kind),
+            InkStrokeContent::Cover => return self.draw_cover(stroke),
+            InkStrokeContent::Freehand | InkStrokeContent::Text(_) => {}
+        }
         if stroke.tool != InkStrokeTool::Highlighter {
             return self.draw_opaque_stroke(stroke, minimum_ratio);
         }
@@ -939,6 +1081,129 @@ impl OverlayRenderer {
         let result = self.draw_opaque_stroke(stroke, minimum_ratio);
         unsafe { self.context.PopLayer() };
         result
+    }
+
+    fn draw_shape(&self, stroke: &InkStroke, kind: InkShapeKind) -> Result<()> {
+        let Some(first) = stroke.points.first() else {
+            return Ok(());
+        };
+        let Some(last) = stroke.points.last() else {
+            return Ok(());
+        };
+        let size = Size {
+            width: f64::from(self.width),
+            height: f64::from(self.height),
+        };
+        let start = InkGeometry::screen_point(first.location, size);
+        let end = InkGeometry::screen_point(last.location, size);
+        let color = D2D1_COLOR_F {
+            r: stroke.color[0] as f32,
+            g: stroke.color[1] as f32,
+            b: stroke.color[2] as f32,
+            a: stroke.color[3] as f32,
+        };
+        let brush = unsafe { self.context.CreateSolidColorBrush(&color, None) }?;
+        let width_scale = px_per_dip(self.dpi);
+        let stroke_width = (stroke.width * width_scale) as f32;
+        match kind {
+            InkShapeKind::Line => unsafe {
+                self.context.DrawLine(
+                    d2d_point!(start),
+                    d2d_point!(end),
+                    &brush,
+                    stroke_width,
+                    &self.round_stroke,
+                )
+            },
+            InkShapeKind::Arrow(style) => {
+                let geometry = unsafe { self.factory.CreatePathGeometry() }?;
+                let sink = unsafe { geometry.Open() }?;
+                unsafe {
+                    sink.BeginFigure(d2d_point!(start), D2D1_FIGURE_BEGIN_HOLLOW);
+                    sink.AddLine(d2d_point!(end));
+                    sink.EndFigure(D2D1_FIGURE_END_OPEN);
+                    add_arrow_head(
+                        &sink,
+                        end,
+                        start,
+                        (10.0_f64.max(stroke.width * 4.0)) * width_scale,
+                    );
+                    if style == ArrowStyle::Double {
+                        add_arrow_head(
+                            &sink,
+                            start,
+                            end,
+                            (10.0_f64.max(stroke.width * 4.0)) * width_scale,
+                        );
+                    }
+                    sink.Close()?;
+                    self.context
+                        .DrawGeometry(&geometry, &brush, stroke_width, &self.round_stroke);
+                }
+            }
+            InkShapeKind::Rectangle => {
+                let rect = standardized_rect(start, end);
+                unsafe {
+                    self.context
+                        .DrawRectangle(&rect, &brush, stroke_width, &self.round_stroke)
+                }
+            }
+            InkShapeKind::Ellipse => {
+                let rect = standardized_rect(start, end);
+                let ellipse = D2D1_ELLIPSE {
+                    point: d2d_point!(Point {
+                        x: f64::from(rect.left + rect.right) / 2.0,
+                        y: f64::from(rect.top + rect.bottom) / 2.0,
+                    }),
+                    radiusX: (rect.right - rect.left) / 2.0,
+                    radiusY: (rect.bottom - rect.top) / 2.0,
+                };
+                unsafe {
+                    self.context
+                        .DrawEllipse(&ellipse, &brush, stroke_width, &self.round_stroke)
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn draw_cover(&self, stroke: &InkStroke) -> Result<()> {
+        let Some(first) = stroke.points.first() else {
+            return Ok(());
+        };
+        let Some(last) = stroke.points.last() else {
+            return Ok(());
+        };
+        let size = Size {
+            width: f64::from(self.width),
+            height: f64::from(self.height),
+        };
+        let rect = standardized_rect(
+            InkGeometry::screen_point(first.location, size),
+            InkGeometry::screen_point(last.location, size),
+        );
+        let fill = D2D1_COLOR_F {
+            r: COVER_STROKE_COLOR[0] as f32,
+            g: COVER_STROKE_COLOR[1] as f32,
+            b: COVER_STROKE_COLOR[2] as f32,
+            a: COVER_FILL_ALPHA,
+        };
+        let border = D2D1_COLOR_F {
+            a: COVER_BORDER_ALPHA,
+            ..Default::default()
+        };
+        let fill_brush = unsafe { self.context.CreateSolidColorBrush(&fill, None) }?;
+        let border_brush = unsafe { self.context.CreateSolidColorBrush(&border, None) }?;
+        unsafe {
+            self.context.FillRectangle(&rect, &fill_brush);
+            self.context.DrawRectangle(
+                &rect,
+                &border_brush,
+                (COVER_BORDER_WIDTH_DIP * px_per_dip(self.dpi)) as f32,
+                &self.round_stroke,
+            );
+        }
+        Ok(())
     }
 
     fn draw_opaque_stroke(&self, stroke: &InkStroke, minimum_ratio: f64) -> Result<()> {
@@ -1177,6 +1442,31 @@ fn bytes_of<T>(value: &T) -> &[u8] {
     }
 }
 
+fn standardized_rect(first: Point, second: Point) -> D2D_RECT_F {
+    D2D_RECT_F {
+        left: first.x.min(second.x) as f32,
+        top: first.y.min(second.y) as f32,
+        right: first.x.max(second.x) as f32,
+        bottom: first.y.max(second.y) as f32,
+    }
+}
+
+fn add_arrow_head(sink: &ID2D1GeometrySink, tip: Point, tail: Point, length: f64) {
+    let angle = (tip.y - tail.y).atan2(tip.x - tail.x);
+    let spread = std::f64::consts::PI / 7.0;
+    for head_angle in [angle - spread, angle + spread] {
+        let endpoint = Point {
+            x: tip.x - head_angle.cos() * length,
+            y: tip.y - head_angle.sin() * length,
+        };
+        unsafe {
+            sink.BeginFigure(d2d_point!(tip), D2D1_FIGURE_BEGIN_HOLLOW);
+            sink.AddLine(d2d_point!(endpoint));
+            sink.EndFigure(D2D1_FIGURE_END_OPEN);
+        }
+    }
+}
+
 fn transparency_probe_points(width: u32, height: u32) -> [(u32, u32); 6] {
     [
         (0, 0),
@@ -1200,6 +1490,29 @@ fn selftest_stroke(name: &str, tool: InkStrokeTool, width: f64) -> InkStroke {
             InkPoint::new(Point { x: 0.75, y: 0.25 }, 1.0, 1.0),
         ],
         InkStrokeContent::Freehand,
+    )
+}
+
+fn selftest_vector_stroke(
+    name: &str,
+    content: InkStrokeContent,
+    start: Point,
+    end: Point,
+    width: f64,
+) -> InkStroke {
+    let tool = if matches!(&content, InkStrokeContent::Cover) {
+        InkStrokeTool::Cover
+    } else {
+        InkStrokeTool::Shape
+    };
+    InkStroke::new(
+        format!("selftest-{name}"),
+        tool,
+        [1.0, 0.8, 0.1, 1.0],
+        width,
+        false,
+        vec![InkPoint::new(start, 1.0, 0.0), InkPoint::new(end, 1.0, 1.0)],
+        content,
     )
 }
 
