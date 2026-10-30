@@ -21,6 +21,7 @@ use crate::radial_palette::{
     RadialPaletteManager, WM_APP_RADIAL_ACTION, WM_APP_RADIAL_COLLAPSE, WM_APP_RADIAL_REDRAW,
     WM_APP_RADIAL_SAVE_POSITION,
 };
+use crate::settings_file::FileSettingsStorage;
 use crate::text_entry::{
     cancel_reason, TextEntryRequest, TextEntryWindow, WM_APP_TEXT_ENTRY_CANCEL,
     WM_APP_TEXT_ENTRY_COMMIT, WM_APP_TEXT_ENTRY_OPEN,
@@ -34,19 +35,22 @@ use edutools_core::ink::{
     Size,
 };
 use edutools_core::radial::RadialPaletteIntent;
-use edutools_core::settings::AppSettings;
+use edutools_core::settings::{changed_settings_groups, AppSettings, SettingsGroup};
+use edutools_core::settings_store::{
+    SettingsBackupStore, SettingsStore, SettingsStoreIssue, SettingsStoreIssueKind,
+};
 use edutools_core::shortcut::{
     ShortcutCatalog, ShortcutCommand, ShortcutDefinition, ShortcutScope,
 };
-use edutools_core::state::{AppState, SettingsMutation};
+use edutools_core::state::{AppState, FavoriteSaveResult, SettingsMutation};
 use std::cell::RefCell;
 use std::mem::size_of;
 use std::path::PathBuf;
 use std::rc::Rc;
 use windows::core::{w, Error, Result, PCWSTR};
 use windows::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT,
-    WPARAM,
+    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, E_FAIL, HANDLE, HINSTANCE, HWND, LPARAM,
+    LRESULT, WPARAM,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::CreateMutexW;
@@ -163,6 +167,11 @@ struct App {
     taskbar_created: u32,
     state: Rc<RefCell<AppState>>,
     settings: AppSettings,
+    settings_store: SettingsStore<FileSettingsStorage>,
+    settings_backups: Option<SettingsBackupStore<FileSettingsStorage>>,
+    startup_settings_issue: Option<SettingsStoreIssue>,
+    startup_backup_issue: Option<String>,
+    settings_file_existed_at_launch: bool,
     tray: Option<Tray>,
     hotkeys: Option<HotkeyCenter>,
     keyboard_hook: Option<KeyboardHook>,
@@ -184,10 +193,12 @@ impl App {
     fn initialize(&mut self) -> Result<()> {
         self.music = Some(BreakMusicManager::new(self.hwnd, self.logger.clone())?);
         self.tray = Some(Tray::add(self.hwnd, self.hinstance, self.logger.clone())?);
-        let hotkeys = HotkeyCenter::register_defaults(
+        self.report_startup_settings_state();
+        let hotkeys = HotkeyCenter::register(
             self.hwnd,
             self.tray.as_mut().expect("tray was just initialized"),
             self.logger.clone(),
+            &self.settings,
         );
         self.hotkeys = Some(hotkeys);
         let input_config = InkInputConfig::from_core(&self.state.borrow(), &self.settings);
@@ -226,6 +237,280 @@ impl App {
             self.logger.clone(),
         )?);
         Ok(())
+    }
+
+    fn report_startup_settings_state(&mut self) {
+        if let Some(issue) = self.startup_settings_issue.take() {
+            let preserved = issue
+                .detail
+                .contains("원본은 별도 손상 설정 위치에 보존했습니다")
+                && self.settings_store.storage().corrupt_path().exists();
+            self.logger.event(&format!(
+                "설정 로드: 출처={} detail={}",
+                if preserved {
+                    "손상 원본 보존"
+                } else {
+                    "읽기 실패 후 기본값"
+                },
+                issue.detail
+            ));
+            let preservation = if preserved {
+                format!(
+                    "손상 원본은 {}에 보존했습니다. ",
+                    self.settings_store.storage().corrupt_path().display()
+                )
+            } else {
+                String::new()
+            };
+            if let Some(tray) = self.tray.as_ref() {
+                tray.show_warning("설정 로드 경고", &format!("{preservation}{}", issue.detail));
+            }
+        } else {
+            self.logger.event(if self.settings_file_existed_at_launch {
+                "설정 로드: 출처=파일"
+            } else {
+                "설정 로드: 출처=기본값 (settings.json 없음)"
+            });
+        }
+
+        if let Some(detail) = self.startup_backup_issue.take() {
+            self.logger
+                .event(&format!("설정 백업 저장소 로드 실패: {detail}"));
+            if let Some(tray) = self.tray.as_ref() {
+                tray.show_warning("설정 백업 경고", &detail);
+            }
+        }
+    }
+
+    fn update_settings<F>(&mut self, source: &str, change: F) -> bool
+    where
+        F: FnOnce(&mut AppSettings),
+    {
+        let previous = self.settings.clone();
+        match self.settings_store.update(change) {
+            Ok(()) => {
+                let current = self.settings_store.settings().clone();
+                self.settings = current.clone();
+                self.report_settings_store_issue();
+                let changed = changed_settings_groups(&previous, &current);
+                if changed.is_empty() {
+                    self.logger
+                        .event(&format!("설정 갱신: source={source} changed=없음"));
+                    return false;
+                }
+                let names = changed
+                    .iter()
+                    .map(|group| group.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                self.logger
+                    .event(&format!("설정 갱신: source={source} changed={names}"));
+                self.settings_changed(&previous, &current, &changed);
+                true
+            }
+            Err(error) => {
+                let message = format!("설정 갱신 검증 거부: source={source} error={error}");
+                self.logger.event(&message);
+                if let Some(tray) = self.tray.as_ref() {
+                    tray.show_warning("설정 변경 거부", &message);
+                }
+                false
+            }
+        }
+    }
+
+    fn settings_changed(
+        &mut self,
+        previous: &AppSettings,
+        current: &AppSettings,
+        changed: &[SettingsGroup],
+    ) {
+        let mut targets = Vec::new();
+
+        if previous.shortcuts != current.shortcuts {
+            if let Some(hotkeys) = self.hotkeys.as_mut() {
+                hotkeys.shutdown();
+            }
+            if let Some(tray) = self.tray.as_mut() {
+                self.hotkeys = Some(HotkeyCenter::register(
+                    self.hwnd,
+                    tray,
+                    self.logger.clone(),
+                    current,
+                ));
+            }
+            let hook_was_enabled = self.keyboard_hook.is_some();
+            if hook_was_enabled {
+                self.set_keyboard_hook(false);
+                self.set_keyboard_hook(true);
+            }
+            targets.push("global-hotkeys+keyboard-hook");
+        }
+
+        let ink_input_changed =
+            previous.tools != current.tools || previous.eraser != current.eraser;
+        if ink_input_changed {
+            let input_config = InkInputConfig::from_core(&self.state.borrow(), current);
+            let error = self
+                .overlays
+                .as_mut()
+                .and_then(|overlays| overlays.update_input_context(input_config).err());
+            if let Some(error) = error {
+                self.report_overlay_error("설정 변경 입력 구성", &error);
+            }
+            targets.push("ink-input+eraser+laser-defaults");
+        }
+
+        let palette_changed = previous.tools != current.tools || previous.eraser != current.eraser;
+        if palette_changed {
+            self.refresh_palette("설정 변경");
+            self.refresh_radial_palette("설정 변경");
+            targets.push("linear+radial-palette");
+        }
+
+        let lesson_badge_changed = previous.timer.lesson_presets != current.timer.lesson_presets
+            || previous.timer.lesson_default_minutes != current.timer.lesson_default_minutes
+            || previous.timer.break_default_minutes != current.timer.break_default_minutes
+            || previous.timer.notification_sound != current.timer.notification_sound
+            || previous.timer.auto_start_break != current.timer.auto_start_break
+            || previous.timer.lesson_badge_size != current.timer.lesson_badge_size
+            || previous.timer.lesson_badge_opacity != current.timer.lesson_badge_opacity
+            || previous.timer.lesson_display_mode != current.timer.lesson_display_mode;
+        if lesson_badge_changed {
+            let error = self
+                .lesson_badge
+                .as_mut()
+                .and_then(|badge| badge.apply_settings(current).err());
+            if let Some(error) = error {
+                self.report_lesson_badge_error("설정 변경", &error);
+            }
+            targets.push("lesson-badge");
+        }
+
+        let break_music_changed = previous.timer.playlist_urls != current.timer.playlist_urls
+            || previous.timer.default_playlist_index != current.timer.default_playlist_index
+            || previous.timer.music_enabled != current.timer.music_enabled
+            || previous.timer.music_browser != current.timer.music_browser
+            || previous.timer.fade_enabled != current.timer.fade_enabled
+            || previous.timer.fade_duration != current.timer.fade_duration;
+        if break_music_changed {
+            if let Some(music) = self.music.as_mut() {
+                music.settings_changed(previous, current);
+            }
+            targets.push("break-music");
+        }
+
+        if previous.board != current.board {
+            let error = self
+                .overlays
+                .as_mut()
+                .and_then(|overlays| overlays.refresh_board(current).err());
+            if let Some(error) = error {
+                self.report_overlay_error("설정 변경 보드", &error);
+            }
+            targets.push("board");
+        }
+
+        if previous.zoom != current.zoom {
+            // 활성 줌 컨트롤러는 아직 앱 크레이트에 없다. 다음 줌 시작은 소유자 사본의 새
+            // 기본값을 읽으며, W7 컨트롤러가 연결되면 이 분기에 런타임 재구성을 추가한다.
+            targets.push("zoom-defaults");
+        }
+
+        if !changed.is_empty() && self.help.as_ref().is_some_and(HelpManager::is_visible) {
+            self.refresh_help("설정 변경");
+            targets.push("visible-help");
+        }
+
+        self.logger.event(&format!(
+            "설정 변경 통지: targets={}",
+            if targets.is_empty() {
+                "owner-copy-only".to_owned()
+            } else {
+                targets.join(",")
+            }
+        ));
+    }
+
+    fn report_settings_store_issue(&mut self) {
+        let Some(issue) = self.settings_store.take_issue() else {
+            return;
+        };
+        let title = match issue.kind {
+            SettingsStoreIssueKind::Load => "설정 로드 경고",
+            SettingsStoreIssueKind::Save => "설정 저장 경고",
+        };
+        self.logger.event(&format!("{title}: {}", issue.detail));
+        if let Some(tray) = self.tray.as_ref() {
+            tray.show_warning(title, &issue.detail);
+        }
+    }
+
+    fn refresh_runtime_state(&mut self, reason: &str) {
+        let input_config = InkInputConfig::from_core(&self.state.borrow(), &self.settings);
+        let error = self
+            .overlays
+            .as_mut()
+            .and_then(|overlays| overlays.update_input_context(input_config).err());
+        if let Some(error) = error {
+            self.report_overlay_error("상태 변경 입력 구성", &error);
+        }
+        self.refresh_palette(reason);
+        self.refresh_radial_palette(reason);
+        self.refresh_help(reason);
+    }
+
+    /// 120b의 가져오기/일괄 변경 직전에 호출하는 백업 API.
+    #[allow(dead_code)]
+    fn backup_current(&mut self) -> bool {
+        let result = self
+            .settings_backups
+            .as_mut()
+            .ok_or_else(|| "설정 백업 저장소를 사용할 수 없습니다".to_owned())
+            .and_then(|backups| {
+                backups
+                    .append(&self.settings)
+                    .map_err(|error| error.to_string())
+            });
+        match result {
+            Ok(()) => {
+                self.logger.event("설정 백업 생성 성공");
+                true
+            }
+            Err(error) => {
+                self.logger.event(&format!("설정 백업 생성 실패: {error}"));
+                if let Some(tray) = self.tray.as_ref() {
+                    tray.show_warning("설정 백업 실패", &error);
+                }
+                false
+            }
+        }
+    }
+
+    /// 120b UI가 연결할 최신 백업 복원 API.
+    #[allow(dead_code)]
+    fn restore_latest_backup(&mut self) -> bool {
+        let restored = self
+            .settings_backups
+            .as_mut()
+            .ok_or_else(|| "설정 백업 저장소를 사용할 수 없습니다".to_owned())
+            .and_then(|backups| backups.pop_latest().map_err(|error| error.to_string()));
+        match restored {
+            Ok(Some(settings)) => {
+                self.update_settings("latest-backup-restore", move |current| *current = settings)
+            }
+            Ok(None) => {
+                self.logger.event("설정 백업 복원 생략: 백업 없음");
+                false
+            }
+            Err(error) => {
+                self.logger.event(&format!("설정 백업 복원 실패: {error}"));
+                if let Some(tray) = self.tray.as_ref() {
+                    tray.show_warning("설정 백업 복원 실패", &error);
+                }
+                false
+            }
+        }
     }
 
     fn handle_hotkey(&mut self, id: i32) {
@@ -444,7 +729,9 @@ impl App {
     }
 
     fn apply_effects(&mut self, effects: Vec<Effect>, source: &str) {
+        let mut runtime_state_changed = false;
         for effect in effects {
+            runtime_state_changed |= !matches!(&effect, Effect::SettingsMutation(_));
             match effect {
                 Effect::FinishAllActiveInteractions => {
                     if let Some(overlays) = self.overlays.as_mut() {
@@ -580,10 +867,10 @@ impl App {
                     }
                 }
                 Effect::SettingsMutation(mutation) => {
-                    mutation.apply(&mut self.settings);
-                    self.logger
-                        .event(&format!("효과 ({source}): 설정 변경 {mutation:?}"));
-                    if self.state.borrow().current_tool() == InkTool::Eraser {
+                    let changed = self.update_settings(source, move |settings| {
+                        mutation.apply(settings);
+                    });
+                    if changed && self.state.borrow().current_tool() == InkTool::Eraser {
                         self.logger.event(&format!(
                             "지우개 모드 HUD 대체 로그: {}",
                             self.settings.eraser.mode
@@ -709,16 +996,9 @@ impl App {
                     .event(&format!("이번 라운드에서 UI 미구현 core effect: {other:?}")),
             }
         }
-        let input_config = InkInputConfig::from_core(&self.state.borrow(), &self.settings);
-        if let Some(overlays) = self.overlays.as_mut() {
-            if let Err(error) = overlays.update_input_context(input_config) {
-                self.logger
-                    .event(&format!("오버레이 입력 설정 반영 실패: {error}"));
-            }
+        if runtime_state_changed {
+            self.refresh_runtime_state("core effect");
         }
-        self.refresh_palette("core effect");
-        self.refresh_radial_palette("core effect");
-        self.refresh_help("core effect");
     }
 
     fn synchronize_overlays(&mut self, reason: &str) {
@@ -1024,15 +1304,66 @@ impl App {
                 self.logger
                     .event("원형 팔레트 미구현 intent: 설정 창 미구현");
             }
-            RadialPaletteIntent::SaveFavorite => self
-                .logger
-                .event("원형 팔레트 미구현 intent: SaveFavorite (116b)"),
-            RadialPaletteIntent::ApplyFavorite { index, .. } => self.logger.event(&format!(
-                "원형 팔레트 미구현 intent: ApplyFavorite index={index} (116b)"
-            )),
-            RadialPaletteIntent::RemoveFavorite { index, .. } => self.logger.event(&format!(
-                "원형 팔레트 미구현 intent: RemoveFavorite index={index} (116b)"
-            )),
+            RadialPaletteIntent::SaveFavorite => {
+                let result = self.state.borrow().save_current_favorite(&self.settings);
+                match result {
+                    Ok(FavoriteSaveResult::Saved(mutation)) => {
+                        self.update_settings("radial-favorite-save", move |settings| {
+                            mutation.apply(settings);
+                        });
+                    }
+                    Ok(FavoriteSaveResult::UnsupportedTool) => {
+                        self.logger.event("즐겨찾기 저장 거부: 지원하지 않는 도구");
+                    }
+                    Ok(FavoriteSaveResult::Duplicate) => {
+                        self.logger.event("즐겨찾기 저장 거부: 중복");
+                    }
+                    Ok(FavoriteSaveResult::Full) => {
+                        self.logger.event("즐겨찾기 저장 거부: 최대 개수 도달");
+                    }
+                    Err(error) => self
+                        .logger
+                        .event(&format!("즐겨찾기 저장 상태 판정 실패: {error}")),
+                }
+            }
+            RadialPaletteIntent::ApplyFavorite { favorite, .. } => {
+                let previous_state = self.state.borrow().clone();
+                let result = self
+                    .state
+                    .borrow_mut()
+                    .apply_favorite(&favorite, &self.settings);
+                match result {
+                    Ok(Some(mutations)) => {
+                        let settings_changed =
+                            self.update_settings("radial-favorite-apply", move |settings| {
+                                for mutation in mutations {
+                                    mutation.apply(settings);
+                                }
+                            });
+                        let state_changed = self.state.borrow().ne(&previous_state);
+                        if state_changed && !settings_changed {
+                            self.refresh_runtime_state("즐겨찾기 적용");
+                        }
+                    }
+                    Ok(None) => self.logger.event("즐겨찾기 적용 거부: 잘못된 항목"),
+                    Err(error) => self
+                        .logger
+                        .event(&format!("즐겨찾기 적용 상태 전이 실패: {error}")),
+                }
+            }
+            RadialPaletteIntent::RemoveFavorite { index, favorite } => {
+                let matches = self.settings.tools.favorites.get(index) == Some(&favorite);
+                if !matches {
+                    self.logger
+                        .event("즐겨찾기 삭제 거부: 현재 항목과 요청이 일치하지 않음");
+                    return;
+                }
+                let mut favorites = self.settings.tools.favorites.clone();
+                favorites.remove(index);
+                self.update_settings("radial-favorite-remove", move |settings| {
+                    SettingsMutation::SetFavorites(favorites).apply(settings);
+                });
+            }
         }
     }
 
@@ -1173,17 +1504,9 @@ impl App {
     }
 
     fn apply_lesson_settings_mutation(&mut self, mutation: LessonSettingsMutation) {
-        mutation.apply(&mut self.settings);
-        self.logger.event(&format!(
-            "수업 배지 SettingsMutation 메모리만: {mutation:?}"
-        ));
-        let result = self
-            .lesson_badge
-            .as_mut()
-            .map(|badge| badge.apply_settings(&self.settings));
-        if let Some(Err(error)) = result {
-            self.report_lesson_badge_error("메모리 설정 반영", &error);
-        }
+        self.update_settings("lesson-badge-menu", move |settings| {
+            mutation.apply(settings);
+        });
     }
 
     fn handle_lesson_completion(&mut self, minutes: i64) {
@@ -1377,12 +1700,31 @@ fn run_message_loop(logger: Logger) -> Result<i32> {
         logger.event("TaskbarCreated 메시지 등록 실패");
     }
 
+    let settings_storage = FileSettingsStorage::app_settings()
+        .map_err(|error| Error::new(E_FAIL, error.to_string()))?;
+    let settings_file_existed_at_launch = settings_storage.path().exists();
+    let mut settings_store = SettingsStore::load(settings_storage);
+    let settings = settings_store.settings().clone();
+    let startup_settings_issue = settings_store.take_issue();
+    let (settings_backups, startup_backup_issue) = match FileSettingsStorage::app_backups() {
+        Ok(storage) => match SettingsBackupStore::load(storage) {
+            Ok(backups) => (Some(backups), None),
+            Err(error) => (None, Some(error.to_string())),
+        },
+        Err(error) => (None, Some(error.to_string())),
+    };
+
     let mut app = Box::new(App {
         hwnd,
         hinstance,
         taskbar_created,
         state: Rc::new(RefCell::new(AppState::new())),
-        settings: AppSettings::default(),
+        settings,
+        settings_store,
+        settings_backups,
+        startup_settings_issue,
+        startup_backup_issue,
+        settings_file_existed_at_launch,
         tray: None,
         hotkeys: None,
         keyboard_hook: None,
@@ -1610,6 +1952,7 @@ unsafe extern "system" fn window_proc(
 fn run_selftest(logger: &Logger) -> bool {
     let mut failures = Vec::new();
     failures.extend(crate::music::selftest_failures());
+    failures.extend(crate::settings_file::selftest_failures());
     // SAFETY: None requests the current executable module handle.
     let hinstance = match unsafe { GetModuleHandleW(None) } {
         Ok(module) => HINSTANCE(module.0),

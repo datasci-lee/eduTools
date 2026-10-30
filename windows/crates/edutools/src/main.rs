@@ -35,6 +35,8 @@ mod render;
 #[cfg(windows)]
 mod selection;
 #[cfg(windows)]
+mod settings_file;
+#[cfg(windows)]
 mod text_entry;
 #[cfg(windows)]
 mod tray;

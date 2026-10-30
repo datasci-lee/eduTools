@@ -732,6 +732,72 @@ impl Default for AppSettings {
     }
 }
 
+/// 설정 관찰자가 전체 문서를 값별로 기록하지 않고 변경 묶음만 식별할 때 쓴다.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SettingsGroup {
+    General,
+    Tools,
+    Eraser,
+    Zoom,
+    Board,
+    Timer,
+    Display,
+    Shortcuts,
+    Help,
+}
+
+impl SettingsGroup {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::General => "general",
+            Self::Tools => "tools",
+            Self::Eraser => "eraser",
+            Self::Zoom => "zoom",
+            Self::Board => "board",
+            Self::Timer => "timer",
+            Self::Display => "display",
+            Self::Shortcuts => "shortcuts",
+            Self::Help => "help",
+        }
+    }
+}
+
+/// Swift `SettingsStore` 관찰자에 전달되는 이전/새 설정의 최상위 묶음 차이.
+pub fn changed_settings_groups(
+    previous: &AppSettings,
+    current: &AppSettings,
+) -> Vec<SettingsGroup> {
+    let mut changed = Vec::new();
+    if previous.general != current.general {
+        changed.push(SettingsGroup::General);
+    }
+    if previous.tools != current.tools {
+        changed.push(SettingsGroup::Tools);
+    }
+    if previous.eraser != current.eraser {
+        changed.push(SettingsGroup::Eraser);
+    }
+    if previous.zoom != current.zoom {
+        changed.push(SettingsGroup::Zoom);
+    }
+    if previous.board != current.board {
+        changed.push(SettingsGroup::Board);
+    }
+    if previous.timer != current.timer {
+        changed.push(SettingsGroup::Timer);
+    }
+    if previous.display != current.display {
+        changed.push(SettingsGroup::Display);
+    }
+    if previous.shortcuts != current.shortcuts {
+        changed.push(SettingsGroup::Shortcuts);
+    }
+    if previous.help != current.help {
+        changed.push(SettingsGroup::Help);
+    }
+    changed
+}
+
 // Swift: SettingsRanges
 pub struct SettingsRanges;
 
@@ -1001,4 +1067,77 @@ fn is_valid_music_url(value: &str) -> bool {
 // Swift: SettingsValidationError.invalidValue
 fn invalid<T>(detail: &str) -> Result<T, SettingsError> {
     Err(SettingsError::InvalidValue(detail.to_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{changed_settings_groups, AppSettings, SettingsGroup};
+
+    #[test]
+    fn changed_settings_groups_table() {
+        let cases: Vec<(&str, fn(&mut AppSettings), SettingsGroup)> = vec![
+            (
+                "general",
+                |value| value.general.launch_at_login = true,
+                SettingsGroup::General,
+            ),
+            (
+                "tools",
+                |value| value.tools.shape_recognition_enabled = false,
+                SettingsGroup::Tools,
+            ),
+            (
+                "eraser",
+                |value| value.eraser.diameter = 25.0,
+                SettingsGroup::Eraser,
+            ),
+            (
+                "zoom",
+                |value| value.zoom.preview_dimming = 0.5,
+                SettingsGroup::Zoom,
+            ),
+            (
+                "board",
+                |value| value.board.background_pattern = "grid".to_owned(),
+                SettingsGroup::Board,
+            ),
+            (
+                "timer",
+                |value| value.timer.lesson_default_minutes = 45,
+                SettingsGroup::Timer,
+            ),
+            (
+                "display",
+                |value| value.display.auto_switch_enabled = true,
+                SettingsGroup::Display,
+            ),
+            (
+                "shortcuts",
+                |value| {
+                    value
+                        .shortcuts
+                        .overrides
+                        .insert("test|global".to_owned(), "AppMod+P".to_owned());
+                },
+                SettingsGroup::Shortcuts,
+            ),
+            (
+                "help",
+                |value| value.help.shows_help_in_sharing = true,
+                SettingsGroup::Help,
+            ),
+        ];
+
+        let previous = AppSettings::default();
+        assert!(changed_settings_groups(&previous, &previous).is_empty());
+        for (label, mutate, expected) in cases {
+            let mut current = previous.clone();
+            mutate(&mut current);
+            assert_eq!(
+                changed_settings_groups(&previous, &current),
+                vec![expected],
+                "{label}"
+            );
+        }
+    }
 }
