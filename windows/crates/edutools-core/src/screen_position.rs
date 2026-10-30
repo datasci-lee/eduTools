@@ -56,6 +56,17 @@ impl ScreenPositionDocument {
         self.last_display_key = Some(display_key);
     }
 
+    /// 같은 문서 안에서 창 종류별 저장 키를 쓰되 마지막 실제 화면 키는 공유한다.
+    pub fn save_with_display_key(
+        &mut self,
+        ratio: PositionRatio,
+        storage_key: impl Into<String>,
+        display_key: impl Into<String>,
+    ) {
+        self.positions.insert(storage_key.into(), ratio);
+        self.last_display_key = Some(display_key.into());
+    }
+
     /// 손상된 개별 위치 항목은 Swift 저장소처럼 그 화면에서 값이 없는 것으로 취급한다.
     pub fn from_json(json: &str) -> Result<Self, ScreenPositionError> {
         let value: Value = serde_json::from_str(json)
@@ -263,6 +274,14 @@ mod tests {
         .expect("a broken entry does not reject the document");
         assert_eq!(damaged.ratio_for(Some("good")), Some(ratio(0.2, 0.4)));
         assert_eq!(damaged.ratio_for(Some("broken")), None);
+
+        let mut namespaced = ScreenPositionDocument::default();
+        namespaced.save_with_display_key(ratio(0.4, 0.6), "radial::display-a", "display-a");
+        assert_eq!(
+            namespaced.ratio_for(Some("radial::display-a")),
+            Some(ratio(0.4, 0.6))
+        );
+        assert_eq!(namespaced.last_display_key(), Some("display-a"));
     }
 
     fn ratio(x: f64, y: f64) -> PositionRatio {

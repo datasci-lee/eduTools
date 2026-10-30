@@ -3,8 +3,8 @@
 use crate::eraser::{EraserAreaShape, EraserMode};
 use crate::ink::{InkTool, Point, Rect};
 use crate::settings::{
-    AppSettings, FavoriteTool, FavoritesDefaults, PerToolMemorySettings, RadialPaletteGlassStyle,
-    SettingsColor,
+    AppSettings, FavoriteTool, FavoritesDefaults, PaletteStyle, PerToolMemorySettings,
+    RadialPaletteGlassStyle, SettingsColor,
 };
 use crate::shortcut::{
     ShortcutBoard, ShortcutCatalog, ShortcutCommand, ShortcutDefinition, ShortcutTool,
@@ -18,6 +18,7 @@ pub type RadialColor = [f64; 4];
 pub const COLLAPSED_DIAMETER: f64 = 44.0;
 pub const EXPANDED_DIAMETER: f64 = 302.0;
 pub const CENTER_RADIUS: f64 = COLLAPSED_DIAMETER / 2.0;
+pub const DRAG_THRESHOLD: f64 = 4.0;
 pub const GROUP_INNER_RADIUS: f64 = 28.0;
 pub const GROUP_OUTER_RADIUS: f64 = 58.0;
 pub const ENTRY_INNER_RADIUS: f64 = 64.0;
@@ -89,6 +90,61 @@ impl RadialPaletteSectorGeometry {
             end_angle: self.end_angle,
         }
     }
+}
+
+/// D2D 부채꼴 경로로 옮기기 전의 화면 좌표 핵심 수치.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RadialPaletteSectorPath {
+    pub inner_radius_px: f64,
+    pub outer_radius_px: f64,
+    pub start_angle: f64,
+    pub end_angle: f64,
+    pub outer_start: [f64; 2],
+    pub outer_end: [f64; 2],
+    pub inner_end: [f64; 2],
+    pub inner_start: [f64; 2],
+}
+
+impl RadialPaletteSectorPath {
+    /// 12시 기준 시계방향 각도를 y가 아래로 증가하는 픽셀 좌표로 바꾼다.
+    pub fn from_geometry(
+        geometry: RadialPaletteSectorGeometry,
+        pixels_per_dip: f64,
+        center: [f64; 2],
+    ) -> Self {
+        let point = |radius: f64, angle: f64| {
+            [
+                center[0] + angle.sin() * radius * pixels_per_dip,
+                center[1] - angle.cos() * radius * pixels_per_dip,
+            ]
+        };
+        Self {
+            inner_radius_px: geometry.inner_radius * pixels_per_dip,
+            outer_radius_px: geometry.outer_radius * pixels_per_dip,
+            start_angle: geometry.start_angle,
+            end_angle: geometry.end_angle,
+            outer_start: point(geometry.outer_radius, geometry.start_angle),
+            outer_end: point(geometry.outer_radius, geometry.end_angle),
+            inner_end: point(geometry.inner_radius, geometry.end_angle),
+            inner_start: point(geometry.inner_radius, geometry.start_angle),
+        }
+    }
+}
+
+pub fn radial_drag_threshold_reached(
+    delta_x_px: f64,
+    delta_y_px: f64,
+    pixels_per_dip: f64,
+) -> bool {
+    delta_x_px.hypot(delta_y_px) >= DRAG_THRESHOLD * pixels_per_dip
+}
+
+pub fn radial_palette_should_show(
+    annotation_enabled: bool,
+    palette_visible: bool,
+    style: PaletteStyle,
+) -> bool {
+    annotation_enabled && palette_visible && style == PaletteStyle::Radial
 }
 
 /// Swift: RadialPaletteGroupID
@@ -1502,5 +1558,108 @@ fn format_number(value: f64) -> String {
         format!("{value:.0}")
     } else {
         format!("{value:.1}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        radial_drag_threshold_reached, radial_palette_should_show, RadialPaletteSectorGeometry,
+        RadialPaletteSectorPath,
+    };
+    use crate::settings::PaletteStyle;
+    use std::f64::consts::FRAC_PI_2;
+
+    #[test]
+    fn sector_path_conversion_table_uses_clockwise_screen_coordinates_and_dpi_scale() {
+        let cases = [
+            (
+                RadialPaletteSectorGeometry {
+                    inner_radius: 10.0,
+                    outer_radius: 20.0,
+                    start_angle: 0.0,
+                    end_angle: FRAC_PI_2,
+                },
+                1.5,
+                [100.0, 100.0],
+                15.0,
+                30.0,
+                [100.0, 70.0],
+                [130.0, 100.0],
+                [115.0, 100.0],
+                [100.0, 85.0],
+            ),
+            (
+                RadialPaletteSectorGeometry {
+                    inner_radius: 4.0,
+                    outer_radius: 8.0,
+                    start_angle: -FRAC_PI_2,
+                    end_angle: 0.0,
+                },
+                2.0,
+                [50.0, 40.0],
+                8.0,
+                16.0,
+                [34.0, 40.0],
+                [50.0, 24.0],
+                [50.0, 32.0],
+                [42.0, 40.0],
+            ),
+        ];
+        for (
+            geometry,
+            scale,
+            center,
+            expected_inner,
+            expected_outer,
+            outer_start,
+            outer_end,
+            inner_end,
+            inner_start,
+        ) in cases
+        {
+            let path = RadialPaletteSectorPath::from_geometry(geometry, scale, center);
+            assert_eq!(path.inner_radius_px, expected_inner);
+            assert_eq!(path.outer_radius_px, expected_outer);
+            assert_eq!(path.start_angle, geometry.start_angle);
+            assert_eq!(path.end_angle, geometry.end_angle);
+            assert_eq!(path.outer_start, outer_start);
+            assert_eq!(path.outer_end, outer_end);
+            assert_eq!(path.inner_end, inner_end);
+            assert_eq!(path.inner_start, inner_start);
+        }
+    }
+
+    #[test]
+    fn drag_threshold_table_is_inclusive_at_four_dip_at_150_percent() {
+        let cases = [
+            (3.9 * 1.5, 0.0, false),
+            (4.0 * 1.5, 0.0, true),
+            (3.0 * 1.5, 2.5 * 1.5, false),
+            (3.0 * 1.5, 3.0 * 1.5, true),
+        ];
+        for (dx, dy, expected) in cases {
+            assert_eq!(radial_drag_threshold_reached(dx, dy, 1.5), expected);
+        }
+    }
+
+    #[test]
+    fn visibility_rule_table_requires_annotation_visibility_and_radial_style() {
+        let cases = [
+            (false, false, PaletteStyle::Linear, false),
+            (false, false, PaletteStyle::Radial, false),
+            (false, true, PaletteStyle::Linear, false),
+            (false, true, PaletteStyle::Radial, false),
+            (true, false, PaletteStyle::Linear, false),
+            (true, false, PaletteStyle::Radial, false),
+            (true, true, PaletteStyle::Linear, false),
+            (true, true, PaletteStyle::Radial, true),
+        ];
+        for (annotation, visible, style, expected) in cases {
+            assert_eq!(
+                radial_palette_should_show(annotation, visible, style),
+                expected
+            );
+        }
     }
 }

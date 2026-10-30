@@ -517,6 +517,10 @@ mod windows_impl {
             );
             // monitor.rs의 session_key는 이번 로그인 세션용 reconciliation 키다. 포트 변경을
             // 견디는 영속 DisplayIdentity로 바꾸는 일은 W10 후속 범위다.
+            // 원형 팔레트도 같은 positions.json을 별도 키로 쓴다. 마지막 로드 이후 다른
+            // 팔레트가 저장한 키를 잃지 않도록 쓰기 직전에 문서를 다시 병합한다.
+            self.positions =
+                load_positions(self.positions_path.as_deref(), &self.window.state.logger);
             self.positions.save(ratio, monitor.session_key.clone());
             self.persist_positions()
         }
@@ -1501,13 +1505,13 @@ mod windows_impl {
         }
     }
 
-    fn app_data_file(name: &str) -> Option<PathBuf> {
+    pub(crate) fn app_data_file(name: &str) -> Option<PathBuf> {
         std::env::var_os("APPDATA")
             .map(PathBuf::from)
             .map(|path| path.join("EduTools").join(name))
     }
 
-    fn load_positions(path: Option<&Path>, logger: &Logger) -> ScreenPositionDocument {
+    pub(crate) fn load_positions(path: Option<&Path>, logger: &Logger) -> ScreenPositionDocument {
         let Some(path) = path else {
             logger.event("팔레트 위치 로드 생략: APPDATA 환경 변수가 없음");
             return ScreenPositionDocument::default();
@@ -1560,7 +1564,7 @@ mod windows_impl {
         }
     }
 
-    fn write_file(path: &Path, bytes: &[u8], label: &str) -> Result<()> {
+    pub(crate) fn write_file(path: &Path, bytes: &[u8], label: &str) -> Result<()> {
         let parent = path
             .parent()
             .ok_or_else(|| Error::new(E_FAIL, format!("{label} path has no parent")))?;
