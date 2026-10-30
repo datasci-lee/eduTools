@@ -16,6 +16,8 @@ mod ink_view;
 mod kbhook;
 #[cfg(windows)]
 mod keymap;
+#[cfg(any(windows, test))]
+mod lesson_badge;
 #[cfg(windows)]
 mod log;
 #[cfg(any(windows, test))]

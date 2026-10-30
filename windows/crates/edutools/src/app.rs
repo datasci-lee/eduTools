@@ -6,6 +6,10 @@ use crate::hotkey::HotkeyCenter;
 use crate::ink_view::InkInputConfig;
 use crate::kbhook::{HookKeyEvent, KeyboardHook, WM_APP_KEY};
 use crate::keymap;
+use crate::lesson_badge::{
+    LessonBadgeManager, SettingsMutation as LessonSettingsMutation, WM_APP_LESSON_ACTION,
+    WM_APP_LESSON_COMPLETED,
+};
 use crate::log::Logger;
 use crate::overlay::{OverlayManager, SYNC_MESSAGE};
 use crate::palette::{
@@ -55,8 +59,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowLongPtrW, LoadImageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW,
     SetWindowLongPtrW, TranslateMessage, GDI_IMAGE_TYPE, GWLP_USERDATA, HICON, IMAGE_ICON,
     LR_DEFAULTCOLOR, MSG, WM_CONTEXTMENU, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_HOTKEY,
-    WM_KEYDOWN, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW,
-    WS_OVERLAPPED,
+    WM_KEYDOWN, WM_POWERBROADCAST, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMECHANGE, WM_TIMER,
+    WNDCLASSW, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
 };
 
 const WINDOW_CLASS: PCWSTR = w!("EduToolsMain");
@@ -168,6 +172,8 @@ struct App {
     text_entry: Option<TextEntryWindow>,
     help: Option<HelpManager>,
     last_board_presentation: Option<BoardPresentation>,
+    lesson_badge: Option<LessonBadgeManager>,
+    pending_break_request: Option<i64>,
     logger: Logger,
     shutting_down: bool,
 }
@@ -210,6 +216,12 @@ impl App {
         let mut help = HelpManager::new(self.hwnd, self.hinstance, self.logger.clone())?;
         help.show_first_run_if_needed(&self.state.borrow(), &self.settings);
         self.help = Some(help);
+        self.lesson_badge = Some(LessonBadgeManager::new(
+            self.hwnd,
+            self.hinstance,
+            &self.settings,
+            self.logger.clone(),
+        )?);
         Ok(())
     }
 
@@ -254,6 +266,27 @@ impl App {
         } else if definition.command == ShortcutCommand::ToggleAnnotationMode {
             self.logger.event("전역 키 annotation.toggle 눌림");
             self.toggle_annotation("전역 키");
+        } else if definition.command == ShortcutCommand::ToggleLessonTimer {
+            self.logger.event("전역 키 timer.lesson.toggle 눌림");
+            let context = DispatchContext {
+                scope: ShortcutScope::Global,
+                ..DispatchContext::default()
+            };
+            let result = {
+                let mut state = self.state.borrow_mut();
+                dispatch(
+                    &ShortcutCommand::ToggleLessonTimer,
+                    &mut state,
+                    &self.settings,
+                    context,
+                )
+            };
+            match result {
+                Ok(effects) => self.apply_effects(effects, "전역 키 timer.lesson.toggle"),
+                Err(error) => self
+                    .logger
+                    .event(&format!("timer.lesson.toggle core dispatch 실패: {error}")),
+            }
         } else {
             self.logger.event(&format!(
                 "미구현 명령: {} ({})",
@@ -659,6 +692,15 @@ impl App {
                         help.close(&self.state.borrow(), source);
                     }
                 }
+                Effect::ToggleLessonTimer => {
+                    let result = self
+                        .lesson_badge
+                        .as_mut()
+                        .map(|badge| badge.toggle_from_shortcut(&self.settings));
+                    if let Some(Err(error)) = result {
+                        self.report_lesson_badge_error("전역 토글", &error);
+                    }
+                }
                 other => self
                     .logger
                     .event(&format!("이번 라운드에서 UI 미구현 core effect: {other:?}")),
@@ -703,6 +745,11 @@ impl App {
                 radial.display_configuration_changed(&self.state.borrow(), &self.settings)
             {
                 self.report_radial_palette_error("모니터 재구성", &error);
+            }
+        }
+        if let Some(badge) = self.lesson_badge.as_mut() {
+            if let Err(error) = badge.display_configuration_changed(reason) {
+                self.report_lesson_badge_error("모니터 재구성", &error);
             }
         }
         if let Some(help) = self.help.as_mut() {
@@ -1102,6 +1149,62 @@ impl App {
         }
     }
 
+    fn report_lesson_badge_error(&self, context: &str, error: &Error) {
+        let message = format!("수업 배지 {context} 실패: {error}");
+        self.logger.event(&message);
+        if let Some(tray) = self.tray.as_ref() {
+            tray.show_warning("수업 타이머 오류", &message);
+        }
+    }
+
+    fn handle_lesson_action(&mut self, command: u16) {
+        let result = self
+            .lesson_badge
+            .as_mut()
+            .map(|badge| badge.handle_menu_action(command, &self.settings));
+        match result {
+            Some(Ok(Some(mutation))) => self.apply_lesson_settings_mutation(mutation),
+            Some(Ok(None)) | None => {}
+            Some(Err(error)) => self.report_lesson_badge_error("메뉴 실행", &error),
+        }
+    }
+
+    fn apply_lesson_settings_mutation(&mut self, mutation: LessonSettingsMutation) {
+        mutation.apply(&mut self.settings);
+        self.logger.event(&format!(
+            "수업 배지 SettingsMutation 메모리만: {mutation:?}"
+        ));
+        let result = self
+            .lesson_badge
+            .as_mut()
+            .map(|badge| badge.apply_settings(&self.settings));
+        if let Some(Err(error)) = result {
+            self.report_lesson_badge_error("메모리 설정 반영", &error);
+        }
+    }
+
+    fn handle_lesson_completion(&mut self, minutes: i64) {
+        if minutes > 0 {
+            self.pending_break_request = Some(minutes);
+            self.logger.event(&format!(
+                "수업 타이머 자동 쉬는 시간 pending 요청 노출: minutes={minutes} consumer=118d"
+            ));
+        } else {
+            self.logger
+                .event("수업 타이머 완료: 자동 쉬는 시간 pending 요청 없음");
+        }
+    }
+
+    fn synchronize_lesson_badge(&mut self, reason: &str) {
+        let result = self
+            .lesson_badge
+            .as_mut()
+            .map(|badge| badge.synchronize_after_system_event(reason));
+        if let Some(Err(error)) = result {
+            self.report_lesson_badge_error("시스템 이벤트 동기화", &error);
+        }
+    }
+
     fn begin_text_entry(&mut self, request: TextEntryRequest) {
         self.cancel_text_entry("새 입력");
         if !self
@@ -1215,6 +1318,10 @@ impl App {
         // and hidden owner window go away.
         self.radial_palette = None;
         self.help = None;
+        if let Some(badge) = self.lesson_badge.as_mut() {
+            badge.hide("앱 종료");
+        }
+        self.lesson_badge = None;
         self.palette = None;
         self.overlays = None;
         if let Some(hotkeys) = self.hotkeys.as_mut() {
@@ -1280,6 +1387,8 @@ fn run_message_loop(logger: Logger) -> Result<i32> {
         text_entry: None,
         help: None,
         last_board_presentation: None,
+        lesson_badge: None,
+        pending_break_request: None,
         logger,
         shutting_down: false,
     });
@@ -1382,6 +1491,14 @@ unsafe extern "system" fn window_proc(
                 });
                 return LRESULT(0);
             }
+            WM_APP_LESSON_ACTION => {
+                app.handle_lesson_action(u16::try_from(wparam.0).unwrap_or(0));
+                return LRESULT(0);
+            }
+            WM_APP_LESSON_COMPLETED => {
+                app.handle_lesson_completion(i64::try_from(wparam.0).unwrap_or(0));
+                return LRESULT(0);
+            }
             WM_TIMER if wparam.0 == HELP_RELEASE_TIMER_ID => {
                 app.poll_help_release();
                 return LRESULT(0);
@@ -1449,6 +1566,14 @@ unsafe extern "system" fn window_proc(
                 }
                 app.synchronize_overlays("WM_DISPLAYCHANGE");
                 return LRESULT(0);
+            }
+            WM_TIMECHANGE => {
+                app.synchronize_lesson_badge("WM_TIMECHANGE");
+                return LRESULT(0);
+            }
+            WM_POWERBROADCAST if wparam.0 == 0x12 => {
+                app.synchronize_lesson_badge("PBT_APMRESUMEAUTOMATIC");
+                return LRESULT(1);
             }
             WM_DESTROY => {
                 app.shutdown();
@@ -1539,6 +1664,10 @@ fn run_selftest(logger: &Logger) -> bool {
         match HelpManager::new(HWND::default(), hinstance, logger.clone()) {
             Ok(mut help) => failures.extend(help.selftest_failures(&state, &settings)),
             Err(error) => failures.push(format!("help: 생성 실패: {error}")),
+        }
+        match LessonBadgeManager::new(HWND::default(), hinstance, &settings, logger.clone()) {
+            Ok(mut badge) => failures.extend(badge.selftest_failures()),
+            Err(error) => failures.push(format!("lesson badge: 생성 실패: {error}")),
         }
     }
 
