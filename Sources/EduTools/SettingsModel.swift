@@ -115,20 +115,6 @@ enum RadialPaletteGlassStyle {
         )
     }
 
-    static func focusOuterColor(tone: RadialPaletteFaceTone) -> NSColor {
-        NSColor(
-            calibratedWhite: tone == .light ? primaryWhiteComponent : 1,
-            alpha: 0.88
-        )
-    }
-
-    static func colorSelectionOuterColor(tone: RadialPaletteFaceTone) -> NSColor {
-        NSColor(
-            calibratedWhite: tone == .light ? primaryWhiteComponent : 1,
-            alpha: 0.90
-        )
-    }
-
     static func previewOutlineInnerColor(tone: RadialPaletteFaceTone) -> NSColor {
         tone == .light
             ? selectedContentColor
@@ -199,10 +185,14 @@ enum RadialPaletteArcStyle {
 
     static let arcWidth: CGFloat = 3.5
     static let activeGlowRadius: CGFloat = 6
-    static let edgeArcInset: CGFloat = 2
+    static let nodeOrbitOffset: CGFloat = 19.5
+    static let arcTrackOffset: CGFloat = 22
     static let nodeArcPadding: CGFloat = 3
-    static let entryNodeMaximumDiameter: CGFloat = 26
+    static let entryNodeMaximumDiameter: CGFloat = 24
     static let optionNodeMaximumDiameter: CGFloat = 30
+    static let nodeFocusRingWidth: CGFloat = 1.5
+    static let entryCapsulePadding: CGFloat = 8
+    static let entryCapsuleOpacityMultiplier = 0.85
 
     static func surfaceColor(opacity: Double) -> NSColor {
         NSColor(

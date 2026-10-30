@@ -45,21 +45,17 @@ enum RadialPaletteMetrics {
     static let dragThreshold: CGFloat = 4
     static let commandHoldDuration: TimeInterval = 0.5
     static let sectorGap: CGFloat = 2 * .pi / 180
-    static let propertyGap: CGFloat = 4 * .pi / 180
+    static let propertyGap: CGFloat = 9 * .pi / 180
     static let tooltipGap: CGFloat = 8
     static let cellStrokeWidth: CGFloat = 0.8
     static let hoverStrokeWidth: CGFloat = 1.8
     static let selectedStrokeWidth: CGFloat = 1.2
-    static let colorSelectionOuterWidth: CGFloat = 4.2
-    static let colorSelectionInnerWidth: CGFloat = 1.8
-    static let focusOuterWidth: CGFloat = 6
-    static let focusInnerWidth: CGFloat = 2.4
     static let writingWidths: [CGFloat] = [1, 3, 5, 8, 12]
     static let highlighterWidths: [CGFloat] = [6, 12, 18, 24, 30]
     static let textSizes: [CGFloat] = [16, 24, 36, 48, 72]
     static let highlighterOpacities: [CGFloat] = [0.2, 0.4, 0.6, 0.8, 1]
     static let laserTrailDurations: [TimeInterval] = [0.3, 0.7, 1, 2]
-    static let colorPreviewDiameter: CGFloat = 14
+    static let colorPreviewDiameter: CGFloat = 20
     static let previewSlotWidth: CGFloat = 18
     static let previewSlotHeight: CGFloat = 15
     static let previewLabelFontSize: CGFloat = 7.5
@@ -67,8 +63,8 @@ enum RadialPaletteMetrics {
     static let previewOutlineOuterWidth: CGFloat = 1
     static let previewOutlineInnerWidth: CGFloat = 0.35
     static let strokePreviewLength: CGFloat = 16
-    static let strokePreviewMinimumWidth: CGFloat = 1.5
-    static let strokePreviewMaximumWidth: CGFloat = 6
+    static let strokePreviewMinimumWidth: CGFloat = 1
+    static let strokePreviewMaximumWidth: CGFloat = 8
     static let textPreviewMinimumSize: CGFloat = 8
     static let textPreviewMaximumSize: CGFloat = 14
     static let opacityPreviewWidth: CGFloat = 16
@@ -269,6 +265,13 @@ private struct RadialArcShape: Shape {
     }
 }
 
+private struct RadialPaletteArcSegment: Identifiable {
+    let id: String
+    let radius: CGFloat
+    let startAngle: CGFloat
+    let endAngle: CGFloat
+}
+
 private extension View {
     func radialPalettePreviewOutline<Outline: Shape>(
         in outline: Outline
@@ -297,6 +300,8 @@ struct RadialPaletteGlassView: View {
             ZStack {
                 if model.state.isExpanded {
                     groupRing(in: bounds)
+                    entryCapsuleTrack()
+                    inactiveArcTracks()
                     ForEach(model.state.cells) { cell in
                         cellView(cell, in: bounds)
                     }
@@ -377,43 +382,32 @@ struct RadialPaletteGlassView: View {
         let diameter = nodeDiameter(for: cell)
         let circle = Circle()
         let position = nodePosition(for: cell, in: bounds)
+        let hasNodeSurface = cell.ring == .option && cell.color == nil
+        let showsHighlight = (cell.isHovered && cell.isEnabled)
+            || (cell.ring == .entry && cell.isSelected)
         return ZStack {
             edgeArc(for: cell)
 
             ZStack {
-                circle.fill(surfaceColor)
+                if hasNodeSurface {
+                    circle.fill(surfaceColor)
+                }
 
-                if cell.isHovered, cell.isEnabled {
+                if showsHighlight {
                     circle.fill(Color(nsColor: RadialPaletteArcStyle.hoverFillColor))
                 }
 
-                circle.stroke(
-                    Color(nsColor: RadialPaletteArcStyle.outerBorderColor),
-                    lineWidth: RadialPaletteMetrics.cellStrokeWidth
-                )
-
-                if cell.isFocused {
+                if hasNodeSurface {
                     circle.stroke(
-                        Color(nsColor: RadialPaletteGlassStyle.focusOuterColor(tone: .dark)),
-                        lineWidth: RadialPaletteMetrics.focusOuterWidth
-                    )
-                    circle.stroke(
-                        Color(nsColor: RadialPaletteArcStyle.activeIconColor),
-                        lineWidth: RadialPaletteMetrics.focusInnerWidth
+                        Color(nsColor: RadialPaletteArcStyle.outerBorderColor),
+                        lineWidth: RadialPaletteMetrics.cellStrokeWidth
                     )
                 }
 
-                if cell.color != nil, cell.isSelected {
-                    let selectionCircle = circle.inset(by: cell.isFocused ? 4 : 0)
-                    selectionCircle.stroke(
-                        Color(nsColor: RadialPaletteGlassStyle.colorSelectionOuterColor(
-                            tone: .dark
-                        )),
-                        lineWidth: RadialPaletteMetrics.colorSelectionOuterWidth
-                    )
-                    selectionCircle.stroke(
+                if cell.isFocused, cell.color == nil {
+                    circle.stroke(
                         Color(nsColor: RadialPaletteArcStyle.activeIconColor),
-                        lineWidth: RadialPaletteMetrics.colorSelectionInnerWidth
+                        lineWidth: RadialPaletteArcStyle.nodeFocusRingWidth
                     )
                 }
 
@@ -424,40 +418,133 @@ struct RadialPaletteGlassView: View {
                 }
             }
             .frame(width: diameter, height: diameter)
+            .scaleEffect(cell.isSelected ? 1.08 : 1)
             .position(position)
         }
         .frame(width: bounds.width, height: bounds.height)
     }
 
+    @ViewBuilder
     private func edgeArc(for cell: RadialPaletteRenderCell) -> some View {
         let isActive = cell.isSelected
             || cell.isFocused
             || (cell.isHovered && cell.isEnabled)
-        let radius = cell.geometry.innerRadius
-            + RadialPaletteArcStyle.arcWidth / 2
-            + RadialPaletteArcStyle.edgeArcInset
-        let color = isActive
-            ? RadialPaletteArcStyle.activeColor
-            : RadialPaletteArcStyle.inactiveArcColor
-        return RadialArcShape(
-            radius: radius,
-            startAngle: cell.geometry.startAngle,
-            endAngle: cell.geometry.endAngle
-        )
-        .stroke(
-            Color(nsColor: color),
-            style: StrokeStyle(
-                lineWidth: RadialPaletteArcStyle.arcWidth,
-                lineCap: .round
+        if isActive {
+            RadialArcShape(
+                radius: arcTrackRadius(for: cell),
+                startAngle: cell.geometry.startAngle,
+                endAngle: cell.geometry.endAngle
             )
-        )
-        .shadow(
-            color: isActive
-                ? Color(nsColor: RadialPaletteArcStyle.activeGlowColor)
-                : .clear,
-            radius: isActive ? RadialPaletteArcStyle.activeGlowRadius : 0
-        )
-        .opacity(cell.isEnabled ? 1 : RadialPaletteGlassStyle.disabledContentOpacity)
+            .stroke(
+                Color(nsColor: RadialPaletteArcStyle.activeColor),
+                style: StrokeStyle(
+                    lineWidth: RadialPaletteArcStyle.arcWidth,
+                    lineCap: .round
+                )
+            )
+            .shadow(
+                color: Color(nsColor: RadialPaletteArcStyle.activeGlowColor),
+                radius: RadialPaletteArcStyle.activeGlowRadius
+            )
+            .opacity(cell.isEnabled ? 1 : RadialPaletteGlassStyle.disabledContentOpacity)
+        }
+    }
+
+    private func inactiveArcTracks() -> some View {
+        ZStack {
+            ForEach(trackSegments(for: .entry) + trackSegments(for: .option)) { segment in
+                RadialArcShape(
+                    radius: segment.radius,
+                    startAngle: segment.startAngle,
+                    endAngle: segment.endAngle
+                )
+                .stroke(
+                    Color(nsColor: RadialPaletteArcStyle.inactiveArcColor),
+                    style: StrokeStyle(
+                        lineWidth: RadialPaletteArcStyle.arcWidth,
+                        lineCap: .round
+                    )
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func entryCapsuleTrack() -> some View {
+        let cells = cells(in: .entry)
+        if let first = cells.first, let last = cells.last {
+            let nodeRadius = nodeOrbitRadius(for: first)
+            let requestedWidth = RadialPaletteArcStyle.entryNodeMaximumDiameter
+                + RadialPaletteArcStyle.entryCapsulePadding
+            // Keep the capsule inside the entry ring so it cannot touch the option track.
+            let maximumWidth = 2 * (first.geometry.outerRadius - nodeRadius)
+            let lineWidth = min(requestedWidth, maximumWidth)
+            let fillWidth = max(0, lineWidth - 2 * RadialPaletteMetrics.cellStrokeWidth)
+            let shape = RadialArcShape(
+                radius: nodeRadius,
+                startAngle: first.geometry.startAngle,
+                endAngle: last.geometry.endAngle
+            )
+
+            shape.stroke(
+                Color(nsColor: RadialPaletteArcStyle.outerBorderColor),
+                style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
+            )
+            shape.stroke(
+                Color(nsColor: RadialPaletteArcStyle.surfaceColor(
+                    opacity: model.glassOpacity * RadialPaletteArcStyle.entryCapsuleOpacityMultiplier
+                )),
+                style: StrokeStyle(lineWidth: fillWidth, lineCap: .round)
+            )
+        }
+    }
+
+    private func trackSegments(for ring: RadialPaletteRing) -> [RadialPaletteArcSegment] {
+        let ringCells = cells(in: ring)
+        guard let first = ringCells.first else { return [] }
+
+        if ring == .entry {
+            return [RadialPaletteArcSegment(
+                id: "entry",
+                radius: arcTrackRadius(for: first),
+                startAngle: first.geometry.startAngle,
+                endAngle: ringCells.last?.geometry.endAngle ?? first.geometry.endAngle
+            )]
+        }
+
+        let sectionThreshold = RadialPaletteMetrics.sectorGap
+            + RadialPaletteMetrics.propertyGap / 2
+        var segments: [RadialPaletteArcSegment] = []
+        var sectionStart = first.geometry.startAngle
+        var sectionEnd = first.geometry.endAngle
+        var sectionIndex = 0
+
+        for cell in ringCells.dropFirst() {
+            if cell.geometry.startAngle - sectionEnd > sectionThreshold {
+                segments.append(RadialPaletteArcSegment(
+                    id: "option.\(sectionIndex)",
+                    radius: arcTrackRadius(for: first),
+                    startAngle: sectionStart,
+                    endAngle: sectionEnd
+                ))
+                sectionIndex += 1
+                sectionStart = cell.geometry.startAngle
+            }
+            sectionEnd = cell.geometry.endAngle
+        }
+        segments.append(RadialPaletteArcSegment(
+            id: "option.\(sectionIndex)",
+            radius: arcTrackRadius(for: first),
+            startAngle: sectionStart,
+            endAngle: sectionEnd
+        ))
+        return segments
+    }
+
+    private func cells(in ring: RadialPaletteRing) -> [RadialPaletteRenderCell] {
+        model.state.cells
+            .filter { $0.ring == ring }
+            .sorted { $0.geometry.startAngle < $1.geometry.startAngle }
     }
 
     private func activeArc(
@@ -484,7 +571,7 @@ struct RadialPaletteGlassView: View {
     }
 
     private func nodeDiameter(for cell: RadialPaletteRenderCell) -> CGFloat {
-        let radius = (cell.geometry.innerRadius + cell.geometry.outerRadius) / 2
+        let radius = nodeOrbitRadius(for: cell)
         let arcLength = (cell.geometry.endAngle - cell.geometry.startAngle) * radius
         let maximum = cell.ring == .entry
             ? RadialPaletteArcStyle.entryNodeMaximumDiameter
@@ -498,9 +585,19 @@ struct RadialPaletteGlassView: View {
     ) -> CGPoint {
         RadialSectorShape.point(
             center: CGPoint(x: bounds.midX, y: bounds.midY),
-            radius: (cell.geometry.innerRadius + cell.geometry.outerRadius) / 2,
+            radius: cell.ring == .group
+                ? (cell.geometry.innerRadius + cell.geometry.outerRadius) / 2
+                : nodeOrbitRadius(for: cell),
             angle: (cell.geometry.startAngle + cell.geometry.endAngle) / 2
         )
+    }
+
+    private func nodeOrbitRadius(for cell: RadialPaletteRenderCell) -> CGFloat {
+        cell.geometry.innerRadius + RadialPaletteArcStyle.nodeOrbitOffset
+    }
+
+    private func arcTrackRadius(for cell: RadialPaletteRenderCell) -> CGFloat {
+        nodeOrbitRadius(for: cell) - RadialPaletteArcStyle.arcTrackOffset
     }
 
     private var surfaceColor: Color {
@@ -543,6 +640,14 @@ struct RadialPaletteGlassView: View {
                         height: RadialPaletteMetrics.colorPreviewDiameter
                     )
                     .radialPalettePreviewOutline(in: Circle())
+                    .overlay {
+                        if cell.isSelected || cell.isFocused {
+                            Circle().stroke(
+                                Color(nsColor: RadialPaletteArcStyle.activeIconColor),
+                                lineWidth: RadialPaletteArcStyle.nodeFocusRingWidth
+                            )
+                        }
+                    }
                     .accessibilityLabel(Text(cell.accessibilityLabel))
             } else if let preview = cell.preview {
                 VStack(spacing: RadialPaletteMetrics.previewSpacing) {
@@ -707,17 +812,13 @@ struct RadialPaletteGlassView: View {
 
             if state.centerIsFocused {
                 circle.stroke(
-                    Color(nsColor: RadialPaletteGlassStyle.focusOuterColor(tone: .dark)),
-                    lineWidth: RadialPaletteMetrics.focusOuterWidth
-                )
-                circle.stroke(
                     Color(nsColor: RadialPaletteArcStyle.activeIconColor),
-                    lineWidth: RadialPaletteMetrics.focusInnerWidth
+                    lineWidth: RadialPaletteArcStyle.nodeFocusRingWidth
                 )
             }
 
             circle
-                .inset(by: state.centerIsFocused ? 4 : 0)
+                .inset(by: state.centerIsFocused ? 2 : 0)
                 .stroke(Color(nsColor: state.centerColor), lineWidth: state.centerStrokeWidth)
 
             if state.showsKeyCaps, !state.centerShortcut.isEmpty {
