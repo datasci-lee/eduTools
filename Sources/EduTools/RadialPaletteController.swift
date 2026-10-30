@@ -528,7 +528,7 @@ private final class RadialPaletteTooltip {
     private let label = NSTextField(labelWithString: "")
     private let surfaceView = NSView(frame: .zero)
 
-    init(glassOpacity: Double, faceTone _: RadialPaletteFaceTone) {
+    init(glassOpacity: Double) {
         panel = RadialPaletteTooltipPanel(
             contentRect: .zero,
             styleMask: [.borderless, .nonactivatingPanel],
@@ -568,7 +568,7 @@ private final class RadialPaletteTooltip {
         panel.contentView = surfaceView
     }
 
-    func updateAppearance(glassOpacity: Double, faceTone _: RadialPaletteFaceTone) {
+    func updateAppearance(glassOpacity: Double) {
         surfaceView.layer?.backgroundColor = RadialPaletteArcStyle.surfaceColor(
             opacity: glassOpacity
         ).cgColor
@@ -879,8 +879,7 @@ final class RadialPaletteController: NSObject {
         self.applyDisplayPreset = applyDisplayPreset
         self.openDisplaySettings = openDisplaySettings
         tooltip = RadialPaletteTooltip(
-            glassOpacity: settingsStore.settings.tools.paletteGlassOpacity,
-            faceTone: .light
+            glassOpacity: settingsStore.settings.tools.paletteGlassOpacity
         )
         panel = RadialPalettePanel(
             contentRect: .zero,
@@ -951,8 +950,7 @@ final class RadialPaletteController: NSObject {
         settingsObserverIdentifier = settingsStore.addObserver { [weak self] settings in
             guard let self else { return }
             self.tooltip.updateAppearance(
-                glassOpacity: settings.tools.paletteGlassOpacity,
-                faceTone: self.faceTone()
+                glassOpacity: settings.tools.paletteGlassOpacity
             )
             self.updateVisibility()
             self.paletteView.redraw()
@@ -2141,11 +2139,9 @@ final class RadialPaletteController: NSObject {
         let centerDefinition = state.isPassThroughModeEnabled
             ? requiredDefinition(for: .togglePassThroughMode)
             : centerDefinition()
-        let faceTone = faceTone()
         model.state = RadialPaletteRenderState(
             isExpanded: isExpanded,
             showsKeyCaps: showsKeyCaps,
-            faceTone: faceTone,
             cells: cells.map { cell in
                 RadialPaletteRenderCell(
                     id: cell.identifier,
@@ -2218,23 +2214,9 @@ final class RadialPaletteController: NSObject {
         state.currentTool == .laser ? state.laserColor : state.selectedColor
     }
 
-    private func faceToneInkColor() -> NSColor? {
-        switch state.currentTool {
-        case .eraser, .select, .cover:
-            return nil
-        case .pen, .highlighter, .laser, .arrow, .rectangle, .ellipse, .text:
-            return centerColor()
-        }
-    }
-
-    private func faceTone() -> RadialPaletteFaceTone {
-        RadialPaletteFaceTone.resolve(inkColor: faceToneInkColor())
-    }
-
     private func updateTooltipAppearance() {
         tooltip.updateAppearance(
-            glassOpacity: settingsStore.settings.tools.paletteGlassOpacity,
-            faceTone: faceTone()
+            glassOpacity: settingsStore.settings.tools.paletteGlassOpacity
         )
     }
 

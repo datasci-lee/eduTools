@@ -147,7 +147,6 @@ struct RadialPaletteRenderCell: Identifiable {
 struct RadialPaletteRenderState {
     let isExpanded: Bool
     let showsKeyCaps: Bool
-    let faceTone: RadialPaletteFaceTone
     let cells: [RadialPaletteRenderCell]
     let centerIconKey: String?
     let centerIconName: String?
@@ -163,7 +162,6 @@ struct RadialPaletteRenderState {
     static let empty = RadialPaletteRenderState(
         isExpanded: false,
         showsKeyCaps: false,
-        faceTone: .light,
         cells: [],
         centerIconKey: nil,
         centerIconName: nil,
@@ -278,13 +276,13 @@ private extension View {
     ) -> some View {
         overlay {
             outline.stroke(
-                Color(nsColor: RadialPaletteGlassStyle.regularBorderColor(tone: .dark)),
+                Color(nsColor: RadialPaletteArcStyle.previewOutlineOuterColor),
                 lineWidth: RadialPaletteMetrics.previewOutlineOuterWidth
             )
         }
         .overlay {
             outline.stroke(
-                Color(nsColor: RadialPaletteGlassStyle.previewOutlineInnerColor(tone: .dark)),
+                Color(nsColor: RadialPaletteArcStyle.previewOutlineInnerColor),
                 lineWidth: RadialPaletteMetrics.previewOutlineInnerWidth
             )
         }
@@ -714,15 +712,11 @@ struct RadialPaletteGlassView: View {
                 .font(.system(size: size, weight: .semibold))
                 .foregroundStyle(Color(nsColor: color))
                 .shadow(
-                    color: Color(nsColor: RadialPaletteGlassStyle.previewOutlineInnerColor(
-                        tone: .dark
-                    )),
+                    color: Color(nsColor: RadialPaletteArcStyle.previewOutlineInnerColor),
                     radius: 0.5
                 )
                 .shadow(
-                    color: Color(nsColor: RadialPaletteGlassStyle.regularBorderColor(
-                        tone: .dark
-                    )),
+                    color: Color(nsColor: RadialPaletteArcStyle.previewOutlineOuterColor),
                     radius: 1
                 )
         case let .opacity(opacity, color):
@@ -768,9 +762,8 @@ struct RadialPaletteGlassView: View {
                 attributeConfiguration: configuration,
                 pointSize: 14,
                 uiColor: contentNSColor(for: cell),
-                backgroundColor: RadialPaletteGlassStyle.estimatedBackdropColor(
-                    selected: cell.isSelected,
-                    tone: .dark
+                backgroundColor: RadialPaletteArcStyle.estimatedBackdropColor(
+                    selected: cell.isSelected
                 ),
                 visualState: AttrIconVisualState(
                     isSelected: cell.isSelected,
@@ -898,9 +891,8 @@ struct RadialPaletteGlassView: View {
                     isActive: state.centerIsPassThroughEnabled,
                     isEnabled: true
                 ),
-                backgroundColor: RadialPaletteGlassStyle.estimatedBackdropColor(
-                    selected: state.centerIsPassThroughEnabled,
-                    tone: .dark
+                backgroundColor: RadialPaletteArcStyle.estimatedBackdropColor(
+                    selected: state.centerIsPassThroughEnabled
                 ),
                 visualState: AttrIconVisualState(
                     isSelected: state.centerIsPassThroughEnabled,
