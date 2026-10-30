@@ -1,5 +1,5 @@
 use crate::log::Logger;
-use crate::render::GraphicsDevice;
+use crate::render::{count_nonzero_alpha, read_bitmap_bgra, GraphicsDevice};
 use edutools_core::shortcut::ShortcutCatalog;
 use std::collections::{BTreeSet, HashMap};
 use std::mem::size_of;
@@ -10,11 +10,13 @@ use windows::core::{w, Error, Interface, Result, BOOL, PCWSTR};
 use windows::Win32::Foundation::{D2DERR_RECREATE_TARGET, E_FAIL, GENERIC_WRITE};
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_F,
+    D2D_SIZE_U,
 };
 use windows::Win32::Graphics::Direct2D::{
     ID2D1Bitmap1, ID2D1DeviceContext, ID2D1DeviceContext5, ID2D1Image, ID2D1RenderTarget,
     ID2D1SvgDocument, D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1, D2D1_BRUSH_PROPERTIES,
-    D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_SVG_ATTRIBUTE_STRING_TYPE_SVG,
+    D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_PRIMITIVE_BLEND_SOURCE_OVER,
+    D2D1_SVG_ATTRIBUTE_STRING_TYPE_SVG,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteFontCollection, DWRITE_FACTORY_TYPE_SHARED,
@@ -23,8 +25,9 @@ use windows::Win32::Graphics::DirectWrite::{
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Imaging::{
-    CLSID_WICImagingFactory, GUID_ContainerFormatPng, GUID_WICPixelFormat32bppPBGRA, IWICBitmap,
-    IWICBitmapFrameEncode, IWICImagingFactory, WICBitmapCacheOnLoad, WICBitmapEncoderNoCache,
+    CLSID_WICImagingFactory, GUID_ContainerFormatPng, GUID_WICPixelFormat32bppBGRA,
+    GUID_WICPixelFormat32bppPBGRA, IWICBitmap, IWICBitmapFrameEncode, IWICImagingFactory,
+    WICBitmapEncoderNoCache,
 };
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
@@ -107,14 +110,34 @@ struct Resolution {
     fallback: Option<FallbackGlyph>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum SvgTintMethod {
+    RootColor,
+    ReplacedCurrentColor,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct SvgCacheKey {
+    key: &'static str,
+    color: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TintProbe {
+    root_color_pixels: usize,
+    replacement_pixels: Option<usize>,
+}
+
 pub struct AppIconRenderer {
     context: ID2D1DeviceContext,
     context5: ID2D1DeviceContext5,
     dwrite: IDWriteFactory,
-    cache: HashMap<&'static str, ID2D1SvgDocument>,
+    cache: HashMap<SvgCacheKey, ID2D1SvgDocument>,
     missing: BTreeSet<String>,
     logged_fallbacks: BTreeSet<String>,
     fluent_available: bool,
+    tint_method: SvgTintMethod,
+    tint_probe: TintProbe,
     logger: Logger,
 }
 
@@ -132,7 +155,7 @@ impl AppIconRenderer {
         if !fluent_available {
             logger.event("아이콘 warn: Segoe Fluent Icons 없음; 폴백은 Segoe UI의 ? 글리프 사용");
         }
-        Ok(Self {
+        let mut renderer = Self {
             context,
             context5,
             dwrite,
@@ -140,8 +163,15 @@ impl AppIconRenderer {
             missing: BTreeSet::new(),
             logged_fallbacks: BTreeSet::new(),
             fluent_available,
+            tint_method: SvgTintMethod::RootColor,
+            tint_probe: TintProbe {
+                root_color_pixels: 0,
+                replacement_pixels: None,
+            },
             logger,
-        })
+        };
+        renderer.select_tint_method()?;
+        Ok(renderer)
     }
 
     pub fn audit_startup(logger: &Logger) {
@@ -168,16 +198,14 @@ impl AppIconRenderer {
                     logger.event(&format!("아이콘 warn: 해석 실패 고정/원형 키: {key}"));
                 }
             }
-            logger.event(
-                "아이콘 info: currentColor 틴트 방식 1 사용(root color 속성 교체; VM 시각 판정 대기)",
-            );
+            logger.event("아이콘 info: currentColor 틴트 방식은 런타임 픽셀 probe로 선택");
             match high_contrast() {
                 Ok(enabled) => logger.event(&format!(
                     "아이콘 info: 시작 고대비 상태={enabled}; 호출자가 시스템 색을 IconTint로 전달"
                 )),
-                Err(error) => logger.event(&format!(
-                    "아이콘 warn: 시작 고대비 상태 조회 실패: {error}"
-                )),
+                Err(error) => {
+                    logger.event(&format!("아이콘 warn: 시작 고대비 상태 조회 실패: {error}"))
+                }
             }
         });
     }
@@ -232,6 +260,29 @@ impl AppIconRenderer {
         self.missing.iter().cloned().collect()
     }
 
+    pub(crate) fn tint_report(&self) -> String {
+        match self.tint_probe.replacement_pixels {
+            Some(pixels) => format!(
+                "방식 1 픽셀 {} → 방식 2 전환 (픽셀 {pixels}, SVG currentColor 치환)",
+                self.tint_probe.root_color_pixels
+            ),
+            None => format!(
+                "방식 1 선택 (픽셀 {}, 루트 svg color 속성)",
+                self.tint_probe.root_color_pixels
+            ),
+        }
+    }
+
+    pub(crate) fn icon_alpha_count(&mut self, key: &str, tint: IconTint) -> Result<usize> {
+        let asset = resolve_key(key, false).asset.ok_or_else(|| {
+            Error::new(
+                E_FAIL,
+                format!("icon pixel probe requires an embedded SVG: {key}"),
+            )
+        })?;
+        self.render_icon_alpha_count(asset, tint)
+    }
+
     pub fn handle_render_result(&mut self, result: Result<()>) -> Result<()> {
         if let Err(error) = &result {
             self.handle_possible_recreate_target(error);
@@ -240,13 +291,31 @@ impl AppIconRenderer {
     }
 
     fn draw_svg(&mut self, asset: EmbeddedAsset, rect: D2D_RECT_F, tint: IconTint) -> Result<()> {
-        if !self.cache.contains_key(asset.key) {
-            let stream = unsafe { SHCreateMemStream(Some(asset.bytes)) }.ok_or_else(|| {
-                Error::new(
-                    windows::Win32::Foundation::E_FAIL,
-                    "SHCreateMemStream returned null",
-                )
-            })?;
+        let rgb = tint_rgb(tint);
+        let cache_key = SvgCacheKey {
+            key: asset.key,
+            color: match self.tint_method {
+                SvgTintMethod::RootColor => None,
+                SvgTintMethod::ReplacedCurrentColor => Some(rgb),
+            },
+        };
+        if !self.cache.contains_key(&cache_key) {
+            let replaced;
+            let svg = match self.tint_method {
+                SvgTintMethod::RootColor => asset.bytes,
+                SvgTintMethod::ReplacedCurrentColor => {
+                    let source = std::str::from_utf8(asset.bytes).map_err(|error| {
+                        Error::new(
+                            E_FAIL,
+                            format!("{} SVG is not UTF-8: {error}", asset.source),
+                        )
+                    })?;
+                    replaced = source.replace("currentColor", &color_hex(rgb));
+                    replaced.as_bytes()
+                }
+            };
+            let stream = unsafe { SHCreateMemStream(Some(svg)) }
+                .ok_or_else(|| Error::new(E_FAIL, "SHCreateMemStream returned null"))?;
             let document = unsafe {
                 self.context5.CreateSvgDocument(
                     &stream,
@@ -256,7 +325,7 @@ impl AppIconRenderer {
                     },
                 )
             }?;
-            self.cache.insert(asset.key, document);
+            self.cache.insert(cache_key, document);
             if asset.os_override {
                 self.logger.event(&format!(
                     "아이콘 info: Windows OS 예외 적용 key={}, source={}",
@@ -266,22 +335,19 @@ impl AppIconRenderer {
         }
         let document = self
             .cache
-            .get(asset.key)
-            .expect("SVG document was inserted above");
+            .get(&cache_key)
+            .expect("SVG document was inserted above")
+            .clone();
         let root = unsafe { document.GetRoot() }?;
-        let color = format!(
-            "#{:02X}{:02X}{:02X}",
-            channel(tint.color.r),
-            channel(tint.color.g),
-            channel(tint.color.b)
-        );
-        let color = wide(&color);
-        unsafe {
-            root.SetAttributeValue3(
-                w!("color"),
-                D2D1_SVG_ATTRIBUTE_STRING_TYPE_SVG,
-                PCWSTR(color.as_ptr()),
-            )?;
+        if self.tint_method == SvgTintMethod::RootColor {
+            let color = wide(&color_hex(rgb));
+            unsafe {
+                root.SetAttributeValue3(
+                    w!("color"),
+                    D2D1_SVG_ATTRIBUTE_STRING_TYPE_SVG,
+                    PCWSTR(color.as_ptr()),
+                )?;
+            }
         }
         let opacity = format!("{:.4}", tint.color.a.clamp(0.0, 1.0));
         let opacity = wide(&opacity);
@@ -298,7 +364,7 @@ impl AppIconRenderer {
         unsafe {
             self.context.GetTransform(&mut previous.transform);
             self.context.SetTransform(&transform.transform);
-            self.context5.DrawSvgDocument(document);
+            self.context5.DrawSvgDocument(&document);
             self.context.SetTransform(&previous.transform);
         }
         Ok(())
@@ -346,6 +412,74 @@ impl AppIconRenderer {
             );
         }
         Ok(())
+    }
+
+    fn select_tint_method(&mut self) -> Result<()> {
+        let probe = embedded_asset("tool.arrow")
+            .expect("tool.arrow is part of the build-time validated icon set");
+        let tint = IconTint::rgba(1.0, 1.0, 1.0, 1.0);
+        let root_color_pixels = self.render_icon_alpha_count(probe, tint)?;
+        self.tint_probe.root_color_pixels = root_color_pixels;
+        if root_color_pixels > 0 {
+            self.logger.event(&format!(
+                "아이콘 info: currentColor 방식 1 선택; key=tool.arrow px={root_color_pixels}"
+            ));
+            return Ok(());
+        }
+
+        self.logger
+            .event("아이콘 warn: 방식 1 픽셀 0 → 방식 2 전환; key=tool.arrow");
+        self.tint_method = SvgTintMethod::ReplacedCurrentColor;
+        self.cache.clear();
+        let replacement_pixels = self.render_icon_alpha_count(probe, tint)?;
+        self.tint_probe.replacement_pixels = Some(replacement_pixels);
+        if replacement_pixels == 0 {
+            self.logger.event(
+                "아이콘 error: icon tool.arrow px=0; 방식 1(root color) 및 방식 2(currentColor 치환) 모두 실패",
+            );
+            return Ok(());
+        }
+        self.logger.event(&format!(
+            "아이콘 info: currentColor 방식 2 선택; key=tool.arrow px={replacement_pixels}"
+        ));
+        Ok(())
+    }
+
+    fn render_icon_alpha_count(&mut self, asset: EmbeddedAsset, tint: IconTint) -> Result<usize> {
+        let mut dpi_x = 96.0;
+        let mut dpi_y = 96.0;
+        unsafe { self.context.GetDpi(&mut dpi_x, &mut dpi_y) };
+        let width = (24.0 * dpi_x / 96.0).round().max(1.0) as u32;
+        let height = (24.0 * dpi_y / 96.0).round().max(1.0) as u32;
+        let bitmap = create_target_bitmap(&self.context, width, height, dpi_x, dpi_y)?;
+        let target: ID2D1Image = bitmap.cast()?;
+        let previous_target = unsafe { self.context.GetTarget() }?;
+        let previous_blend = unsafe { self.context.GetPrimitiveBlend() };
+        unsafe {
+            self.context.SetTarget(&target);
+            self.context
+                .SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_SOURCE_OVER);
+            self.context.BeginDraw();
+            self.context.Clear(Some(&D2D1_COLOR_F::default()));
+        }
+        let draw_result = self.draw_svg(
+            asset,
+            D2D_RECT_F {
+                left: 0.0,
+                top: 0.0,
+                right: 24.0,
+                bottom: 24.0,
+            },
+            tint,
+        );
+        let end_result = unsafe { self.context.EndDraw(None, None) };
+        unsafe {
+            self.context.SetTarget(&previous_target);
+            self.context.SetPrimitiveBlend(previous_blend);
+        }
+        draw_result?;
+        self.handle_render_result(end_result)?;
+        count_nonzero_alpha(&self.context, &bitmap)
     }
 
     fn handle_possible_recreate_target(&mut self, error: &Error) {
@@ -397,8 +531,42 @@ fn run_selftest_icons_initialized(output_directory: &Path, logger: &Logger) -> R
     let graphics = GraphicsDevice::new()?;
     let factory: IWICImagingFactory =
         unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER) }?;
+    let context = graphics.create_d2d_context()?;
+    unsafe { context.SetDpi(96.0, 96.0) };
+    let bootstrap = create_target_bitmap(&context, 24, 24, 96.0, 96.0)?;
+    let bootstrap_image: ID2D1Image = bootstrap.cast()?;
+    unsafe { context.SetTarget(&bootstrap_image) };
+    let mut renderer = AppIconRenderer::new(context.clone(), logger.clone())?;
+    println!("currentColor: {}", renderer.tint_report());
+
+    let mut empty = Vec::new();
+    for key in embedded_keys() {
+        let pixels = renderer.icon_alpha_count(key, IconTint::rgba(1.0, 1.0, 1.0, 1.0))?;
+        println!("icon {key} px={pixels}");
+        if pixels == 0 {
+            empty.push(key);
+        }
+    }
+    if !empty.is_empty() {
+        return Err(Error::new(
+            E_FAIL,
+            format!(
+                "alpha>0 pixel count is zero: {}; {}",
+                empty.join(", "),
+                renderer.tint_report()
+            ),
+        ));
+    }
+
     for dpi in [96u32, 144, 240] {
-        render_icon_sheet(&graphics, &factory, output_directory, dpi, logger)?;
+        render_icon_sheet(
+            &context,
+            &mut renderer,
+            &factory,
+            output_directory,
+            dpi,
+            logger,
+        )?;
     }
     for key in [
         "annotation.pass-through",
@@ -414,12 +582,12 @@ fn run_selftest_icons_initialized(output_directory: &Path, logger: &Logger) -> R
             fallback.label
         );
     }
-    println!("currentColor: 방식 1 (루트 svg color 속성 교체)");
     Ok(())
 }
 
 fn render_icon_sheet(
-    graphics: &GraphicsDevice,
+    context: &ID2D1DeviceContext,
+    renderer: &mut AppIconRenderer,
     factory: &IWICImagingFactory,
     output_directory: &Path,
     dpi: u32,
@@ -433,40 +601,20 @@ fn render_icon_sheet(
     let rows = u32::try_from(total.div_ceil(COLUMNS as usize)).expect("icon rows fit u32");
     let width = (COLUMNS as f32 * CELL_DIP * dpi as f32 / 96.0).round() as u32;
     let height = (rows as f32 * CELL_DIP * dpi as f32 / 96.0).round() as u32;
-    let bitmap = unsafe {
-        factory.CreateBitmap(
-            width,
-            height,
-            &GUID_WICPixelFormat32bppPBGRA,
-            WICBitmapCacheOnLoad,
-        )
-    }?;
-    let context = graphics.create_d2d_context()?;
     unsafe { context.SetDpi(dpi as f32, dpi as f32) };
-    let properties = D2D1_BITMAP_PROPERTIES1 {
-        pixelFormat: D2D1_PIXEL_FORMAT {
-            format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-        },
-        dpiX: dpi as f32,
-        dpiY: dpi as f32,
-        bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET,
-        ..Default::default()
-    };
-    let target: ID2D1Bitmap1 =
-        unsafe { context.CreateBitmapFromWicBitmap(&bitmap, Some(&properties)) }?;
+    let target = create_target_bitmap(context, width, height, dpi as f32, dpi as f32)?;
     let target_image: ID2D1Image = target.cast()?;
+    let previous_target = unsafe { context.GetTarget() }?;
     unsafe {
         context.SetTarget(&target_image);
         context.BeginDraw();
         context.Clear(Some(&D2D1_COLOR_F {
-            r: 0.45,
-            g: 0.47,
-            b: 0.51,
+            r: 42.0 / 255.0,
+            g: 45.0 / 255.0,
+            b: 51.0 / 255.0,
             a: 1.0,
         }));
     }
-    let mut renderer = AppIconRenderer::new(context.clone(), logger.clone())?;
     let samples = ["tool.arrow", "board.black", "tool.highlighter"];
     let colors = [
         IconTint::rgba(1.0, 1.0, 1.0, 1.0),
@@ -480,24 +628,29 @@ fn render_icon_sheet(
         }
     }
     entries.extend(embedded_keys().map(|key| (key, IconTint::rgba(1.0, 1.0, 1.0, 1.0))));
-    for (index, (key, tint)) in entries.into_iter().enumerate() {
-        let column = (index as u32 % COLUMNS) as f32;
-        let row = (index as u32 / COLUMNS) as f32;
-        let inset = (CELL_DIP - ICON_DIP) / 2.0;
-        let left = column * CELL_DIP + inset;
-        let top = row * CELL_DIP + inset;
-        renderer.draw(
-            key,
-            D2D_RECT_F {
-                left,
-                top,
-                right: left + ICON_DIP,
-                bottom: top + ICON_DIP,
-            },
-            tint,
-        )?;
-    }
+    let draw_result = (|| -> Result<()> {
+        for (index, (key, tint)) in entries.into_iter().enumerate() {
+            let column = (index as u32 % COLUMNS) as f32;
+            let row = (index as u32 / COLUMNS) as f32;
+            let inset = (CELL_DIP - ICON_DIP) / 2.0;
+            let left = column * CELL_DIP + inset;
+            let top = row * CELL_DIP + inset;
+            renderer.draw(
+                key,
+                D2D_RECT_F {
+                    left,
+                    top,
+                    right: left + ICON_DIP,
+                    bottom: top + ICON_DIP,
+                },
+                tint,
+            )?;
+        }
+        Ok(())
+    })();
     let end = unsafe { context.EndDraw(None, None) };
+    unsafe { context.SetTarget(&previous_target) };
+    draw_result?;
     renderer.handle_render_result(end)?;
     if !renderer.missing_keys().is_empty() {
         return Err(Error::new(
@@ -505,6 +658,16 @@ fn render_icon_sheet(
             format!("missing icon keys: {}", renderer.missing_keys().join(", ")),
         ));
     }
+    let (pixels, pitch) = read_bitmap_bgra(context, &target)?;
+    let bitmap = unsafe {
+        factory.CreateBitmapFromMemory(
+            width,
+            height,
+            &GUID_WICPixelFormat32bppPBGRA,
+            pitch,
+            &pixels,
+        )
+    }?;
     let path = output_directory.join(format!("icons-{dpi}.png"));
     save_png(factory, &bitmap, &path, width, height, dpi)?;
     logger.event(&format!(
@@ -545,6 +708,14 @@ fn save_png(
     let mut pixel_format = GUID_WICPixelFormat32bppPBGRA;
     unsafe {
         frame.SetPixelFormat(&mut pixel_format)?;
+        if pixel_format != GUID_WICPixelFormat32bppPBGRA
+            && pixel_format != GUID_WICPixelFormat32bppBGRA
+        {
+            return Err(Error::new(
+                E_FAIL,
+                format!("PNG encoder selected a format without verified alpha: {pixel_format:?}"),
+            ));
+        }
         frame.WriteSource(bitmap, std::ptr::null())?;
         frame.Commit()?;
         encoder.Commit()?;
@@ -671,6 +842,36 @@ fn icon_transform(context: &ID2D1DeviceContext, rect: D2D_RECT_F) -> D2D1_BRUSH_
     properties.transform.M31 = left;
     properties.transform.M32 = top;
     properties
+}
+
+fn create_target_bitmap(
+    context: &ID2D1DeviceContext,
+    width: u32,
+    height: u32,
+    dpi_x: f32,
+    dpi_y: f32,
+) -> Result<ID2D1Bitmap1> {
+    let properties = D2D1_BITMAP_PROPERTIES1 {
+        pixelFormat: D2D1_PIXEL_FORMAT {
+            format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+        },
+        dpiX: dpi_x,
+        dpiY: dpi_y,
+        bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET,
+        ..Default::default()
+    };
+    unsafe { context.CreateBitmap(D2D_SIZE_U { width, height }, None, 0, &properties) }
+}
+
+fn tint_rgb(tint: IconTint) -> u32 {
+    (u32::from(channel(tint.color.r)) << 16)
+        | (u32::from(channel(tint.color.g)) << 8)
+        | u32::from(channel(tint.color.b))
+}
+
+fn color_hex(rgb: u32) -> String {
+    format!("#{rgb:06X}")
 }
 
 fn channel(value: f32) -> u8 {

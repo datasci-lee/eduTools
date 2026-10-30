@@ -456,15 +456,6 @@ impl OverlayRenderer {
 
     pub fn selftest_icons(&self) -> Result<()> {
         self.restore_swap_target()?;
-        unsafe {
-            self.context.BeginDraw();
-            self.context.Clear(Some(&D2D1_COLOR_F {
-                r: 0.16,
-                g: 0.18,
-                b: 0.22,
-                a: 1.0,
-            }));
-        }
         let mut renderer = AppIconRenderer::new(self.context.clone(), self.logger.clone())?;
         let cases = [
             ("tool.arrow", IconTint::rgba(1.0, 1.0, 1.0, 1.0)),
@@ -474,21 +465,20 @@ impl OverlayRenderer {
                 IconTint::rgba(0.2196, 0.7412, 0.9725, 0.55),
             ),
         ];
-        for (index, (key, tint)) in cases.into_iter().enumerate() {
-            let left = 16.0 + index as f32 * 40.0;
-            renderer.draw(
-                key,
-                D2D_RECT_F {
-                    left,
-                    top: 16.0,
-                    right: left + 24.0,
-                    bottom: 40.0,
-                },
-                tint,
-            )?;
+        for (key, tint) in cases {
+            let pixels = renderer.icon_alpha_count(key, tint)?;
+            self.logger.event(&format!(
+                "--selftest icon {key} px={pixels}; {}",
+                renderer.tint_report()
+            ));
+            if pixels == 0 {
+                return Err(Error::new(
+                    E_FAIL,
+                    format!("icon {key} px=0; {}", renderer.tint_report()),
+                ));
+            }
         }
-        let end = unsafe { self.context.EndDraw(None, None) };
-        renderer.handle_render_result(end)
+        Ok(())
     }
 
     fn draw_stroke(
@@ -777,19 +767,13 @@ fn read_pixel_samples(
             "pixel sample is outside the bitmap",
         ));
     }
-    let staging = create_cpu_read_bitmap(context, size.width, size.height)?;
-    unsafe { staging.CopyFromBitmap(None, bitmap, None) }?;
-    let mapped = unsafe { staging.Map(D2D1_MAP_OPTIONS_READ) }?;
-    if mapped.bits.is_null() {
-        let _ = unsafe { staging.Unmap() };
-        return Err(Error::new(E_FAIL, "mapped bitmap returned a null pointer"));
-    }
+    let (pixels, pitch) = read_bitmap_bgra(context, bitmap)?;
 
     let samples = points
         .iter()
         .map(|&(x, y)| {
-            let offset = y as usize * mapped.pitch as usize + x as usize * 4;
-            let pixel = unsafe { std::slice::from_raw_parts(mapped.bits.add(offset), 4) };
+            let offset = y as usize * pitch as usize + x as usize * 4;
+            let pixel = &pixels[offset..offset + 4];
             PixelSample {
                 x,
                 y,
@@ -797,8 +781,51 @@ fn read_pixel_samples(
             }
         })
         .collect();
-    unsafe { staging.Unmap() }?;
     Ok(samples)
+}
+
+pub(crate) fn count_nonzero_alpha(
+    context: &ID2D1DeviceContext,
+    bitmap: &ID2D1Bitmap1,
+) -> Result<usize> {
+    let size = unsafe { bitmap.GetPixelSize() };
+    let (pixels, pitch) = read_bitmap_bgra(context, bitmap)?;
+    let row_bytes = usize::try_from(size.width)
+        .ok()
+        .and_then(|width| width.checked_mul(4))
+        .ok_or_else(|| Error::new(E_FAIL, "bitmap row size overflow"))?;
+    let pitch = pitch as usize;
+    Ok((0..size.height as usize)
+        .map(|row| &pixels[row * pitch..row * pitch + row_bytes])
+        .flat_map(|row| row.chunks_exact(4))
+        .filter(|pixel| pixel[3] != 0)
+        .count())
+}
+
+pub(crate) fn read_bitmap_bgra(
+    context: &ID2D1DeviceContext,
+    bitmap: &ID2D1Bitmap1,
+) -> Result<(Vec<u8>, u32)> {
+    let size = unsafe { bitmap.GetPixelSize() };
+    let staging = create_cpu_read_bitmap(context, size.width, size.height)?;
+    unsafe { staging.CopyFromBitmap(None, bitmap, None) }?;
+    let mapped = unsafe { staging.Map(D2D1_MAP_OPTIONS_READ) }?;
+    if mapped.bits.is_null() {
+        let _ = unsafe { staging.Unmap() };
+        return Err(Error::new(E_FAIL, "mapped bitmap returned a null pointer"));
+    }
+    let byte_count = (mapped.pitch as usize)
+        .checked_mul(size.height as usize)
+        .ok_or_else(|| Error::new(E_FAIL, "mapped bitmap size overflow"));
+    let pixels = match byte_count {
+        Ok(byte_count) => unsafe { std::slice::from_raw_parts(mapped.bits, byte_count) }.to_vec(),
+        Err(error) => {
+            let _ = unsafe { staging.Unmap() };
+            return Err(error);
+        }
+    };
+    unsafe { staging.Unmap() }?;
+    Ok((pixels, mapped.pitch))
 }
 
 fn check_transparent_samples(name: &str, samples: &[PixelSample], failures: &mut Vec<String>) {
