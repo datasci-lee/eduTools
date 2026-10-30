@@ -42,6 +42,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 pub const SYNC_MESSAGE: u32 = 0x8000 + 2;
 const OVERLAY_CLASS: windows::core::PCWSTR = w!("EduToolsOverlay");
+const TARGET_DPI: f32 = 96.0;
 
 pub struct OverlayManager {
     overlays: HashMap<String, OverlayWindow>,
@@ -157,14 +158,34 @@ impl OverlayManager {
 
             let mut actual = RECT::default();
             // SAFETY: actual is writable and the overlay HWND is live.
-            match unsafe { GetWindowRect(overlay.hwnd(), &mut actual) } {
-                Ok(()) if actual == overlay.monitor().win32_rect() => {}
-                Ok(()) => failures.push(format!(
-                    "overlay {key}: GetWindowRect {:?} != rcMonitor {:?}",
-                    actual,
-                    overlay.monitor().win32_rect()
-                )),
-                Err(error) => failures.push(format!("overlay {key}: GetWindowRect 실패: {error}")),
+            let window_size = match unsafe { GetWindowRect(overlay.hwnd(), &mut actual) } {
+                Ok(()) => {
+                    if actual != overlay.monitor().win32_rect() {
+                        failures.push(format!(
+                            "overlay {key}: GetWindowRect {:?} != rcMonitor {:?}",
+                            actual,
+                            overlay.monitor().win32_rect()
+                        ));
+                    }
+                    Some((actual.right - actual.left, actual.bottom - actual.top))
+                }
+                Err(error) => {
+                    failures.push(format!("overlay {key}: GetWindowRect 실패: {error}"));
+                    None
+                }
+            };
+            if let Some((window_width, window_height)) = window_size {
+                match overlay.swap_chain_size() {
+                    Ok((swap_width, swap_height))
+                        if i64::from(swap_width) == i64::from(window_width)
+                            && i64::from(swap_height) == i64::from(window_height) => {}
+                    Ok((swap_width, swap_height)) => failures.push(format!(
+                        "overlay {key}: 스왑 체인 버퍼 {swap_width}x{swap_height} != 창 {window_width}x{window_height}"
+                    )),
+                    Err(error) => failures.push(format!(
+                        "overlay {key}: 스왑 체인 버퍼 크기 조회 실패: {error}"
+                    )),
+                }
             }
 
             match overlay.set_click_through(true) {
@@ -288,7 +309,8 @@ impl OverlayWindow {
             hwnd,
             rect.width(),
             rect.height(),
-            state.monitor.dpi,
+            state.monitor.session_key.clone(),
+            state.logger.clone(),
         ) {
             Ok(renderer) => renderer,
             Err(error) => {
@@ -340,11 +362,11 @@ impl OverlayWindow {
                 SWP_NOACTIVATE | SWP_NOZORDER,
             )
         }?;
-        if old.rect != rect || old.dpi != self.state.monitor.dpi {
+        if old.rect != rect {
             self.renderer
                 .as_mut()
                 .expect("renderer lives until OverlayWindow::drop")
-                .resize(rect.width(), rect.height(), self.state.monitor.dpi)?;
+                .resize(rect.width(), rect.height())?;
         }
         self.draw(annotation_enabled && debug_overlay)
     }
@@ -379,6 +401,13 @@ impl OverlayWindow {
             .as_mut()
             .expect("renderer lives until OverlayWindow::drop")
             .draw(debug_visible)
+    }
+
+    fn swap_chain_size(&self) -> Result<(u32, u32)> {
+        self.renderer
+            .as_ref()
+            .expect("renderer lives until OverlayWindow::drop")
+            .swap_chain_size()
     }
 }
 
@@ -518,6 +547,7 @@ impl GraphicsDevice {
 }
 
 struct OverlayRenderer {
+    hwnd: HWND,
     swap_chain: IDXGISwapChain1,
     context: ID2D1DeviceContext,
     target_bitmap: Option<ID2D1Bitmap1>,
@@ -525,7 +555,8 @@ struct OverlayRenderer {
     _visual: IDCompositionVisual,
     width: u32,
     height: u32,
-    dpi: (u32, u32),
+    monitor_key: String,
+    logger: Logger,
 }
 
 impl OverlayRenderer {
@@ -534,7 +565,8 @@ impl OverlayRenderer {
         hwnd: HWND,
         width: i32,
         height: i32,
-        dpi: (u32, u32),
+        monitor_key: String,
+        logger: Logger,
     ) -> Result<Self> {
         let width = valid_dimension(width)?;
         let height = valid_dimension(height)?;
@@ -567,7 +599,8 @@ impl OverlayRenderer {
                 .d2d_device
                 .CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)
         }?;
-        let target_bitmap = Some(create_target_bitmap(&context, &swap_chain, dpi)?);
+        unsafe { context.SetDpi(TARGET_DPI, TARGET_DPI) };
+        let target_bitmap = Some(create_target_bitmap(&context, &swap_chain)?);
         let target_image: ID2D1Image = target_bitmap
             .as_ref()
             .expect("target bitmap was just created")
@@ -583,7 +616,8 @@ impl OverlayRenderer {
             dcomp_target.SetRoot(&visual)?;
             graphics.dcomp_device.Commit()?;
         }
-        Ok(Self {
+        let renderer = Self {
+            hwnd,
             swap_chain,
             context,
             target_bitmap,
@@ -591,11 +625,14 @@ impl OverlayRenderer {
             _visual: visual,
             width,
             height,
-            dpi,
-        })
+            monitor_key,
+            logger,
+        };
+        renderer.log_size()?;
+        Ok(renderer)
     }
 
-    fn resize(&mut self, width: i32, height: i32, dpi: (u32, u32)) -> Result<()> {
+    fn resize(&mut self, width: i32, height: i32) -> Result<()> {
         let width = valid_dimension(width)?;
         let height = valid_dimension(height)?;
         // SAFETY: detaching the target releases the swap-chain buffer before ResizeBuffers.
@@ -612,13 +649,45 @@ impl OverlayRenderer {
                 )
             }?;
         }
-        let bitmap = create_target_bitmap(&self.context, &self.swap_chain, dpi)?;
+        let bitmap = create_target_bitmap(&self.context, &self.swap_chain)?;
         let image: ID2D1Image = bitmap.cast()?;
         unsafe { self.context.SetTarget(&image) };
         self.target_bitmap = Some(bitmap);
         self.width = width;
         self.height = height;
-        self.dpi = dpi;
+        self.log_size()?;
+        Ok(())
+    }
+
+    fn swap_chain_size(&self) -> Result<(u32, u32)> {
+        let description = unsafe { self.swap_chain.GetDesc1() }?;
+        Ok((description.Width, description.Height))
+    }
+
+    fn log_size(&self) -> Result<()> {
+        let (swap_width, swap_height) = self.swap_chain_size()?;
+        let mut window_rect = RECT::default();
+        unsafe { GetWindowRect(self.hwnd, &mut window_rect) }?;
+        let target = self
+            .target_bitmap
+            .as_ref()
+            .expect("target bitmap is attached outside ResizeBuffers");
+        let mut target_dpi_x = 0.0;
+        let mut target_dpi_y = 0.0;
+        unsafe { target.GetDpi(&mut target_dpi_x, &mut target_dpi_y) };
+        let target_size = unsafe { target.GetSize() };
+        debug_assert_eq!(target_dpi_x, target_dpi_y);
+        self.logger.event(&format!(
+            "오버레이 크기: {}, window={}x{}(물리), swapchain={}x{}, target dpi={:.0}, D2D 그리기 사각형={:.0}x{:.0}",
+            self.monitor_key,
+            window_rect.right - window_rect.left,
+            window_rect.bottom - window_rect.top,
+            swap_width,
+            swap_height,
+            target_dpi_x,
+            target_size.width,
+            target_size.height
+        ));
         Ok(())
     }
 
@@ -649,17 +718,14 @@ impl OverlayRenderer {
             self.context.Clear(Some(&clear));
         }
         if let Some(brush) = debug_brush {
-            // The target carries the monitor DPI, so D2D units are DIPs. Convert the requested
-            // four physical pixels back to DIPs and keep the stroke inside the target bounds.
-            let x_scale = self.dpi.0 as f32 / 96.0;
-            let y_scale = self.dpi.1 as f32 / 96.0;
-            let stroke = 4.0 / x_scale;
+            // 창, 스왑 체인, D2D 타깃은 물리 픽셀이고 96 DPI에서 D2D 1단위는 1픽셀이다.
+            let stroke = 4.0;
             let inset = stroke / 2.0;
             let border = D2D_RECT_F {
                 left: inset,
                 top: inset,
-                right: self.width as f32 / x_scale - inset,
-                bottom: self.height as f32 / y_scale - inset,
+                right: self.width as f32 - inset,
+                bottom: self.height as f32 - inset,
             };
             unsafe {
                 self.context
@@ -677,7 +743,6 @@ impl OverlayRenderer {
 fn create_target_bitmap(
     context: &ID2D1DeviceContext,
     swap_chain: &IDXGISwapChain1,
-    dpi: (u32, u32),
 ) -> Result<ID2D1Bitmap1> {
     let surface: IDXGISurface = unsafe { swap_chain.GetBuffer(0) }?;
     let properties = D2D1_BITMAP_PROPERTIES1 {
@@ -685,8 +750,8 @@ fn create_target_bitmap(
             format: DXGI_FORMAT_B8G8R8A8_UNORM,
             alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
         },
-        dpiX: dpi.0 as f32,
-        dpiY: dpi.1 as f32,
+        dpiX: TARGET_DPI,
+        dpiY: TARGET_DPI,
         bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
         ..Default::default()
     };
