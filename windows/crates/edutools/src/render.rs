@@ -147,6 +147,10 @@ impl GraphicsDevice {
         }
     }
 
+    pub(crate) fn d3d_device(&self) -> ID3D11Device {
+        self.d3d_device.clone()
+    }
+
     pub fn attach_composition_swap_chain(
         &self,
         hwnd: HWND,

@@ -126,6 +126,46 @@ impl AffineTransform {
 // Swift: ZoomGeometry
 pub struct ZoomGeometry;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ZoomControlInput {
+    IncreaseKey,
+    DecreaseKey,
+    ResetKey,
+    Wheel(i32),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ZoomControlEffect {
+    Adjust(i32),
+    Reset,
+}
+
+// Swift: ZoomController.adjustMagnification/resetMagnification/handleScroll
+pub const fn zoom_control_effect(input: ZoomControlInput) -> Option<ZoomControlEffect> {
+    match input {
+        ZoomControlInput::IncreaseKey => Some(ZoomControlEffect::Adjust(1)),
+        ZoomControlInput::DecreaseKey => Some(ZoomControlEffect::Adjust(-1)),
+        ZoomControlInput::ResetKey => Some(ZoomControlEffect::Reset),
+        ZoomControlInput::Wheel(0) => None,
+        ZoomControlInput::Wheel(steps) => Some(ZoomControlEffect::Adjust(steps)),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ZoomStopAction {
+    CancelPreview,
+    StopZoom,
+}
+
+// Swift: ZoomController.stopOrCancelPreview()
+pub const fn stop_or_cancel_preview_action(is_previewing: bool) -> ZoomStopAction {
+    if is_previewing {
+        ZoomStopAction::CancelPreview
+    } else {
+        ZoomStopAction::StopZoom
+    }
+}
+
 impl ZoomGeometry {
     // Swift: ZoomGeometry.magnificationLabel(_:)
     pub fn magnification_label(magnification: f64) -> String {
@@ -284,5 +324,58 @@ impl ZoomGeometry {
         } else {
             state.magnification
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        stop_or_cancel_preview_action, zoom_control_effect, ZoomControlEffect, ZoomControlInput,
+        ZoomStopAction,
+    };
+
+    #[test]
+    fn zoom_key_and_wheel_effect_table() {
+        let cases = [
+            (
+                ZoomControlInput::IncreaseKey,
+                Some(ZoomControlEffect::Adjust(1)),
+            ),
+            (
+                ZoomControlInput::DecreaseKey,
+                Some(ZoomControlEffect::Adjust(-1)),
+            ),
+            (ZoomControlInput::ResetKey, Some(ZoomControlEffect::Reset)),
+            (
+                ZoomControlInput::Wheel(3),
+                Some(ZoomControlEffect::Adjust(3)),
+            ),
+            (
+                ZoomControlInput::Wheel(-2),
+                Some(ZoomControlEffect::Adjust(-2)),
+            ),
+            (ZoomControlInput::Wheel(0), None),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(zoom_control_effect(input), expected, "{input:?}");
+        }
+    }
+
+    #[test]
+    fn preview_freeze_and_escape_priority_table() {
+        let cases = [
+            (false, false, ZoomStopAction::StopZoom),
+            (true, false, ZoomStopAction::CancelPreview),
+            (true, true, ZoomStopAction::CancelPreview),
+            (false, true, ZoomStopAction::StopZoom),
+        ];
+        for (previewing, _frozen, expected) in cases {
+            assert_eq!(stop_or_cancel_preview_action(previewing), expected);
+        }
+
+        let first = stop_or_cancel_preview_action(true);
+        let second = stop_or_cancel_preview_action(false);
+        assert_eq!(first, ZoomStopAction::CancelPreview);
+        assert_eq!(second, ZoomStopAction::StopZoom);
     }
 }
