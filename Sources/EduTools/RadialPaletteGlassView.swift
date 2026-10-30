@@ -32,16 +32,16 @@ struct RadialPaletteSectorGeometry {
 
 enum RadialPaletteMetrics {
     static let collapsedDiameter: CGFloat = 44
-    static let expandedDiameter: CGFloat = 280
+    static let expandedDiameter: CGFloat = 302
     // Focus-ring overhang plus room for the active-arc glow.
     static let windowMargin: CGFloat = 10
     static let centerRadius: CGFloat = collapsedDiameter / 2
     static let groupInnerRadius: CGFloat = 28
     static let groupOuterRadius: CGFloat = 58
     static let entryInnerRadius: CGFloat = 64
-    static let entryOuterRadius: CGFloat = 96
-    static let optionInnerRadius: CGFloat = 102
-    static let optionOuterRadius: CGFloat = 138
+    static let entryOuterRadius: CGFloat = 100
+    static let optionInnerRadius: CGFloat = 113
+    static let optionOuterRadius: CGFloat = 149
     static let dragThreshold: CGFloat = 4
     static let commandHoldDuration: TimeInterval = 0.5
     static let sectorGap: CGFloat = 2 * .pi / 180
@@ -383,17 +383,22 @@ struct RadialPaletteGlassView: View {
         let circle = Circle()
         let position = nodePosition(for: cell, in: bounds)
         let hasNodeSurface = cell.ring == .option && cell.color == nil
-        let showsHighlight = (cell.isHovered && cell.isEnabled)
-            || (cell.ring == .entry && cell.isSelected)
+        let showsSelectedEntryHighlight = cell.ring == .entry && cell.isSelected
+        let showsHoverHighlight = cell.isHovered && cell.isEnabled
+            && !showsSelectedEntryHighlight
         return ZStack {
-            edgeArc(for: cell)
+            if cell.ring == .option {
+                edgeArc(for: cell)
+            }
 
             ZStack {
                 if hasNodeSurface {
                     circle.fill(surfaceColor)
                 }
 
-                if showsHighlight {
+                if showsSelectedEntryHighlight {
+                    circle.fill(Color(nsColor: RadialPaletteArcStyle.selectedNodeFillColor))
+                } else if showsHoverHighlight {
                     circle.fill(Color(nsColor: RadialPaletteArcStyle.hoverFillColor))
                 }
 
@@ -406,8 +411,12 @@ struct RadialPaletteGlassView: View {
 
                 if cell.isFocused, cell.color == nil {
                     circle.stroke(
-                        Color(nsColor: RadialPaletteArcStyle.activeIconColor),
-                        lineWidth: RadialPaletteArcStyle.nodeFocusRingWidth
+                        Color(nsColor: cell.ring == .entry
+                            ? RadialPaletteArcStyle.entryFocusRingColor
+                            : RadialPaletteArcStyle.activeIconColor),
+                        lineWidth: cell.ring == .entry
+                            ? RadialPaletteArcStyle.entryFocusRingWidth
+                            : RadialPaletteArcStyle.nodeFocusRingWidth
                     )
                 }
 
@@ -418,7 +427,7 @@ struct RadialPaletteGlassView: View {
                 }
             }
             .frame(width: diameter, height: diameter)
-            .scaleEffect(cell.isSelected ? 1.08 : 1)
+            .scaleEffect(cell.ring == .option && cell.isSelected ? 1.08 : 1)
             .position(position)
         }
         .frame(width: bounds.width, height: bounds.height)
@@ -452,7 +461,7 @@ struct RadialPaletteGlassView: View {
 
     private func inactiveArcTracks() -> some View {
         ZStack {
-            ForEach(trackSegments(for: .entry) + trackSegments(for: .option)) { segment in
+            ForEach(optionTrackSegments()) { segment in
                 RadialArcShape(
                     radius: segment.radius,
                     startAngle: segment.startAngle,
@@ -465,6 +474,7 @@ struct RadialPaletteGlassView: View {
                         lineCap: .round
                     )
                 )
+                .shadow(color: Color.black.opacity(0.28), radius: 1.5)
             }
         }
     }
@@ -499,18 +509,9 @@ struct RadialPaletteGlassView: View {
         }
     }
 
-    private func trackSegments(for ring: RadialPaletteRing) -> [RadialPaletteArcSegment] {
-        let ringCells = cells(in: ring)
+    private func optionTrackSegments() -> [RadialPaletteArcSegment] {
+        let ringCells = cells(in: .option)
         guard let first = ringCells.first else { return [] }
-
-        if ring == .entry {
-            return [RadialPaletteArcSegment(
-                id: "entry",
-                radius: arcTrackRadius(for: first),
-                startAngle: first.geometry.startAngle,
-                endAngle: ringCells.last?.geometry.endAngle ?? first.geometry.endAngle
-            )]
-        }
 
         let sectionThreshold = RadialPaletteMetrics.sectorGap
             + RadialPaletteMetrics.propertyGap / 2

@@ -167,7 +167,14 @@ enum RadialPaletteArcStyle {
 
     static let outerBorderColor = NSColor(calibratedWhite: 1, alpha: 0.08)
     static let hoverFillColor = NSColor(calibratedWhite: 1, alpha: 0.07)
-    static let inactiveArcColor = NSColor(calibratedWhite: 1, alpha: 0.18)
+    static let selectedNodeFillColor = NSColor(calibratedWhite: 1, alpha: 0.18)
+    static let entryFocusRingColor = NSColor(calibratedWhite: 1, alpha: 0.5)
+    static let inactiveArcColor = NSColor(
+        deviceRed: 100.0 / 255.0,
+        green: 116.0 / 255.0,
+        blue: 139.0 / 255.0,
+        alpha: 0.6
+    )
     static let activeColor = NSColor(
         deviceRed: 56.0 / 255.0,
         green: 189.0 / 255.0,
@@ -190,6 +197,7 @@ enum RadialPaletteArcStyle {
     static let nodeArcPadding: CGFloat = 3
     static let entryNodeMaximumDiameter: CGFloat = 24
     static let optionNodeMaximumDiameter: CGFloat = 30
+    static let entryFocusRingWidth: CGFloat = 1
     static let nodeFocusRingWidth: CGFloat = 1.5
     static let entryCapsulePadding: CGFloat = 8
     static let entryCapsuleOpacityMultiplier = 0.85
