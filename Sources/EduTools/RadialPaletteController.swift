@@ -22,6 +22,7 @@ enum RadialPaletteGroupID: Int, CaseIterable {
 
 enum RadialPaletteEntryAction {
     case command(AppCommand)
+    case selectEraserMode(EraserMode)
     case openSettings
     case saveFavorite
     case applyFavorite(index: Int, favorite: FavoriteTool)
@@ -50,6 +51,28 @@ struct RadialPaletteEntry {
 
     static func command(_ command: AppCommand) -> RadialPaletteEntry {
         RadialPaletteEntry(action: .command(command), fallbackName: nil, fallbackIconName: nil)
+    }
+
+    static func eraserMode(_ mode: EraserMode) -> RadialPaletteEntry {
+        let iconKey: String
+        let iconName: String
+        switch mode {
+        case .partial:
+            iconKey = "tool.eraser"
+            iconName = "eraser"
+        case .stroke:
+            iconKey = "eraser.mode.stroke"
+            iconName = "eraser.line.dashed"
+        case .area:
+            iconKey = AppIcon.Key.optionAreaRectangle
+            iconName = "rectangle.dashed"
+        }
+        return RadialPaletteEntry(
+            action: .selectEraserMode(mode),
+            fallbackName: mode.displayName,
+            fallbackIconKey: iconKey,
+            fallbackIconName: iconName
+        )
     }
 
     static let openSettings = RadialPaletteEntry(
@@ -94,6 +117,7 @@ struct RadialPaletteEntry {
             return definition.id
         }
         switch action {
+        case let .selectEraserMode(mode): return "eraser.mode.\(mode.rawValue)"
         case .openSettings: return "palette.settings"
         case .saveFavorite: return "palette.favorite.save"
         case let .applyFavorite(index, _): return "palette.favorite.\(index)"
@@ -115,16 +139,24 @@ struct RadialPaletteEntry {
     }
 
     var shortcut: String {
-        definition?.displayKeys ?? ""
+        if case .selectEraserMode = action {
+            return ShortcutCatalog.definition(for: .selectOrCycleEraser)?.displayKeys ?? ""
+        }
+        return definition?.displayKeys ?? ""
     }
 
     var inkTool: InkTool? {
         switch action {
         case let .command(.selectTool(tool)): return tool
         case .command(.useLaser): return .laser
-        case .command(.selectOrCycleEraser): return .eraser
+        case .selectEraserMode: return .eraser
         default: return nil
         }
+    }
+
+    var eraserMode: EraserMode? {
+        guard case let .selectEraserMode(mode) = action else { return nil }
+        return mode
     }
 
     var favorite: FavoriteTool? {
@@ -175,7 +207,9 @@ private enum RadialPaletteCatalog {
             iconName: "eraser",
             isEnabled: true,
             entries: [
-                .command(.selectOrCycleEraser),
+                .eraserMode(.partial),
+                .eraserMode(.stroke),
+                .eraserMode(.area),
                 .command(.undo),
                 .command(.redo),
                 .command(.clearAll),
@@ -235,11 +269,17 @@ private enum RadialPaletteCatalog {
         return definition
     }
 
-    static func path(for tool: InkTool) -> (
+    static func path(for tool: InkTool, eraserMode: EraserMode? = nil) -> (
         group: RadialPaletteGroupDefinition,
         entry: RadialPaletteEntry
     )? {
         for group in groups {
+            if tool == .eraser,
+               let eraserMode,
+               let entry = group.entries.first(where: { $0.eraserMode == eraserMode })
+            {
+                return (group, entry)
+            }
             if let entry = group.entries.first(where: { $0.inkTool == tool }) {
                 return (group, entry)
             }
@@ -708,6 +748,10 @@ private final class RadialPaletteView: NSView {
         guard let controller else { return }
         let location = convert(event.locationInWindow, from: nil)
         guard let target = controller.hitTarget(at: location, in: bounds) else { return }
+        if case .center = target {
+            controller.stepBack()
+            return
+        }
         _ = controller.removeFavorite(for: target)
     }
 
@@ -902,6 +946,9 @@ final class RadialPaletteController: NSObject {
         }
         toolSettingsObserverIdentifier = state.addToolSettingsObserver { [weak self] in
             guard let self else { return }
+            if self.state.currentTool == .eraser {
+                self.synchronizePathWithCurrentTool()
+            }
             self.updateTooltipAppearance()
             self.paletteView.redraw()
         }
@@ -1259,6 +1306,18 @@ final class RadialPaletteController: NSObject {
             if entry.inkTool != nil {
                 setSelectedEntryIdentifier(entry.identifier)
             }
+        case let .selectEraserMode(mode):
+            if state.currentTool == .eraser, state.eraserMode == mode {
+                if mode == .area {
+                    dispatcher.execute(.toggleEraserAreaShape, scope: .annotation)
+                }
+            } else {
+                if state.currentTool != .eraser {
+                    dispatcher.execute(.selectTool(.eraser), scope: .annotation)
+                }
+                state.setEraserMode(mode)
+            }
+            setSelectedEntryIdentifier(entry.identifier)
         case .openSettings:
             openSettings()
         case .saveFavorite:
@@ -1270,6 +1329,10 @@ final class RadialPaletteController: NSObject {
                 setSelectedEntryIdentifier(entry.identifier)
             }
         }
+    }
+
+    fileprivate func stepBack() {
+        dispatcher.execute(.stepBack, scope: .annotation)
     }
 
     private func saveCurrentFavorite() {
@@ -1404,7 +1467,10 @@ final class RadialPaletteController: NSObject {
     }
 
     private func synchronizePathWithCurrentTool() {
-        guard let path = RadialPaletteCatalog.path(for: state.currentTool) else { return }
+        guard let path = RadialPaletteCatalog.path(
+            for: state.currentTool,
+            eraserMode: state.currentTool == .eraser ? state.eraserMode : nil
+        ) else { return }
         selectedGroup = path.group.id
         setSelectedEntryIdentifier(path.entry.identifier)
     }
@@ -1650,8 +1716,8 @@ final class RadialPaletteController: NSObject {
                             endAngle: cellEnd
                         ),
                         name: entry.name,
-                        iconKey: entry.iconKey,
-                        iconName: entry.iconName,
+                        iconKey: iconKey(for: entry),
+                        iconName: iconName(for: entry),
                         shortLabel: "",
                         shortcut: entry.shortcut,
                         color: nil,
@@ -1713,6 +1779,9 @@ final class RadialPaletteController: NSObject {
     private func entryIsSelected(_ entry: RadialPaletteEntry) -> Bool {
         if let favorite = entry.favorite {
             return state.currentFavoriteSnapshot() == favorite
+        }
+        if let eraserMode = entry.eraserMode {
+            return state.currentTool == .eraser && state.eraserMode == eraserMode
         }
         if let tool = entry.inkTool {
             return state.currentTool == tool
@@ -1776,7 +1845,7 @@ final class RadialPaletteController: NSObject {
                 apply: { [weak state = self.state] in state?.setWidth($0, for: tool) }
             )]
         case .eraser:
-            return eraserOptions()
+            return eraserOptions(for: entry.eraserMode ?? state.eraserMode)
         case .laser:
             return [laserColorOptions()]
         case .select, .cover:
@@ -1842,21 +1911,8 @@ final class RadialPaletteController: NSObject {
         return RadialPaletteOptionGroup(name: propertyName, options: options)
     }
 
-    private func eraserOptions() -> [RadialPaletteOptionGroup] {
-        let modes = EraserMode.allCases.map { mode in
-            let shortLabel = eraserModeShortLabel(mode)
-            return RadialPaletteOption(
-                identifier: "eraser.mode.\(shortLabel)",
-                name: mode.displayName,
-                shortLabel: shortLabel,
-                iconKey: nil,
-                iconName: nil,
-                color: nil,
-                shortcut: "",
-                isSelected: state.eraserMode == mode,
-                action: { [weak state = self.state] in state?.setEraserMode(mode) }
-            )
-        }
+    private func eraserOptions(for mode: EraserMode) -> [RadialPaletteOptionGroup] {
+        guard mode != .area else { return [] }
         let diameterValues = settingsStore.settings.eraser.presetDiameters.map { CGFloat($0) }
         let sizes = diameterValues.enumerated().map {
             index, value in
@@ -1877,26 +1933,7 @@ final class RadialPaletteController: NSObject {
                 action: { [weak state = self.state] in state?.setEraserDiameter(value) }
             )
         }
-        let shapes = EraserAreaShape.allCases.map { shape in
-            RadialPaletteOption(
-                identifier: "eraser.area.\(shape.rawValue)",
-                name: shape.displayName,
-                shortLabel: shape.displayName,
-                iconKey: shape == .rectangle
-                    ? AppIcon.Key.optionAreaRectangle
-                    : AppIcon.Key.optionAreaLasso,
-                iconName: shape == .rectangle ? "rectangle.dashed" : "lasso",
-                color: nil,
-                shortcut: "",
-                isSelected: state.eraserAreaShape == shape,
-                action: { [weak state = self.state] in state?.setEraserAreaShape(shape) }
-            )
-        }
-        return [
-            RadialPaletteOptionGroup(name: "방식", options: modes),
-            RadialPaletteOptionGroup(name: "크기", options: sizes),
-            RadialPaletteOptionGroup(name: "영역", options: shapes),
-        ]
+        return [RadialPaletteOptionGroup(name: "크기", options: sizes)]
     }
 
     private func laserColorOptions() -> RadialPaletteOptionGroup {
@@ -1922,19 +1959,23 @@ final class RadialPaletteController: NSObject {
         value.rounded() == value ? String(Int(value)) : String(format: "%.1f", value)
     }
 
-    private func eraserModeShortLabel(_ mode: EraserMode) -> String {
-        switch mode {
-        case .partial: return "부분"
-        case .stroke: return "획"
-        case .area: return "영역"
-        }
-    }
-
     private func requiredDefinition(for command: AppCommand) -> ShortcutDefinition {
         guard let definition = ShortcutCatalog.definition(for: command) else {
             preconditionFailure("Radial palette command is missing from ShortcutCatalog: \(command)")
         }
         return definition
+    }
+
+    private func iconKey(for entry: RadialPaletteEntry) -> String {
+        guard entry.eraserMode == .area else { return entry.iconKey }
+        return state.eraserAreaShape == .rectangle
+            ? AppIcon.Key.optionAreaRectangle
+            : AppIcon.Key.optionAreaLasso
+    }
+
+    private func iconName(for entry: RadialPaletteEntry) -> String {
+        guard entry.eraserMode == .area else { return entry.iconName }
+        return state.eraserAreaShape == .rectangle ? "rectangle.dashed" : "lasso"
     }
 
     fileprivate func updateRenderModel(
@@ -2002,6 +2043,9 @@ final class RadialPaletteController: NSObject {
                 for: favorite,
                 settings: settingsStore.settings
             )
+        }
+        if entry.eraserMode != nil {
+            return nil
         }
         guard let tool = entry.inkTool else { return nil }
         return AttrIcon.configuration(

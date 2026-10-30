@@ -63,6 +63,51 @@ struct RadialPaletteTests {
 
     #expect(fixture.state.currentTool == .highlighter)
   }
+
+  @Test("지우개 방식 칸은 도구와 방식을 함께 고르고 영역 칸 재선택은 모양을 전환한다")
+  func eraserModeEntriesSelectOneModeAndRetoggleAreaShape() throws {
+    requireWindowServer()
+    _ = NSApplication.shared
+    let fixture = try RadialPaletteFixture()
+    fixture.showAndExpand()
+
+    guard let erasingGroup = fixture.controller.layoutCells().first(where: { cell in
+      guard case let .group(group) = cell.action else { return false }
+      return group == .erasing
+    }) else {
+      Issue.record("지우기 그룹 칸을 찾지 못했습니다")
+      return
+    }
+    fixture.controller.activate(.cell(erasingGroup))
+
+    let eraserEntries = fixture.controller.layoutCells().filter { cell in
+      guard case let .entry(entry) = cell.action else { return false }
+      return entry.eraserMode != nil
+    }
+    #expect(eraserEntries.count == 3)
+    #expect(Set(eraserEntries.map(\.identifier)).count == 3)
+
+    guard let areaEntry = eraserEntries.first(where: { cell in
+      guard case let .entry(entry) = cell.action else { return false }
+      return entry.eraserMode == .area
+    }) else {
+      Issue.record("영역 지우개 칸을 찾지 못했습니다")
+      return
+    }
+    fixture.controller.activate(.cell(areaEntry))
+
+    #expect(fixture.state.currentTool == .eraser)
+    #expect(fixture.state.eraserMode == .area)
+    let selectedEraserEntries = fixture.controller.layoutCells().filter { cell in
+      guard case let .entry(entry) = cell.action, entry.eraserMode != nil else { return false }
+      return cell.isSelected
+    }
+    #expect(selectedEraserEntries.map(\.identifier) == [areaEntry.identifier])
+
+    let originalAreaShape = fixture.state.eraserAreaShape
+    fixture.controller.activate(.cell(areaEntry))
+    #expect(fixture.state.eraserAreaShape != originalAreaShape)
+  }
 }
 
 @MainActor
