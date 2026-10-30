@@ -166,17 +166,21 @@ impl Tray {
     }
 
     pub fn show_hotkey_failure(&self, name: &str, key: &str) {
-        let mut data = self.base_data(NOTIFY_ICON_DATA_FLAGS(NIF_INFO.0));
-        copy_wide(&mut data.szInfoTitle, "전역 단축키 등록 실패");
         let message = format!("{name} ({key}) 단축키를 다른 앱이 사용 중입니다.");
-        copy_wide(&mut data.szInfo, &message);
+        self.show_warning("전역 단축키 등록 실패", &message);
+    }
+
+    pub fn show_warning(&self, title: &str, message: &str) {
+        let mut data = self.base_data(NOTIFY_ICON_DATA_FLAGS(NIF_INFO.0));
+        copy_wide(&mut data.szInfoTitle, title);
+        copy_wide(&mut data.szInfo, message);
         data.dwInfoFlags = NIIF_WARNING;
         // SAFETY: data is fully initialized for NIM_MODIFY and references the registered icon.
         let shown = unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) }.as_bool();
         if !shown {
             self.logger
                 .event("트레이 풍선 알림 실패; MessageBox로 전환");
-            let wide = wide(&message);
+            let wide = wide(message);
             // SAFETY: strings are NUL-terminated and hwnd is a valid owner window.
             unsafe {
                 MessageBoxW(

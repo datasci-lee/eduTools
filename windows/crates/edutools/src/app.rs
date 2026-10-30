@@ -1,5 +1,6 @@
 use crate::hotkey::HotkeyCenter;
 use crate::log::Logger;
+use crate::overlay::{OverlayManager, SYNC_MESSAGE};
 use crate::tray::{self, Tray, CALLBACK_MESSAGE, MENU_EXIT, MENU_TOGGLE_ANNOTATION};
 use edutools_core::dispatch::{dispatch, DispatchContext, Effect};
 use edutools_core::settings::AppSettings;
@@ -104,16 +105,27 @@ struct App {
     settings: AppSettings,
     tray: Option<Tray>,
     hotkeys: Option<HotkeyCenter>,
+    overlays: Option<OverlayManager>,
     logger: Logger,
     shutting_down: bool,
 }
 
 impl App {
     fn initialize(&mut self) -> Result<()> {
-        let mut tray = Tray::add(self.hwnd, self.hinstance, self.logger.clone())?;
-        let hotkeys = HotkeyCenter::register_defaults(self.hwnd, &mut tray, self.logger.clone());
-        self.tray = Some(tray);
+        self.tray = Some(Tray::add(self.hwnd, self.hinstance, self.logger.clone())?);
+        let hotkeys = HotkeyCenter::register_defaults(
+            self.hwnd,
+            self.tray.as_mut().expect("tray was just initialized"),
+            self.logger.clone(),
+        );
         self.hotkeys = Some(hotkeys);
+        match OverlayManager::new(self.hwnd, self.hinstance, self.logger.clone()) {
+            Ok(overlays) => self.overlays = Some(overlays),
+            Err(error) => {
+                self.report_overlay_error("초기화", &error);
+                return Err(error);
+            }
+        }
         Ok(())
     }
 
@@ -166,6 +178,11 @@ impl App {
                     if let Some(tray) = self.tray.as_mut() {
                         tray.set_annotation_enabled(enabled);
                     }
+                    if let Some(overlays) = self.overlays.as_mut() {
+                        if let Err(error) = overlays.set_annotation_mode(enabled) {
+                            self.report_overlay_error("판서 모드 반영", &error);
+                        }
+                    }
                     self.logger.event(&format!(
                         "annotation.toggle 결과 ({source}): {}",
                         if enabled { "켜짐" } else { "꺼짐" }
@@ -175,6 +192,22 @@ impl App {
                     .logger
                     .event(&format!("W1에서 해석하지 않는 core effect: {other:?}")),
             }
+        }
+    }
+
+    fn synchronize_overlays(&mut self, reason: &str) {
+        if let Some(overlays) = self.overlays.as_mut() {
+            if let Err(error) = overlays.synchronize(reason) {
+                self.report_overlay_error("모니터 재구성", &error);
+            }
+        }
+    }
+
+    fn report_overlay_error(&self, context: &str, error: &Error) {
+        let message = format!("오버레이 {context} 실패: {error}");
+        self.logger.event(&message);
+        if let Some(tray) = self.tray.as_ref() {
+            tray.show_warning("오버레이 오류", &message);
         }
     }
 
@@ -207,6 +240,9 @@ impl App {
             return;
         }
         self.shutting_down = true;
+        // Overlay HWNDs and graphics resources must be released on the UI thread before the tray
+        // and hidden owner window go away.
+        self.overlays = None;
         if let Some(hotkeys) = self.hotkeys.as_mut() {
             hotkeys.shutdown();
         }
@@ -262,6 +298,7 @@ fn run_message_loop(logger: Logger) -> Result<i32> {
         settings: AppSettings::default(),
         tray: None,
         hotkeys: None,
+        overlays: None,
         logger,
         shutting_down: false,
     });
@@ -269,6 +306,7 @@ fn run_message_loop(logger: Logger) -> Result<i32> {
     // SAFETY: app is boxed and remains at a stable address until after the message loop.
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, app_ptr as isize) };
     if let Err(error) = app.initialize() {
+        app.shutdown();
         // SAFETY: clearing user data prevents callbacks from observing a soon-to-drop App.
         unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) };
         // SAFETY: hwnd was created above and has not yet been destroyed.
@@ -323,6 +361,10 @@ unsafe extern "system" fn window_proc(
                 app.handle_tray_callback((lparam.0 as u32) & 0xffff);
                 return LRESULT(0);
             }
+            SYNC_MESSAGE => {
+                app.synchronize_overlays("오버레이 메시지");
+                return LRESULT(0);
+            }
             WM_SETTINGCHANGE => {
                 if let Some(tray) = app.tray.as_mut() {
                     tray.refresh_theme();
@@ -339,6 +381,7 @@ unsafe extern "system" fn window_proc(
                 if let Some(tray) = app.tray.as_mut() {
                     tray.refresh_display("WM_DISPLAYCHANGE");
                 }
+                app.synchronize_overlays("WM_DISPLAYCHANGE");
                 return LRESULT(0);
             }
             WM_DESTROY => {
@@ -392,6 +435,11 @@ fn run_selftest(logger: &Logger) -> bool {
                     }
                 }
             }
+        }
+
+        match OverlayManager::new(HWND::default(), hinstance, logger.clone()) {
+            Ok(mut overlays) => failures.extend(overlays.selftest_failures()),
+            Err(error) => failures.push(format!("overlay: 생성 실패: {error}")),
         }
     }
 

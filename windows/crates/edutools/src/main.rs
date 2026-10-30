@@ -6,6 +6,10 @@ mod hotkey;
 mod keymap;
 #[cfg(windows)]
 mod log;
+#[cfg(any(windows, test))]
+mod monitor;
+#[cfg(windows)]
+mod overlay;
 #[cfg(windows)]
 mod tray;
 
