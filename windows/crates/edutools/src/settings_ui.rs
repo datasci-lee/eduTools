@@ -17,11 +17,14 @@ use std::ops::RangeInclusive;
 #[cfg(windows)]
 use windows::core::{w, Error, Result, PCWSTR, PWSTR};
 #[cfg(windows)]
-use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{
+    COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
+};
 #[cfg(windows)]
 use windows::Win32::Graphics::Gdi::{
-    CreateFontIndirectW, CreateSolidBrush, DeleteObject, DrawFocusRect, FillRect, FrameRect,
-    GetSysColorBrush, InvalidateRect, COLOR_WINDOW, HFONT,
+    CreateFontIndirectW, CreateSolidBrush, DeleteObject, DrawFocusRect, FillRect, FrameRect, GetDC,
+    GetMonitorInfoW, GetSysColorBrush, GetTextExtentPoint32W, InvalidateRect, MonitorFromPoint,
+    ReleaseDC, SelectObject, COLOR_WINDOW, HFONT, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
 #[cfg(windows)]
 use windows::Win32::System::Com::CoTaskMemFree;
@@ -31,12 +34,13 @@ use windows::Win32::UI::Controls::Dialogs::{ChooseColorW, CC_FULLOPEN, CC_RGBINI
 use windows::Win32::UI::Controls::{
     InitCommonControlsEx, SetScrollInfo, BST_CHECKED, BST_UNCHECKED, DRAWITEMSTRUCT,
     ICC_BAR_CLASSES, ICC_TAB_CLASSES, INITCOMMONCONTROLSEX, NMHDR, NM_RELEASEDCAPTURE, TBM_SETPOS,
-    TBM_SETRANGEMAX, TBM_SETRANGEMIN, TB_ENDTRACK, TCIF_TEXT, TCITEMW, TCM_GETCURSEL,
-    TCM_INSERTITEMW, TCM_SETCURSEL, TCN_SELCHANGE, TRACKBAR_CLASSW, WC_TABCONTROLW,
+    TBM_SETRANGEMAX, TBM_SETRANGEMIN, TB_ENDTRACK, TCIF_TEXT, TCITEMW, TCM_ADJUSTRECT,
+    TCM_GETCURSEL, TCM_INSERTITEMW, TCM_SETCURSEL, TCN_SELCHANGE, TRACKBAR_CLASSW, WC_TABCONTROLW,
 };
 #[cfg(windows)]
 use windows::Win32::UI::HiDpi::{
-    AdjustWindowRectExForDpi, GetDpiForWindow, SystemParametersInfoForDpi,
+    AdjustWindowRectExForDpi, GetDpiForMonitor, GetDpiForWindow, SystemParametersInfoForDpi,
+    MDT_EFFECTIVE_DPI,
 };
 #[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetFocus, SetFocus};
@@ -46,43 +50,99 @@ use windows::Win32::UI::Shell::{
 };
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetParent, GetScrollInfo,
-    GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, IsWindow, LoadCursorW, MessageBoxW,
-    PostMessageW, RegisterClassW, SendMessageW, SetForegroundWindow, SetWindowLongPtrW,
-    SetWindowPos, SetWindowTextW, ShowWindow, BS_AUTOCHECKBOX, BS_OWNERDRAW, BS_PUSHBUTTON,
-    CBN_SELCHANGE, CBS_DROPDOWNLIST, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, CREATESTRUCTW,
-    EN_KILLFOCUS, ES_AUTOHSCROLL, ES_MULTILINE, ES_READONLY, GWLP_USERDATA, HMENU, IDC_ARROW,
-    MB_ICONERROR, MB_OK, MINMAXINFO, NONCLIENTMETRICSW, SB_BOTTOM, SB_ENDSCROLL, SB_LINEDOWN,
-    SB_LINEUP, SB_PAGEDOWN, SB_PAGEUP, SB_THUMBPOSITION, SB_THUMBTRACK, SB_TOP, SCROLLINFO,
-    SIF_PAGE, SIF_POS, SIF_RANGE, SIF_TRACKPOS, SPI_GETNONCLIENTMETRICS, SWP_NOACTIVATE,
-    SWP_NOZORDER, SW_HIDE, SW_RESTORE, SW_SHOW, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM,
-    WM_GETMINMAXINFO, WM_HSCROLL, WM_NCCREATE, WM_NCDESTROY, WM_NOTIFY, WM_SETFONT, WM_SIZE,
-    WM_VSCROLL, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_EX_CLIENTEDGE, WS_OVERLAPPEDWINDOW,
-    WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetCursorPos, GetParent,
+    GetScrollInfo, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, IsWindow, LoadCursorW,
+    MessageBoxW, PostMessageW, RegisterClassW, SendMessageW, SetForegroundWindow,
+    SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, BS_AUTOCHECKBOX, BS_OWNERDRAW,
+    BS_PUSHBUTTON, CBN_SELCHANGE, CBS_DROPDOWNLIST, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL,
+    CREATESTRUCTW, EN_KILLFOCUS, ES_AUTOHSCROLL, ES_MULTILINE, ES_READONLY, GWLP_USERDATA, HMENU,
+    IDC_ARROW, MB_ICONERROR, MB_OK, MINMAXINFO, NONCLIENTMETRICSW, SB_BOTTOM, SB_ENDSCROLL,
+    SB_LINEDOWN, SB_LINEUP, SB_PAGEDOWN, SB_PAGEUP, SB_THUMBPOSITION, SB_THUMBTRACK, SB_TOP,
+    SCROLLINFO, SIF_PAGE, SIF_POS, SIF_RANGE, SIF_TRACKPOS, SPI_GETNONCLIENTMETRICS,
+    SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_RESTORE, SW_SHOW,
+    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WHEEL_DELTA, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE,
+    WM_COMMAND, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_GETMINMAXINFO, WM_HSCROLL,
+    WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_NOTIFY, WM_SETFONT, WM_SIZE, WM_VSCROLL,
+    WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_EX_CLIENTEDGE, WS_OVERLAPPEDWINDOW, WS_TABSTOP,
+    WS_VISIBLE, WS_VSCROLL,
 };
 
 #[cfg(windows)]
 pub const WM_APP_SETTINGS_CHANGE: u32 = 0x8000 + 220;
 #[cfg(windows)]
 const WM_APP_PAGE_SCROLL: u32 = 0x8000 + 239;
+#[cfg(windows)]
+const WM_APP_PAGE_WHEEL: u32 = 0x8000 + 240;
 
 #[cfg(windows)]
 const WINDOW_CLASS: PCWSTR = w!("EduToolsSettingsWindow");
 #[cfg(windows)]
 const PAGE_CLASS: PCWSTR = w!("EduToolsSettingsPage");
-#[cfg(windows)]
+const BASE_DPI: u32 = 96;
 const MINIMUM_WIDTH_DIP: i32 = 900;
-#[cfg(windows)]
 const MINIMUM_HEIGHT_DIP: i32 = 620;
-#[cfg(windows)]
 const INITIAL_WIDTH_DIP: i32 = 980;
-#[cfg(windows)]
 const INITIAL_HEIGHT_DIP: i32 = 700;
 #[cfg(windows)]
 const CONTROL_ID_BASE: i32 = 4_000;
 #[cfg(windows)]
 const TBM_GETPOS: u32 = 0x0400;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LayoutMetrics {
+    minimum_width: i32,
+    minimum_height: i32,
+    initial_width: i32,
+    initial_height: i32,
+    outer_margin: i32,
+    error_height: i32,
+    page_padding: i32,
+    row_gap: i32,
+    control_height: i32,
+    multiline_height: i32,
+    help_height: i32,
+    label_gutter: i32,
+    scrollbar_gutter: i32,
+    slider_value_width: i32,
+    folder_button_width: i32,
+    scroll_line: i32,
+}
+
+fn layout_metrics(dpi: u32) -> LayoutMetrics {
+    let dpi = normalized_dpi(dpi);
+    LayoutMetrics {
+        minimum_width: dip(MINIMUM_WIDTH_DIP, dpi),
+        minimum_height: dip(MINIMUM_HEIGHT_DIP, dpi),
+        initial_width: dip(INITIAL_WIDTH_DIP, dpi),
+        initial_height: dip(INITIAL_HEIGHT_DIP, dpi),
+        outer_margin: dip(14, dpi),
+        error_height: dip(28, dpi),
+        page_padding: dip(12, dpi),
+        row_gap: dip(10, dpi),
+        control_height: dip(25, dpi),
+        multiline_height: dip(76, dpi),
+        help_height: dip(30, dpi),
+        label_gutter: dip(12, dpi),
+        scrollbar_gutter: dip(18, dpi),
+        slider_value_width: dip(60, dpi),
+        folder_button_width: dip(86, dpi),
+        scroll_line: dip(24, dpi),
+    }
+}
+
+fn normalized_dpi(dpi: u32) -> u32 {
+    if dpi == 0 {
+        BASE_DPI
+    } else {
+        dpi
+    }
+}
+
+fn dip(value: i32, dpi: u32) -> i32 {
+    ((i64::from(value) * i64::from(normalized_dpi(dpi)) + i64::from(BASE_DPI / 2))
+        / i64::from(BASE_DPI)) as i32
+}
+
 const UI_PALETTE_OPACITY: RangeInclusive<f64> =
     RadialPaletteGlassStyle::MINIMUM_OPACITY..=RadialPaletteGlassStyle::MAXIMUM_OPACITY;
 
@@ -1419,6 +1479,7 @@ struct WindowState {
     settings: AppSettings,
     font: HFONT,
     dpi: u32,
+    label_width: i32,
     logger: Logger,
 }
 
@@ -1428,6 +1489,7 @@ struct PageState {
     rows: Vec<ControlRow>,
     scroll_position: i32,
     content_height: i32,
+    wheel_remainder: i32,
 }
 
 #[cfg(windows)]
@@ -1437,6 +1499,73 @@ struct ControlRow {
     control: HWND,
     auxiliary: Option<HWND>,
     help: Option<HWND>,
+}
+
+#[cfg(windows)]
+#[derive(Clone, Copy)]
+struct TargetMonitor {
+    work_area: RECT,
+    dpi: u32,
+}
+
+#[cfg(windows)]
+fn target_monitor() -> Result<TargetMonitor> {
+    let mut cursor = POINT::default();
+    unsafe { GetCursorPos(&mut cursor) }?;
+    let monitor = unsafe { MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST) };
+    let mut info = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if !unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() {
+        return Err(Error::from_thread());
+    }
+    let mut dpi_x = BASE_DPI;
+    let mut dpi_y = BASE_DPI;
+    unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) }?;
+    Ok(TargetMonitor {
+        work_area: info.rcWork,
+        dpi: normalized_dpi(dpi_x),
+    })
+}
+
+#[cfg(windows)]
+fn initial_window_rect(target: TargetMonitor) -> Result<RECT> {
+    let metrics = layout_metrics(target.dpi);
+    let mut window = RECT {
+        left: 0,
+        top: 0,
+        right: metrics.initial_width,
+        bottom: metrics.initial_height,
+    };
+    unsafe {
+        AdjustWindowRectExForDpi(
+            &mut window,
+            WS_OVERLAPPEDWINDOW,
+            false,
+            WINDOW_EX_STYLE(0),
+            target.dpi,
+        )
+    }?;
+
+    let work_width = (target.work_area.right - target.work_area.left).max(1);
+    let work_height = (target.work_area.bottom - target.work_area.top).max(1);
+    let width = (window.right - window.left).min(work_width).max(1);
+    let height = (window.bottom - window.top).min(work_height).max(1);
+    let left = target.work_area.left + (work_width - width) / 2;
+    let top = target.work_area.top + (work_height - height) / 2;
+    Ok(RECT {
+        left,
+        top,
+        right: left + width,
+        bottom: top + height,
+    })
+}
+
+#[cfg(windows)]
+fn window_dpi(hwnd: HWND, fallback: u32) -> u32 {
+    let dpi = unsafe { GetDpiForWindow(hwnd) };
+    normalized_dpi(if dpi == 0 { fallback } else { dpi })
 }
 
 #[cfg(windows)]
@@ -1456,6 +1585,7 @@ impl SettingsWindow {
             return Err(Error::from_thread());
         }
 
+        let target = target_monitor()?;
         let mut state = Box::new(WindowState {
             owner,
             hinstance,
@@ -1465,26 +1595,12 @@ impl SettingsWindow {
             pages: Vec::new(),
             settings: settings.clone(),
             font: HFONT::default(),
-            dpi: 96,
+            dpi: target.dpi,
+            label_width: 0,
             logger,
         });
         let state_ptr = state.as_mut() as *mut WindowState;
-        let dpi = 96;
-        let mut rect = RECT {
-            left: 0,
-            top: 0,
-            right: dip(INITIAL_WIDTH_DIP, dpi),
-            bottom: dip(INITIAL_HEIGHT_DIP, dpi),
-        };
-        unsafe {
-            AdjustWindowRectExForDpi(
-                &mut rect,
-                WS_OVERLAPPEDWINDOW,
-                false,
-                WINDOW_EX_STYLE(0),
-                dpi,
-            )
-        }?;
+        let rect = initial_window_rect(target)?;
         let owner = (!owner.is_invalid()).then_some(owner);
         let hwnd = unsafe {
             CreateWindowExW(
@@ -1492,8 +1608,8 @@ impl SettingsWindow {
                 WINDOW_CLASS,
                 w!("EduTools 설정"),
                 WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
-                80,
-                80,
+                rect.left,
+                rect.top,
                 rect.right - rect.left,
                 rect.bottom - rect.top,
                 owner,
@@ -1503,7 +1619,7 @@ impl SettingsWindow {
             )
         }?;
         state.hwnd = hwnd;
-        state.dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
+        state.dpi = window_dpi(hwnd, target.dpi);
         if let Err(error) = state.create_controls() {
             let _ = unsafe { DestroyWindow(hwnd) };
             return Err(error);
@@ -1663,6 +1779,7 @@ impl WindowState {
                 rows,
                 scroll_position: 0,
                 content_height: 0,
+                wheel_remainder: 0,
             });
         }
         self.update_font()?;
@@ -1811,10 +1928,39 @@ impl WindowState {
                 )
             };
         });
+        self.label_width = self.measure_label_width();
         if !old_font.is_invalid() {
             let _ = unsafe { DeleteObject(old_font.into()) };
         }
         Ok(())
+    }
+
+    fn measure_label_width(&self) -> i32 {
+        let metrics = layout_metrics(self.dpi);
+        let fallback = all_fields()
+            .map(|field| field.label.encode_utf16().count() as i32 * dip(9, self.dpi))
+            .max()
+            .unwrap_or(0)
+            + metrics.label_gutter;
+        let dc = unsafe { GetDC(Some(self.hwnd)) };
+        if dc.is_invalid() {
+            return fallback;
+        }
+        let previous = unsafe { SelectObject(dc, self.font.into()) };
+        let measured = all_fields()
+            .filter_map(|field| {
+                let text = field.label.encode_utf16().collect::<Vec<_>>();
+                let mut size = SIZE::default();
+                unsafe { GetTextExtentPoint32W(dc, &text, &mut size) }
+                    .as_bool()
+                    .then_some(size.cx)
+            })
+            .max()
+            .map(|width| width + metrics.label_gutter)
+            .unwrap_or(fallback);
+        let _ = unsafe { SelectObject(dc, previous) };
+        unsafe { ReleaseDC(Some(self.hwnd), dc) };
+        measured.max(fallback)
     }
 
     fn for_each_control(&self, mut body: impl FnMut(HWND)) {
@@ -1867,9 +2013,9 @@ impl WindowState {
         if unsafe { GetClientRect(self.hwnd, &mut client) }.is_err() {
             return;
         }
-        let margin = dip(14, self.dpi);
-        let error_height = dip(28, self.dpi);
-        let tab_header = dip(38, self.dpi);
+        let metrics = layout_metrics(self.dpi);
+        let margin = metrics.outer_margin;
+        let error_height = metrics.error_height;
         let width = (client.right - client.left - margin * 2).max(dip(300, self.dpi));
         let height =
             (client.bottom - client.top - margin * 3 - error_height).max(dip(220, self.dpi));
@@ -1884,10 +2030,24 @@ impl WindowState {
                 SWP_NOZORDER | SWP_NOACTIVATE,
             )
         };
-        let page_x = margin + dip(8, self.dpi);
-        let page_y = margin + tab_header;
-        let page_width = width - dip(16, self.dpi);
-        let page_height = height - tab_header - dip(8, self.dpi);
+        let mut page_rect = RECT {
+            left: 0,
+            top: 0,
+            right: width,
+            bottom: height,
+        };
+        unsafe {
+            SendMessageW(
+                self.tab,
+                TCM_ADJUSTRECT,
+                Some(WPARAM(0)),
+                Some(LPARAM((&mut page_rect as *mut RECT) as isize)),
+            )
+        };
+        let page_x = margin + page_rect.left;
+        let page_y = margin + page_rect.top;
+        let page_width = (page_rect.right - page_rect.left).max(1);
+        let page_height = (page_rect.bottom - page_rect.top).max(1);
         for page in &mut self.pages {
             let _ = unsafe {
                 SetWindowPos(
@@ -1900,7 +2060,7 @@ impl WindowState {
                     SWP_NOZORDER | SWP_NOACTIVATE,
                 )
             };
-            layout_page(page, page_width, page_height, self.dpi);
+            layout_page(page, page_width, page_height, self.dpi, self.label_width);
         }
         let _ = unsafe {
             SetWindowPos(
@@ -2112,11 +2272,12 @@ impl WindowState {
         let maximum = (page.content_height - page_height).max(0);
         let code = (wparam.0 & 0xffff) as u32;
         let mut next = page.scroll_position;
+        let metrics = layout_metrics(self.dpi);
         match code {
             value if value == SB_TOP.0 as u32 => next = 0,
             value if value == SB_BOTTOM.0 as u32 => next = maximum,
-            value if value == SB_LINEUP.0 as u32 => next -= dip(24, self.dpi),
-            value if value == SB_LINEDOWN.0 as u32 => next += dip(24, self.dpi),
+            value if value == SB_LINEUP.0 as u32 => next -= metrics.scroll_line,
+            value if value == SB_LINEDOWN.0 as u32 => next += metrics.scroll_line,
             value if value == SB_PAGEUP.0 as u32 => next -= page_height,
             value if value == SB_PAGEDOWN.0 as u32 => next += page_height,
             value if value == SB_THUMBPOSITION.0 as u32 || value == SB_THUMBTRACK.0 as u32 => {
@@ -2141,7 +2302,39 @@ impl WindowState {
             _ => {}
         }
         page.scroll_position = next.clamp(0, maximum);
-        layout_page(page, client.right - client.left, page_height, self.dpi);
+        layout_page(
+            page,
+            client.right - client.left,
+            page_height,
+            self.dpi,
+            self.label_width,
+        );
+    }
+
+    fn handle_page_wheel(&mut self, page_hwnd: HWND, wparam: WPARAM) {
+        let Some(page) = self.pages.iter_mut().find(|page| page.hwnd == page_hwnd) else {
+            return;
+        };
+        let delta = ((wparam.0 >> 16) as u16 as i16) as i32;
+        if delta == 0 {
+            return;
+        }
+        page.wheel_remainder += delta;
+        let steps = page.wheel_remainder / WHEEL_DELTA as i32;
+        page.wheel_remainder %= WHEEL_DELTA as i32;
+        if steps == 0 {
+            return;
+        }
+        let mut client = RECT::default();
+        if unsafe { GetClientRect(page.hwnd, &mut client) }.is_err() {
+            return;
+        }
+        let width = client.right - client.left;
+        let height = client.bottom - client.top;
+        let maximum = (page.content_height - height).max(0);
+        let distance = layout_metrics(self.dpi).scroll_line * 3;
+        page.scroll_position = (page.scroll_position - steps * distance).clamp(0, maximum);
+        layout_page(page, width, height, self.dpi, self.label_width);
     }
 
     fn draw_color_button(&self, lparam: LPARAM) -> bool {
@@ -2170,21 +2363,41 @@ impl WindowState {
 }
 
 #[cfg(windows)]
-fn layout_page(page: &mut PageState, width: i32, height: i32, dpi: u32) {
-    let padding = dip(12, dpi);
-    let gap = dip(10, dpi);
-    let control_height = dip(25, dpi);
-    let label_width = (width * 34 / 100).clamp(dip(160, dpi), dip(280, dpi));
+fn layout_page(page: &mut PageState, width: i32, height: i32, dpi: u32, label_width: i32) {
+    let metrics = layout_metrics(dpi);
+    let padding = metrics.page_padding;
+    let gap = metrics.row_gap;
+    let control_height = metrics.control_height;
+    let label_width = label_width.max(dip(80, dpi));
     let control_x = padding + label_width + gap;
-    let control_width = (width - control_x - padding - dip(18, dpi)).max(dip(160, dpi));
-    let mut y = padding - page.scroll_position;
-    for row in &page.rows {
+    let control_width = (width - control_x - padding - metrics.scrollbar_gutter).max(1);
+    page.content_height = page.rows.iter().fold(padding * 2, |height, row| {
         let base_height = if matches!(row.field.kind, FieldKind::StringList) {
-            dip(76, dpi)
+            metrics.multiline_height
         } else {
             control_height
         };
-        let help_height = if row.help.is_some() { dip(30, dpi) } else { 0 };
+        let help_height = if row.help.is_some() {
+            metrics.help_height
+        } else {
+            0
+        };
+        height + base_height + help_height + gap
+    });
+    let maximum = (page.content_height - height).max(0);
+    page.scroll_position = page.scroll_position.clamp(0, maximum);
+    let mut y = padding - page.scroll_position;
+    for row in &page.rows {
+        let base_height = if matches!(row.field.kind, FieldKind::StringList) {
+            metrics.multiline_height
+        } else {
+            control_height
+        };
+        let help_height = if row.help.is_some() {
+            metrics.help_height
+        } else {
+            0
+        };
         let _ = unsafe {
             SetWindowPos(
                 row.label,
@@ -2198,14 +2411,14 @@ fn layout_page(page: &mut PageState, width: i32, height: i32, dpi: u32) {
         };
         match row.field.kind {
             FieldKind::Slider { .. } => {
-                let value_width = dip(60, dpi);
+                let value_width = metrics.slider_value_width.min(control_width);
                 let _ = unsafe {
                     SetWindowPos(
                         row.control,
                         None,
                         control_x,
                         y,
-                        control_width - value_width - gap,
+                        (control_width - value_width - gap).max(1),
                         control_height,
                         SWP_NOZORDER | SWP_NOACTIVATE,
                     )
@@ -2225,14 +2438,14 @@ fn layout_page(page: &mut PageState, width: i32, height: i32, dpi: u32) {
                 }
             }
             FieldKind::Folder => {
-                let button_width = dip(86, dpi);
+                let button_width = metrics.folder_button_width.min(control_width);
                 let _ = unsafe {
                     SetWindowPos(
                         row.control,
                         None,
                         control_x,
                         y,
-                        control_width - button_width - gap,
+                        (control_width - button_width - gap).max(1),
                         control_height,
                         SWP_NOZORDER | SWP_NOACTIVATE,
                     )
@@ -2280,14 +2493,11 @@ fn layout_page(page: &mut PageState, width: i32, height: i32, dpi: u32) {
         }
         y += base_height + help_height + gap;
     }
-    page.content_height = y + page.scroll_position + padding;
-    let maximum = (page.content_height - height).max(0);
-    page.scroll_position = page.scroll_position.min(maximum);
     let info = SCROLLINFO {
         cbSize: size_of::<SCROLLINFO>() as u32,
         fMask: SIF_RANGE | SIF_PAGE | SIF_POS,
         nMin: 0,
-        nMax: page.content_height.max(0),
+        nMax: page.content_height.saturating_sub(1),
         nPage: height.max(0) as u32,
         nPos: page.scroll_position,
         ..Default::default()
@@ -2593,11 +2803,6 @@ fn wide(value: &str) -> Vec<u16> {
 }
 
 #[cfg(windows)]
-fn dip(value: i32, dpi: u32) -> i32 {
-    ((i64::from(value) * i64::from(dpi) + 48) / 96) as i32
-}
-
-#[cfg(windows)]
 fn register_classes(hinstance: HINSTANCE) -> Result<()> {
     let cursor = unsafe { LoadCursorW(None, IDC_ARROW) }?;
     let background = unsafe { GetSysColorBrush(COLOR_WINDOW) };
@@ -2668,18 +2873,22 @@ unsafe extern "system" fn settings_window_proc(
                 state.handle_page_scroll(HWND(lparam.0 as *mut c_void), wparam);
                 return LRESULT(0);
             }
+            WM_APP_PAGE_WHEEL => {
+                state.handle_page_wheel(HWND(lparam.0 as *mut c_void), wparam);
+                return LRESULT(0);
+            }
             WM_GETMINMAXINFO => {
                 let info = lparam.0 as *mut MINMAXINFO;
                 if !info.is_null() {
+                    let metrics = layout_metrics(window_dpi(hwnd, state.dpi));
                     unsafe {
-                        (*info).ptMinTrackSize.x = dip(MINIMUM_WIDTH_DIP, state.dpi);
-                        (*info).ptMinTrackSize.y = dip(MINIMUM_HEIGHT_DIP, state.dpi);
+                        (*info).ptMinTrackSize.x = metrics.minimum_width;
+                        (*info).ptMinTrackSize.y = metrics.minimum_height;
                     }
                 }
                 return LRESULT(0);
             }
             WM_DPICHANGED => {
-                state.dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
                 let rect = lparam.0 as *const RECT;
                 if !rect.is_null() {
                     let rect = unsafe { *rect };
@@ -2694,6 +2903,18 @@ unsafe extern "system" fn settings_window_proc(
                             SWP_NOZORDER | SWP_NOACTIVATE,
                         )
                     };
+                }
+                let fallback = (wparam.0 & 0xffff) as u32;
+                let old_dpi = state.dpi;
+                state.dpi = window_dpi(hwnd, fallback);
+                if old_dpi != state.dpi {
+                    for page in &mut state.pages {
+                        page.scroll_position = ((i64::from(page.scroll_position)
+                            * i64::from(state.dpi)
+                            + i64::from(old_dpi / 2))
+                            / i64::from(normalized_dpi(old_dpi)))
+                            as i32;
+                    }
                 }
                 if let Err(error) = state.update_font() {
                     state
@@ -2740,6 +2961,18 @@ unsafe extern "system" fn page_window_proc(
                     SendMessageW(
                         parent,
                         WM_APP_PAGE_SCROLL,
+                        Some(wparam),
+                        Some(LPARAM(hwnd.0 as isize)),
+                    )
+                };
+            }
+        }
+        WM_MOUSEWHEEL => {
+            if let Ok(parent) = unsafe { GetParent(hwnd) } {
+                return unsafe {
+                    SendMessageW(
+                        parent,
+                        WM_APP_PAGE_WHEEL,
                         Some(wparam),
                         Some(LPARAM(hwnd.0 as isize)),
                     )
@@ -2937,6 +3170,27 @@ fn pure_selftest_failures() -> Vec<String> {
         if actual != expected {
             failures.push(format!(
                 "settings format: {value} -> {actual}, expected {expected}"
+            ));
+        }
+    }
+    for (scale_percent, dpi, expected) in [
+        (100, 96, (900, 620, 980, 700, 14, 25, 24)),
+        (150, 144, (1350, 930, 1470, 1050, 21, 38, 36)),
+        (240, 230, (2156, 1485, 2348, 1677, 34, 60, 58)),
+    ] {
+        let metrics = layout_metrics(dpi);
+        let actual = (
+            metrics.minimum_width,
+            metrics.minimum_height,
+            metrics.initial_width,
+            metrics.initial_height,
+            metrics.outer_margin,
+            metrics.control_height,
+            metrics.scroll_line,
+        );
+        if actual != expected {
+            failures.push(format!(
+                "settings layout: scale={scale_percent}% dpi={dpi} dimensions={actual:?} expected={expected:?}"
             ));
         }
     }
