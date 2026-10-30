@@ -18,8 +18,10 @@ use edutools_core::shortcut::{
     ShortcutCatalog, ShortcutCommand, ShortcutDefinition, ShortcutScope,
 };
 use edutools_core::state::AppState;
+use std::cell::RefCell;
 use std::mem::size_of;
 use std::path::PathBuf;
+use std::rc::Rc;
 use windows::core::{w, Error, Result, PCWSTR};
 use windows::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT,
@@ -137,7 +139,7 @@ struct App {
     hwnd: HWND,
     hinstance: HINSTANCE,
     taskbar_created: u32,
-    state: AppState,
+    state: Rc<RefCell<AppState>>,
     settings: AppSettings,
     tray: Option<Tray>,
     hotkeys: Option<HotkeyCenter>,
@@ -158,8 +160,14 @@ impl App {
             self.logger.clone(),
         );
         self.hotkeys = Some(hotkeys);
-        let input_config = InkInputConfig::from_core(&self.state, &self.settings);
-        match OverlayManager::new(self.hwnd, self.hinstance, input_config, self.logger.clone()) {
+        let input_config = InkInputConfig::from_core(&self.state.borrow(), &self.settings);
+        match OverlayManager::new(
+            self.hwnd,
+            self.hinstance,
+            input_config,
+            self.state.clone(),
+            self.logger.clone(),
+        ) {
             Ok(overlays) => self.overlays = Some(overlays),
             Err(error) => {
                 self.report_overlay_error("초기화", &error);
@@ -167,7 +175,7 @@ impl App {
             }
         }
         let mut palette = PaletteManager::new(self.hwnd, self.hinstance, self.logger.clone())?;
-        palette.refresh(&self.state, &self.settings)?;
+        palette.refresh(&self.state.borrow(), &self.settings)?;
         self.palette = Some(palette);
         Ok(())
     }
@@ -197,12 +205,13 @@ impl App {
             scope: ShortcutScope::Global,
             ..DispatchContext::default()
         };
-        match dispatch(
+        let result = dispatch(
             &ShortcutCommand::ToggleAnnotationMode,
-            &mut self.state,
+            &mut self.state.borrow_mut(),
             &self.settings,
             context,
-        ) {
+        );
+        match result {
             Ok(effects) => self.apply_effects(effects, source),
             Err(error) => self.logger.event(&format!(
                 "annotation.toggle core dispatch 실패 ({source}): {error}"
@@ -250,17 +259,24 @@ impl App {
         let context = DispatchContext {
             scope: ShortcutScope::Annotation,
             display_id: display_id.as_deref(),
+            has_selection: display_id.as_deref().is_some_and(|display_id| {
+                !self
+                    .state
+                    .borrow()
+                    .selected_stroke_ids(display_id)
+                    .is_empty()
+            }),
             ..DispatchContext::default()
         };
         let dispatch = if event.is_key_up {
             Ok(self
                 .pressed_shortcuts
-                .key_up(event.key_code, &mut self.state))
+                .key_up(event.key_code, &mut self.state.borrow_mut()))
         } else {
             self.pressed_shortcuts.key_down(
                 event.key_code,
                 &definition,
-                &mut self.state,
+                &mut self.state.borrow_mut(),
                 &self.settings,
                 context,
             )
@@ -338,7 +354,8 @@ impl App {
                     if let Some(tray) = self.tray.as_mut() {
                         tray.set_annotation_enabled(enabled);
                     }
-                    let input_config = InkInputConfig::from_core(&self.state, &self.settings);
+                    let input_config =
+                        InkInputConfig::from_core(&self.state.borrow(), &self.settings);
                     if let Some(overlays) = self.overlays.as_mut() {
                         if let Err(error) = overlays.set_annotation_mode(enabled, input_config) {
                             self.report_overlay_error("판서 모드 반영", &error);
@@ -375,7 +392,7 @@ impl App {
                     mutation.apply(&mut self.settings);
                     self.logger
                         .event(&format!("효과 ({source}): 설정 변경 {mutation:?}"));
-                    if self.state.current_tool() == InkTool::Eraser {
+                    if self.state.borrow().current_tool() == InkTool::Eraser {
                         self.logger.event(&format!(
                             "지우개 모드 HUD 대체 로그: {}",
                             self.settings.eraser.mode
@@ -418,6 +435,32 @@ impl App {
                         None => {}
                     }
                 }
+                Effect::DeleteSelection(display_id) => {
+                    let result = self
+                        .overlays
+                        .as_mut()
+                        .map(|overlays| overlays.delete_selection(&display_id));
+                    match result {
+                        Some(Ok(changed)) => self.logger.event(&format!(
+                            "효과 ({source}): 선택 삭제 monitor={display_id} changed={changed}"
+                        )),
+                        Some(Err(error)) => self.report_overlay_error("선택 삭제", &error),
+                        None => {}
+                    }
+                }
+                Effect::ClearSelection(display_id) => {
+                    let result = self
+                        .overlays
+                        .as_mut()
+                        .map(|overlays| overlays.clear_selection(&display_id));
+                    match result {
+                        Some(Ok(changed)) => self.logger.event(&format!(
+                            "효과 ({source}): 선택 해제 monitor={display_id} changed={changed}"
+                        )),
+                        Some(Err(error)) => self.report_overlay_error("선택 해제", &error),
+                        None => {}
+                    }
+                }
                 Effect::StepBack(result) => self
                     .logger
                     .event(&format!("효과 ({source}): 한 단계 나가기 {result:?}")),
@@ -429,7 +472,7 @@ impl App {
                     .event(&format!("이번 라운드에서 UI 미구현 core effect: {other:?}")),
             }
         }
-        let input_config = InkInputConfig::from_core(&self.state, &self.settings);
+        let input_config = InkInputConfig::from_core(&self.state.borrow(), &self.settings);
         if let Some(overlays) = self.overlays.as_mut() {
             if let Err(error) = overlays.update_input_context(input_config) {
                 self.logger
@@ -446,7 +489,9 @@ impl App {
             }
         }
         if let Some(palette) = self.palette.as_mut() {
-            if let Err(error) = palette.display_configuration_changed(&self.state, &self.settings) {
+            let result =
+                palette.display_configuration_changed(&self.state.borrow(), &self.settings);
+            if let Err(error) = result {
                 self.report_palette_error("모니터 재구성", &error);
             }
         }
@@ -463,7 +508,7 @@ impl App {
                 .event(&format!("팔레트 비동작 항목 클릭 무시: {item:?}"));
             return;
         };
-        if !item_enabled(item, &self.state, &self.settings) {
+        if !item_enabled(item, &self.state.borrow(), &self.settings) {
             self.logger
                 .event(&format!("팔레트 비활성 항목 클릭 무시: {item:?}"));
             return;
@@ -482,7 +527,13 @@ impl App {
             board_display_id: display_id.as_deref(),
             ..DispatchContext::default()
         };
-        match dispatch(&command, &mut self.state, &self.settings, context) {
+        let result = dispatch(
+            &command,
+            &mut self.state.borrow_mut(),
+            &self.settings,
+            context,
+        );
+        match result {
             Ok(effects) => self.apply_effects(effects, &format!("팔레트 {item:?}")),
             Err(error) => self.logger.event(&format!(
                 "팔레트 core dispatch 실패: item={item:?} command={command:?}: {error}"
@@ -492,7 +543,8 @@ impl App {
 
     fn refresh_palette(&mut self, reason: &str) {
         if let Some(palette) = self.palette.as_mut() {
-            if let Err(error) = palette.refresh(&self.state, &self.settings) {
+            let result = palette.refresh(&self.state.borrow(), &self.settings);
+            if let Err(error) = result {
                 self.report_palette_error(reason, &error);
             }
         }
@@ -500,7 +552,8 @@ impl App {
 
     fn redraw_palette(&mut self) {
         if let Some(palette) = self.palette.as_mut() {
-            if let Err(error) = palette.redraw(&self.state, &self.settings) {
+            let result = palette.redraw(&self.state.borrow(), &self.settings);
+            if let Err(error) = result {
                 self.report_palette_error("다시 그리기", &error);
             }
         }
@@ -516,7 +569,8 @@ impl App {
 
     fn toggle_palette_orientation(&mut self) {
         if let Some(palette) = self.palette.as_mut() {
-            if let Err(error) = palette.toggle_orientation(&self.state, &self.settings) {
+            let result = palette.toggle_orientation(&self.state.borrow(), &self.settings);
+            if let Err(error) = result {
                 self.report_palette_error("가로/세로 전환", &error);
             }
         }
@@ -623,7 +677,7 @@ fn run_message_loop(logger: Logger) -> Result<i32> {
         hwnd,
         hinstance,
         taskbar_created,
-        state: AppState::new(),
+        state: Rc::new(RefCell::new(AppState::new())),
         settings: AppSettings::default(),
         tray: None,
         hotkeys: None,
@@ -789,12 +843,14 @@ fn run_selftest(logger: &Logger) -> bool {
             }
         }
 
-        let state = AppState::new();
+        let state = Rc::new(RefCell::new(AppState::new()));
         let settings = AppSettings::default();
+        let input_config = InkInputConfig::from_core(&state.borrow(), &settings);
         match OverlayManager::new(
             HWND::default(),
             hinstance,
-            InkInputConfig::from_core(&state, &settings),
+            input_config,
+            state,
             logger.clone(),
         ) {
             Ok(mut overlays) => failures.extend(overlays.selftest_failures()),

@@ -1,5 +1,5 @@
 use crate::app_icon::{AppIconRenderer, IconTint};
-use crate::ink_view::{EraserRenderState, LaserRenderState};
+use crate::ink_view::{EraserRenderState, LaserRenderState, SelectionRenderState};
 use crate::log::Logger;
 use edutools_core::eraser::{
     EraserAreaShape, EraserEngine, EraserGesture, EraserHitRule, EraserMode, EraserSettings,
@@ -9,6 +9,7 @@ use edutools_core::ink::{
     ArrowStyle, InkGeometry, InkPoint, InkShapeKind, InkStroke, InkStrokeContent, InkStrokeTool,
     PathCommand, Point, Size,
 };
+use edutools_core::shape::InkItemGeometry;
 use windows::core::{Error, Interface, Result};
 use windows::Win32::Foundation::{E_FAIL, E_INVALIDARG, HMODULE, HWND, RECT};
 use windows::Win32::Graphics::Direct2D::Common::{
@@ -51,6 +52,12 @@ pub const COVER_STROKE_COLOR: [f64; 4] = [142.0 / 255.0, 142.0 / 255.0, 147.0 / 
 const COVER_FILL_ALPHA: f32 = 0.96;
 const COVER_BORDER_ALPHA: f32 = 0.1;
 const COVER_BORDER_WIDTH_DIP: f64 = 1.0;
+const SYSTEM_ACCENT_FALLBACK: D2D1_COLOR_F = D2D1_COLOR_F {
+    r: 0.0,
+    g: 0.47,
+    b: 0.84,
+    a: 1.0,
+};
 
 #[derive(Clone, Copy, Debug)]
 struct PixelSample {
@@ -146,6 +153,7 @@ pub struct OverlayRenderer {
     round_stroke: ID2D1StrokeStyle,
     butt_stroke: ID2D1StrokeStyle,
     eraser_dash: ID2D1StrokeStyle,
+    selection_lasso_dash: ID2D1StrokeStyle,
     swap_target: Option<ID2D1Bitmap1>,
     completed_bitmap: Option<ID2D1Bitmap1>,
     _dcomp_target: IDCompositionTarget,
@@ -197,6 +205,9 @@ impl OverlayRenderer {
         };
         let eraser_dash =
             unsafe { factory.CreateStrokeStyle(&dash_properties, Some(&[4.0, 2.666_666_7])) }?;
+        let selection_lasso_dash = unsafe {
+            factory.CreateStrokeStyle(&dash_properties, Some(&[3.333_333_3, 2.666_666_7]))
+        }?;
         let swap_target = Some(create_swap_target(&context, &swap_chain)?);
         let completed_bitmap = Some(create_completed_bitmap(&context, width, height)?);
         let swap_image: ID2D1Image = swap_target
@@ -223,6 +234,7 @@ impl OverlayRenderer {
             round_stroke,
             butt_stroke,
             eraser_dash,
+            selection_lasso_dash,
             swap_target,
             completed_bitmap,
             _dcomp_target: dcomp_target,
@@ -316,6 +328,7 @@ impl OverlayRenderer {
             None,
             None,
             None,
+            None,
             minimum_ratio,
             highlighter_opacity,
             false,
@@ -344,6 +357,7 @@ impl OverlayRenderer {
             self.draw_frame_to_bitmap(
                 &frame,
                 &completed,
+                None,
                 None,
                 None,
                 None,
@@ -401,6 +415,64 @@ impl OverlayRenderer {
             failures.push(format!(
                 "사각형: 내부 BGRA={:?}, alpha가 0이 아님",
                 rectangle_samples[1].bgra
+            ));
+        }
+
+        let selection_bounds = InkItemGeometry::item_bounds(
+            &rectangle,
+            Size {
+                width: f64::from(self.width),
+                height: f64::from(self.height),
+            },
+        )
+        .expect("selftest rectangle has points");
+        let selection = SelectionRenderState {
+            bounds: Some(selection_bounds),
+            ..SelectionRenderState::default()
+        };
+        self.draw_strokes_to_bitmap(
+            &completed,
+            std::slice::from_ref(&rectangle),
+            minimum_ratio,
+            highlighter_opacity,
+            true,
+        )?;
+        self.draw_frame_to_bitmap(
+            &frame,
+            &completed,
+            None,
+            None,
+            None,
+            Some(&selection),
+            minimum_ratio,
+            highlighter_opacity,
+            false,
+        )?;
+        self.restore_swap_target()?;
+        let selection_samples = read_pixel_samples(
+            &self.context,
+            &frame,
+            &[
+                (
+                    selection_bounds.x.round() as u32,
+                    selection_bounds.y.round() as u32,
+                ),
+                (
+                    (selection_bounds.x + 20.0 * px_per_dip(self.dpi)).round() as u32,
+                    selection_bounds.y.round() as u32,
+                ),
+            ],
+        )?;
+        if selection_samples[0].bgra[3] == 0 {
+            failures.push(format!(
+                "선택 핸들: 모서리 BGRA={:?}, alpha가 0임",
+                selection_samples[0].bgra
+            ));
+        }
+        if selection_samples[1].bgra[3] == 0 {
+            failures.push(format!(
+                "선택 윤곽: 위쪽 BGRA={:?}, alpha가 0임",
+                selection_samples[1].bgra
             ));
         }
 
@@ -545,6 +617,7 @@ impl OverlayRenderer {
             None,
             None,
             None,
+            None,
             minimum_ratio,
             highlighter_opacity,
             false,
@@ -599,6 +672,7 @@ impl OverlayRenderer {
             None,
             None,
             Some(&laser),
+            None,
             minimum_ratio,
             highlighter_opacity,
             false,
@@ -656,6 +730,7 @@ impl OverlayRenderer {
         active_stroke: Option<&InkStroke>,
         eraser: Option<&EraserRenderState>,
         laser: Option<&LaserRenderState>,
+        selection: Option<&SelectionRenderState>,
         minimum_ratio: f64,
         highlighter_opacity: f64,
         debug_visible: bool,
@@ -670,6 +745,7 @@ impl OverlayRenderer {
             active_stroke,
             eraser,
             laser,
+            selection,
             minimum_ratio,
             highlighter_opacity,
             debug_visible,
@@ -684,25 +760,28 @@ impl OverlayRenderer {
         active_stroke: Option<&InkStroke>,
         eraser: Option<&EraserRenderState>,
         laser: Option<&LaserRenderState>,
+        selection: Option<&SelectionRenderState>,
         minimum_ratio: f64,
         highlighter_opacity: f64,
         debug_visible: bool,
     ) -> Result<()> {
-        let preview_bitmap =
-            if let Some(strokes) = eraser.and_then(|state| state.preview_strokes.as_deref()) {
-                let bitmap = create_completed_bitmap(&self.context, self.width, self.height)?;
-                let result = self.draw_strokes_to_bitmap(
-                    &bitmap,
-                    strokes,
-                    minimum_ratio,
-                    highlighter_opacity,
-                    true,
-                );
-                self.finish_offscreen_draw(result)?;
-                Some(bitmap)
-            } else {
-                None
-            };
+        let preview_strokes = selection
+            .and_then(|state| state.preview_strokes.as_deref())
+            .or_else(|| eraser.and_then(|state| state.preview_strokes.as_deref()));
+        let preview_bitmap = if let Some(strokes) = preview_strokes {
+            let bitmap = create_completed_bitmap(&self.context, self.width, self.height)?;
+            let result = self.draw_strokes_to_bitmap(
+                &bitmap,
+                strokes,
+                minimum_ratio,
+                highlighter_opacity,
+                true,
+            );
+            self.finish_offscreen_draw(result)?;
+            Some(bitmap)
+        } else {
+            None
+        };
         let prepared_laser = laser.map(|laser| self.prepare_laser(laser)).transpose()?;
         self.set_target(target)?;
         let clear = if debug_visible {
@@ -747,6 +826,9 @@ impl OverlayRenderer {
                 .SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_SOURCE_OVER);
         }
         let draw_result: Result<()> = (|| {
+            if let Some(selection) = selection {
+                self.draw_selection(selection)?;
+            }
             if let Some(stroke) = active_stroke {
                 self.draw_stroke(stroke, minimum_ratio, highlighter_opacity)?;
             }
@@ -777,6 +859,91 @@ impl OverlayRenderer {
         end_result
     }
 
+    fn draw_selection(&self, selection: &SelectionRenderState) -> Result<()> {
+        let accent_brush = unsafe {
+            self.context
+                .CreateSolidColorBrush(&SYSTEM_ACCENT_FALLBACK, None)
+        }?;
+        let fill = D2D1_COLOR_F {
+            a: 0.08,
+            ..SYSTEM_ACCENT_FALLBACK
+        };
+        let fill_brush = unsafe { self.context.CreateSolidColorBrush(&fill, None) }?;
+        let scale = px_per_dip(self.dpi) as f32;
+        let stroke_width = 1.5 * scale;
+
+        if selection.lasso.len() >= 2 {
+            let geometry = unsafe { self.factory.CreatePathGeometry() }?;
+            let sink = unsafe { geometry.Open() }?;
+            unsafe {
+                sink.BeginFigure(d2d_point!(selection.lasso[0]), D2D1_FIGURE_BEGIN_FILLED);
+                for point in selection.lasso.iter().skip(1) {
+                    sink.AddLine(d2d_point!(*point));
+                }
+                sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+                sink.Close()?;
+                self.context.FillGeometry(
+                    &geometry,
+                    &fill_brush,
+                    None::<&windows::Win32::Graphics::Direct2D::ID2D1Brush>,
+                );
+                self.context.DrawGeometry(
+                    &geometry,
+                    &accent_brush,
+                    stroke_width,
+                    &self.selection_lasso_dash,
+                );
+            }
+        }
+
+        let Some(bounds) = selection.bounds else {
+            return Ok(());
+        };
+        let bounds = bounds.standardized();
+        let rect = D2D_RECT_F {
+            left: bounds.x as f32,
+            top: bounds.y as f32,
+            right: (bounds.x + bounds.width) as f32,
+            bottom: (bounds.y + bounds.height) as f32,
+        };
+        unsafe {
+            self.context
+                .DrawRectangle(&rect, &accent_brush, stroke_width, &self.eraser_dash);
+        }
+
+        let white = D2D1_COLOR_F {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+        };
+        let white_brush = unsafe { self.context.CreateSolidColorBrush(&white, None) }?;
+        let half_handle = 5.0 * scale;
+        for (x, y) in [
+            (rect.left, rect.top),
+            (rect.right, rect.top),
+            (rect.right, rect.bottom),
+            (rect.left, rect.bottom),
+        ] {
+            let handle = D2D_RECT_F {
+                left: x - half_handle,
+                top: y - half_handle,
+                right: x + half_handle,
+                bottom: y + half_handle,
+            };
+            unsafe {
+                self.context.FillRectangle(&handle, &white_brush);
+                self.context.DrawRectangle(
+                    &handle,
+                    &accent_brush,
+                    stroke_width,
+                    None::<&ID2D1StrokeStyle>,
+                );
+            }
+        }
+        Ok(())
+    }
+
     fn draw_eraser(
         &self,
         eraser: &EraserRenderState,
@@ -790,7 +957,12 @@ impl OverlayRenderer {
                 for stroke in &eraser.highlighted_strokes {
                     let mut highlight = stroke.clone();
                     highlight.tool = InkStrokeTool::Pen;
-                    highlight.color = [0.0, 0.47, 0.84, 1.0];
+                    highlight.color = [
+                        f64::from(SYSTEM_ACCENT_FALLBACK.r),
+                        f64::from(SYSTEM_ACCENT_FALLBACK.g),
+                        f64::from(SYSTEM_ACCENT_FALLBACK.b),
+                        f64::from(SYSTEM_ACCENT_FALLBACK.a),
+                    ];
                     highlight.width += 4.0;
                     highlight.uses_pressure = false;
                     self.draw_opaque_stroke(&highlight, minimum_ratio)?;
@@ -838,12 +1010,7 @@ impl OverlayRenderer {
         let Some(first) = eraser.points.first().copied() else {
             return Ok(());
         };
-        let accent = D2D1_COLOR_F {
-            r: 0.0,
-            g: 0.47,
-            b: 0.84,
-            a: 1.0,
-        };
+        let accent = SYSTEM_ACCENT_FALLBACK;
         let fill = D2D1_COLOR_F { a: 0.12, ..accent };
         let stroke_brush = unsafe { self.context.CreateSolidColorBrush(&accent, None) }?;
         let fill_brush = unsafe { self.context.CreateSolidColorBrush(&fill, None) }?;

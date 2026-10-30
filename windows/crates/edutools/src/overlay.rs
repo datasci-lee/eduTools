@@ -1,5 +1,6 @@
 use crate::ink_view::{
     pointer_id_from_wparam, stroke_shape_label, InkInputConfig, InkInputController, InputOutcome,
+    StrokeReplacementKind,
 };
 use crate::log::Logger;
 use crate::monitor::{
@@ -10,6 +11,7 @@ use crate::z_bands::{raise_band_order, Band, BandRegistration};
 use edutools_core::ink::{
     InkCommand, InkLayerState, InkPoint, InkStroke, InkStrokeContent, InkStrokeTool, Point,
 };
+use edutools_core::state::AppState;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::{c_void, OsString};
@@ -38,10 +40,12 @@ const RECOGNITION_TIMER_ID: usize = 0xED12;
 const RECOGNITION_TIMER_INTERVAL_MS: u32 = 500;
 
 type LayerStore = Rc<RefCell<HashMap<String, InkLayerState>>>;
+type SharedAppState = Rc<RefCell<AppState>>;
 
 pub struct OverlayManager {
     overlays: HashMap<String, OverlayWindow>,
     layers: LayerStore,
+    app_state: SharedAppState,
     graphics: GraphicsDevice,
     owner: HWND,
     hinstance: HINSTANCE,
@@ -56,6 +60,7 @@ impl OverlayManager {
         owner: HWND,
         hinstance: HINSTANCE,
         input_config: InkInputConfig,
+        app_state: SharedAppState,
         logger: Logger,
     ) -> Result<Self> {
         register_window_class(hinstance)?;
@@ -68,6 +73,7 @@ impl OverlayManager {
         let mut manager = Self {
             overlays: HashMap::new(),
             layers: Rc::new(RefCell::new(HashMap::new())),
+            app_state,
             graphics,
             owner,
             hinstance,
@@ -120,6 +126,7 @@ impl OverlayManager {
                 monitor.clone(),
                 &self.graphics,
                 self.layers.clone(),
+                self.app_state.clone(),
                 self.annotation_enabled,
                 self.input_config.clone(),
                 self.debug_overlay,
@@ -178,11 +185,12 @@ impl OverlayManager {
     }
 
     pub fn undo(&mut self, monitor_key: &str) -> Result<bool> {
-        let changed = self
-            .layers
-            .borrow_mut()
-            .get_mut(monitor_key)
-            .is_some_and(InkLayerState::undo);
+        let changed = {
+            let mut layers = self.layers.borrow_mut();
+            layers
+                .get_mut(monitor_key)
+                .is_some_and(|layer| self.app_state.borrow_mut().undo_ink(monitor_key, layer))
+        };
         if changed {
             self.rebuild_monitor(monitor_key)?;
         }
@@ -190,11 +198,12 @@ impl OverlayManager {
     }
 
     pub fn redo(&mut self, monitor_key: &str) -> Result<bool> {
-        let changed = self
-            .layers
-            .borrow_mut()
-            .get_mut(monitor_key)
-            .is_some_and(InkLayerState::redo);
+        let changed = {
+            let mut layers = self.layers.borrow_mut();
+            layers
+                .get_mut(monitor_key)
+                .is_some_and(|layer| self.app_state.borrow_mut().redo_ink(monitor_key, layer))
+        };
         if changed {
             self.rebuild_monitor(monitor_key)?;
         }
@@ -204,6 +213,7 @@ impl OverlayManager {
     pub fn clear_all(&mut self) -> Result<usize> {
         let changed_keys = {
             let mut layers = self.layers.borrow_mut();
+            let mut app_state = self.app_state.borrow_mut();
             layers
                 .iter_mut()
                 .filter_map(|(key, layer)| {
@@ -211,10 +221,14 @@ impl OverlayManager {
                         return None;
                     }
                     let before = layer.strokes().to_vec();
-                    layer.execute(InkCommand::ReplaceStrokes {
-                        before,
-                        after: Vec::new(),
-                    });
+                    app_state.execute_ink_command(
+                        key,
+                        layer,
+                        InkCommand::ReplaceStrokes {
+                            before,
+                            after: Vec::new(),
+                        },
+                    );
                     Some(key.clone())
                 })
                 .collect::<Vec<_>>()
@@ -223,6 +237,33 @@ impl OverlayManager {
             self.rebuild_monitor(key)?;
         }
         Ok(changed_keys.len())
+    }
+
+    pub fn clear_selection(&mut self, monitor_key: &str) -> Result<bool> {
+        let changed = self.app_state.borrow_mut().clear_selection(monitor_key);
+        if changed {
+            self.logger
+                .event(&format!("선택 해제: monitor={monitor_key}"));
+            self.rebuild_monitor(monitor_key)?;
+        }
+        Ok(changed)
+    }
+
+    pub fn delete_selection(&mut self, monitor_key: &str) -> Result<bool> {
+        let changed = {
+            let mut layers = self.layers.borrow_mut();
+            layers.get_mut(monitor_key).is_some_and(|layer| {
+                self.app_state
+                    .borrow_mut()
+                    .delete_selection(monitor_key, layer)
+            })
+        };
+        if changed {
+            self.logger
+                .event(&format!("선택 삭제: monitor={monitor_key} Undo=1"));
+            self.rebuild_monitor(monitor_key)?;
+        }
+        Ok(changed)
     }
 
     pub fn set_pass_through(&mut self, enabled: bool) -> Result<()> {
@@ -355,6 +396,7 @@ struct OverlayWindowState {
     monitor: Monitor,
     logger: Logger,
     layers: LayerStore,
+    app_state: SharedAppState,
     input: InkInputController,
     renderer: Option<OverlayRenderer>,
     debug_visible: bool,
@@ -367,11 +409,7 @@ impl OverlayWindowState {
         let minimum_ratio = self.input.pressure_minimum_width_ratio();
         let highlighter_opacity = self.input.highlighter_opacity();
         for stroke in outcome.finished {
-            self.layers
-                .borrow_mut()
-                .entry(self.monitor.session_key.clone())
-                .or_default()
-                .execute(InkCommand::AddStroke(stroke.clone()));
+            self.execute_ink_command(InkCommand::AddStroke(stroke.clone()));
             self.renderer
                 .as_ref()
                 .expect("renderer initialized after window creation")
@@ -395,11 +433,7 @@ impl OverlayWindowState {
                     self.monitor.session_key,
                     stroke_shape_label(&recognized)
                 ));
-                self.layers
-                    .borrow_mut()
-                    .entry(self.monitor.session_key.clone())
-                    .or_default()
-                    .execute(InkCommand::ReplaceStrokes { before, after });
+                self.execute_ink_command(InkCommand::ReplaceStrokes { before, after });
                 let strokes = self.current_strokes();
                 self.renderer
                     .as_ref()
@@ -408,23 +442,42 @@ impl OverlayWindowState {
             }
         }
         if let Some(replacement) = outcome.replacement {
-            self.logger.event(&format!(
-                "지우개 replaceStrokes 적용: monitor={} erased={} Undo=1",
-                self.monitor.session_key, replacement.erased_strokes
-            ));
-            self.layers
-                .borrow_mut()
-                .entry(self.monitor.session_key.clone())
-                .or_default()
-                .execute(InkCommand::ReplaceStrokes {
-                    before: replacement.before,
-                    after: replacement.after,
-                });
+            match replacement.kind {
+                StrokeReplacementKind::Eraser { erased_strokes } => self.logger.event(&format!(
+                    "지우개 replaceStrokes 적용: monitor={} erased={} Undo=1",
+                    self.monitor.session_key, erased_strokes
+                )),
+                StrokeReplacementKind::SelectionMove => self.logger.event(&format!(
+                    "선택 이동 replaceStrokes 적용: monitor={} Undo=1",
+                    self.monitor.session_key
+                )),
+                StrokeReplacementKind::SelectionResize => self.logger.event(&format!(
+                    "선택 크기 조절 replaceStrokes 적용: monitor={} Undo=1",
+                    self.monitor.session_key
+                )),
+            }
+            self.execute_ink_command(InkCommand::ReplaceStrokes {
+                before: replacement.before,
+                after: replacement.after,
+            });
             let strokes = self.current_strokes();
             self.renderer
                 .as_ref()
                 .expect("renderer initialized after window creation")
                 .rebuild_completed(&strokes, minimum_ratio, highlighter_opacity)?;
+        }
+        if let Some(selected_ids) = outcome.selected_ids {
+            let strokes = self.current_strokes();
+            let selected_count = selected_ids.len();
+            let changed = self.app_state.borrow_mut().set_selected_stroke_ids(
+                &self.monitor.session_key,
+                selected_ids,
+                &strokes,
+            );
+            if changed && selected_count == 0 {
+                self.logger
+                    .event(&format!("선택 해제: monitor={}", self.monitor.session_key));
+            }
         }
         if outcome.redraw {
             self.draw()?;
@@ -436,6 +489,19 @@ impl OverlayWindowState {
         let active_stroke = self.input.active_stroke();
         let eraser = self.input.eraser_render_state();
         let laser = self.input.laser_render_state();
+        let strokes = self.current_strokes();
+        let selected_ids = self
+            .app_state
+            .borrow()
+            .selected_stroke_ids(&self.monitor.session_key);
+        let selection = self.input.selection_render_state(
+            &strokes,
+            &selected_ids,
+            edutools_core::ink::Size {
+                width: f64::from(self.monitor.rect.width()),
+                height: f64::from(self.monitor.rect.height()),
+            },
+        );
         self.renderer
             .as_ref()
             .expect("renderer initialized after window creation")
@@ -443,6 +509,7 @@ impl OverlayWindowState {
                 active_stroke.as_ref(),
                 eraser.as_ref(),
                 laser.as_ref(),
+                selection.as_ref(),
                 self.input.pressure_minimum_width_ratio(),
                 self.input.highlighter_opacity(),
                 self.debug_visible,
@@ -460,6 +527,15 @@ impl OverlayWindowState {
             .get(&self.monitor.session_key)
             .map(|layer| layer.strokes().to_vec())
             .unwrap_or_default()
+    }
+
+    fn execute_ink_command(&mut self, command: InkCommand) {
+        let display_id = self.monitor.session_key.clone();
+        let mut layers = self.layers.borrow_mut();
+        let layer = layers.entry(display_id.clone()).or_default();
+        self.app_state
+            .borrow_mut()
+            .execute_ink_command(&display_id, layer, command);
     }
 
     fn sync_laser_timer(&mut self, hwnd: HWND) -> Result<()> {
@@ -527,6 +603,7 @@ impl OverlayWindow {
         monitor: Monitor,
         graphics: &GraphicsDevice,
         layers: LayerStore,
+        app_state: SharedAppState,
         annotation_enabled: bool,
         input_config: InkInputConfig,
         debug_overlay: bool,
@@ -544,6 +621,7 @@ impl OverlayWindow {
             monitor,
             logger,
             layers,
+            app_state,
             renderer: None,
             debug_visible: annotation_enabled && debug_overlay,
             laser_timer_running: false,
@@ -770,7 +848,7 @@ impl OverlayWindow {
         renderer.selftest_icons()?;
         let pixel_failures = renderer.selftest_pixel_failures(ratio, highlighter_opacity)?;
         renderer.rebuild_completed(fake_layer.strokes(), ratio, highlighter_opacity)?;
-        renderer.draw_frame(None, None, None, ratio, highlighter_opacity, false)?;
+        renderer.draw_frame(None, None, None, None, ratio, highlighter_opacity, false)?;
         renderer.rebuild_completed(&self.strokes(), ratio, highlighter_opacity)?;
         self.state.draw()?;
         Ok(pixel_failures)
@@ -856,9 +934,13 @@ unsafe extern "system" fn overlay_window_proc(
             | WM_POINTERLEAVE => {
                 let pointer_id = pointer_id_from_wparam(wparam.0);
                 let strokes = state.current_strokes();
+                let selected_ids = state
+                    .app_state
+                    .borrow()
+                    .selected_stroke_ids(&state.monitor.session_key);
                 let result = state
                     .input
-                    .handle_message(message, pointer_id, &state.monitor, &strokes)
+                    .handle_message(message, pointer_id, &state.monitor, &strokes, &selected_ids)
                     .and_then(|outcome| state.apply_input_outcome(outcome))
                     .and_then(|()| state.sync_laser_timer(hwnd))
                     .and_then(|()| state.sync_recognition_timer(hwnd));

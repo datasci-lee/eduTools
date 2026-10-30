@@ -323,6 +323,122 @@ fn distance(first: Point, second: Point) -> f64 {
     (first.x - second.x).hypot(first.y - second.y)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SelectionHit {
+    Resize { anchor: Point },
+    Move,
+    Lasso,
+}
+
+// Swift: InkView.resizeAnchor(at:selectionBounds:) and the inflated move hit area.
+pub fn selection_hit(point: Point, bounds: Option<Rect>) -> SelectionHit {
+    let Some(bounds) = bounds else {
+        return SelectionHit::Lasso;
+    };
+    let corners_and_anchors = [
+        (
+            Point::new(bounds.x, bounds.y),
+            Point::new(bounds.x + bounds.width, bounds.y + bounds.height),
+        ),
+        (
+            Point::new(bounds.x + bounds.width, bounds.y),
+            Point::new(bounds.x, bounds.y + bounds.height),
+        ),
+        (
+            Point::new(bounds.x + bounds.width, bounds.y + bounds.height),
+            Point::new(bounds.x, bounds.y),
+        ),
+        (
+            Point::new(bounds.x, bounds.y + bounds.height),
+            Point::new(bounds.x + bounds.width, bounds.y),
+        ),
+    ];
+    if let Some((_, anchor)) = corners_and_anchors
+        .iter()
+        .find(|(corner, _)| distance(point, *corner) <= 10.0)
+    {
+        return SelectionHit::Resize { anchor: *anchor };
+    }
+    let inflated = Rect::new(
+        bounds.x - 6.0,
+        bounds.y - 6.0,
+        bounds.width + 12.0,
+        bounds.height + 12.0,
+    );
+    if inflated.contains(point) {
+        SelectionHit::Move
+    } else {
+        SelectionHit::Lasso
+    }
+}
+
+// Swift: InkItemGeometry
+pub struct InkItemGeometry;
+
+impl InkItemGeometry {
+    // Swift: InkItemGeometry.screenPoints(for:canvasSize:)
+    pub fn item_screen_points(stroke: &InkStroke, canvas_size: Size) -> Vec<Point> {
+        let points = stroke
+            .points
+            .iter()
+            .map(|point| InkGeometry::screen_point(point.location, canvas_size))
+            .map(|point| Point::new(point.x, point.y))
+            .collect::<Vec<_>>();
+        let (Some(first), Some(last)) = (points.first().copied(), points.last().copied()) else {
+            return Vec::new();
+        };
+
+        match &stroke.content {
+            InkStrokeContent::Freehand => points,
+            InkStrokeContent::Shape(InkShapeKind::Line | InkShapeKind::Arrow(_)) => {
+                vec![first, last]
+            }
+            InkStrokeContent::Shape(InkShapeKind::Rectangle)
+            | InkStrokeContent::Text(_)
+            | InkStrokeContent::Cover => closed_bounds_points(first, last),
+            InkStrokeContent::Shape(InkShapeKind::Ellipse) => {
+                let center = Point::new((first.x + last.x) / 2.0, (first.y + last.y) / 2.0);
+                let radius_x = (last.x - first.x).abs() / 2.0;
+                let radius_y = (last.y - first.y).abs() / 2.0;
+                (0..=32)
+                    .map(|index| {
+                        let angle = f64::from(index) / 32.0 * std::f64::consts::TAU;
+                        Point::new(
+                            center.x + angle.cos() * radius_x,
+                            center.y + angle.sin() * radius_y,
+                        )
+                    })
+                    .collect()
+            }
+        }
+    }
+
+    // Swift: InkItemGeometry.bounds(for:canvasSize:)
+    pub fn item_bounds(stroke: &InkStroke, canvas_size: Size) -> Option<Rect> {
+        let mut bounds = Rect::from_points(&Self::item_screen_points(stroke, canvas_size))?;
+        let half_width = stroke.width / 2.0;
+        bounds.x -= half_width;
+        bounds.y -= half_width;
+        bounds.width += stroke.width;
+        bounds.height += stroke.width;
+        Some(bounds)
+    }
+}
+
+fn closed_bounds_points(first: Point, last: Point) -> Vec<Point> {
+    let minimum_x = first.x.min(last.x);
+    let maximum_x = first.x.max(last.x);
+    let minimum_y = first.y.min(last.y);
+    let maximum_y = first.y.max(last.y);
+    let corners = [
+        Point::new(minimum_x, minimum_y),
+        Point::new(maximum_x, minimum_y),
+        Point::new(maximum_x, maximum_y),
+        Point::new(minimum_x, maximum_y),
+    ];
+    corners.into_iter().chain([corners[0]]).collect()
+}
+
 // Swift: EraserHitRule
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LassoHitRule {
@@ -547,9 +663,12 @@ impl SelectionEngine {
 
 #[cfg(test)]
 mod tests {
-    use super::ShapeRecognizer;
+    use super::{
+        selection_hit, InkItemGeometry, Point as ShapePoint, Rect, SelectionHit, ShapeRecognizer,
+    };
     use crate::ink::{
-        ArrowStyle, InkPoint, InkShapeKind, InkStroke, InkStrokeContent, InkStrokeTool, Point, Size,
+        ArrowStyle, InkPoint, InkShapeKind, InkStroke, InkStrokeContent, InkStrokeTool,
+        InkTextContent, Point, Size,
     };
 
     #[derive(Clone, Copy)]
@@ -630,6 +749,127 @@ mod tests {
         }
     }
 
+    #[test]
+    fn item_screen_points_and_bounds_table() {
+        let size = Size {
+            width: 200.0,
+            height: 100.0,
+        };
+        let cases = [
+            (
+                "freehand",
+                content_stroke(InkStrokeContent::Freehand, 3),
+                3,
+                164.0,
+                84.0,
+            ),
+            (
+                "line",
+                content_stroke(InkStrokeContent::Shape(InkShapeKind::Line), 3),
+                2,
+                164.0,
+                84.0,
+            ),
+            (
+                "arrow",
+                content_stroke(
+                    InkStrokeContent::Shape(InkShapeKind::Arrow(ArrowStyle::Single)),
+                    3,
+                ),
+                2,
+                164.0,
+                84.0,
+            ),
+            (
+                "rectangle",
+                content_stroke(InkStrokeContent::Shape(InkShapeKind::Rectangle), 2),
+                5,
+                84.0,
+                44.0,
+            ),
+            (
+                "ellipse",
+                content_stroke(InkStrokeContent::Shape(InkShapeKind::Ellipse), 2),
+                33,
+                84.0,
+                44.0,
+            ),
+            (
+                "text",
+                content_stroke(
+                    InkStrokeContent::Text(InkTextContent {
+                        string: "T".to_owned(),
+                        font_size: 20.0,
+                    }),
+                    2,
+                ),
+                5,
+                84.0,
+                44.0,
+            ),
+            (
+                "cover",
+                content_stroke(InkStrokeContent::Cover, 2),
+                5,
+                84.0,
+                44.0,
+            ),
+        ];
+
+        for (name, stroke, expected_count, expected_width, expected_height) in cases {
+            assert_eq!(
+                InkItemGeometry::item_screen_points(&stroke, size).len(),
+                expected_count,
+                "{name}"
+            );
+            let bounds =
+                InkItemGeometry::item_bounds(&stroke, size).unwrap_or_else(|| panic!("{name}"));
+            assert_eq!(bounds.x, 18.0, "{name}");
+            assert_eq!(bounds.y, 8.0, "{name}");
+            assert_eq!(bounds.width, expected_width, "{name}");
+            assert_eq!(bounds.height, expected_height, "{name}");
+        }
+    }
+
+    #[test]
+    fn handle_and_move_region_boundary_table() {
+        let bounds = Rect::new(100.0, 100.0, 80.0, 60.0);
+        let cases = [
+            (
+                "handle radius inclusive",
+                ShapePoint::new(110.0, 100.0),
+                SelectionHit::Resize {
+                    anchor: ShapePoint::new(180.0, 160.0),
+                },
+            ),
+            (
+                "outside handle but inside selection",
+                ShapePoint::new(111.0, 100.0),
+                SelectionHit::Move,
+            ),
+            (
+                "inflated move edge inclusive",
+                ShapePoint::new(94.0, 130.0),
+                SelectionHit::Move,
+            ),
+            (
+                "outside inflated move edge",
+                ShapePoint::new(93.999, 130.0),
+                SelectionHit::Lasso,
+            ),
+            (
+                "no selection",
+                ShapePoint::new(100.0, 100.0),
+                SelectionHit::Lasso,
+            ),
+        ];
+
+        for (name, point, expected) in cases {
+            let input_bounds = (name != "no selection").then_some(bounds);
+            assert_eq!(selection_hit(point, input_bounds), expected, "{name}");
+        }
+    }
+
     fn freehand(identifier: &str, points: &[(f64, f64)]) -> InkStroke {
         InkStroke::new(
             identifier,
@@ -643,6 +883,27 @@ mod tests {
                 .map(|(index, &(x, y))| InkPoint::new(Point { x, y }, 0.5, 10.0 + index as f64))
                 .collect(),
             InkStrokeContent::Freehand,
+        )
+    }
+
+    fn content_stroke(content: InkStrokeContent, point_count: usize) -> InkStroke {
+        let locations = [
+            Point { x: 0.1, y: 0.1 },
+            Point { x: 0.5, y: 0.5 },
+            Point { x: 0.9, y: 0.9 },
+        ];
+        InkStroke::new(
+            "geometry",
+            InkStrokeTool::Shape,
+            [0.1, 0.2, 0.3, 1.0],
+            4.0,
+            false,
+            locations[..point_count]
+                .iter()
+                .enumerate()
+                .map(|(index, location)| InkPoint::new(*location, 1.0, index as f64))
+                .collect(),
+            content,
         )
     }
 }
