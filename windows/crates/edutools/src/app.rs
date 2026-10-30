@@ -17,7 +17,11 @@ use crate::lesson_badge::{
     WM_APP_LESSON_ACTION, WM_APP_LESSON_COMPLETED,
 };
 use crate::log::Logger;
-use crate::monitor::{enumerate_monitors, local_point_in_monitor, monitor_at_point, Monitor};
+use crate::monitor::{
+    current_display_configuration, enumerate_monitors, hash_prefix8, local_point_in_monitor,
+    monitor_at_point, ConnectionSetOutcome, DisplayChangeState, DisplayConfiguration,
+    DisplayTargetKey, Monitor,
+};
 use crate::music::{BreakMusicManager, WM_APP_MUSIC_LAUNCH_RESULT, WM_APP_MUSIC_PAUSE_RESULT};
 use crate::overlay::{OverlayManager, SYNC_MESSAGE};
 use crate::palette::{
@@ -41,6 +45,9 @@ use crate::zoom_view::{
 };
 use edutools_core::board::BoardPresentation;
 use edutools_core::dispatch::{dispatch, DispatchContext, Effect, PressedShortcuts};
+use edutools_core::display_preset::{
+    DisplayAutoSwitchDecision, DisplayAutoSwitchPolicy, DisplayPresetDefaults,
+};
 use edutools_core::eraser::EraserMode;
 use edutools_core::ink::{
     InkGeometry, InkPoint, InkStroke, InkStrokeContent, InkStrokeTool, InkTool, PathCommand, Point,
@@ -60,17 +67,20 @@ use edutools_core::zoom::{
     ZoomGeometry, ZoomSessionState, ZoomStopAction,
 };
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::mem::size_of;
 use std::path::PathBuf;
 use std::rc::Rc;
 use windows::core::{w, Error, Result, PCWSTR};
 use windows::Graphics::SizeInt32;
+use windows::Win32::Devices::Display::GUID_DEVINTERFACE_MONITOR;
 use windows::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, E_FAIL, HANDLE, HINSTANCE, HWND, LPARAM,
     LRESULT, POINT, WPARAM,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Threading::CreateMutexW;
+use windows::Win32::System::RemoteDesktop::{ProcessIdToSessionId, WTSGetActiveConsoleSessionId};
+use windows::Win32::System::Threading::{CreateMutexW, GetCurrentProcessId};
 use windows::Win32::UI::HiDpi::{
     GetAwarenessFromDpiAwarenessContext, GetThreadDpiAwarenessContext,
     DPI_AWARENESS_PER_MONITOR_AWARE,
@@ -78,15 +88,22 @@ use windows::Win32::UI::HiDpi::{
 use windows::Win32::UI::Input::Pointer::EnableMouseInPointer;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow, DispatchMessageW, GetCursorPos,
-    GetForegroundWindow, GetMessageW, GetWindowLongPtrW, IsWindow, LoadImageW, PostQuitMessage,
-    RegisterClassW, RegisterWindowMessageW, SetForegroundWindow, SetWindowLongPtrW,
-    TranslateMessage, GDI_IMAGE_TYPE, GWLP_USERDATA, HICON, IMAGE_ICON, LR_DEFAULTCOLOR, MSG,
-    WM_CONTEXTMENU, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_HOTKEY, WM_KEYDOWN,
-    WM_POWERBROADCAST, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMECHANGE, WM_TIMER, WNDCLASSW,
-    WS_EX_TOOLWINDOW, WS_OVERLAPPED,
+    GetForegroundWindow, GetMessageW, GetWindowLongPtrW, IsWindow, KillTimer, LoadImageW,
+    PostQuitMessage, RegisterClassW, RegisterDeviceNotificationW, RegisterWindowMessageW,
+    SetForegroundWindow, SetTimer, SetWindowLongPtrW, TranslateMessage,
+    UnregisterDeviceNotification, DBT_DEVICEARRIVAL, DBT_DEVICEREMOVECOMPLETE,
+    DBT_DEVTYP_DEVICEINTERFACE, DEVICE_NOTIFY_WINDOW_HANDLE, DEV_BROADCAST_DEVICEINTERFACE_W,
+    GDI_IMAGE_TYPE, GWLP_USERDATA, HDEVNOTIFY, HICON, IMAGE_ICON, LR_DEFAULTCOLOR, MSG,
+    WM_CONTEXTMENU, WM_DESTROY, WM_DEVICECHANGE, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_HOTKEY,
+    WM_KEYDOWN, WM_POWERBROADCAST, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMECHANGE, WM_TIMER,
+    WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
 const WINDOW_CLASS: PCWSTR = w!("EduToolsMain");
+const DISPLAY_SYNC_TIMER_ID: usize = 0xED31;
+const DISPLAY_STABILITY_TIMER_ID: usize = 0xED32;
+const DISPLAY_RETRY_TIMER_ID: usize = 0xED33;
+const DISPLAY_SYNC_INTERVAL_MS: u32 = 300;
 
 pub fn run() -> i32 {
     let logger = Logger::open();
@@ -107,6 +124,26 @@ pub fn run() -> i32 {
             Err(error) => {
                 logger.event(&format!("--selftest-icons 실패: {error}"));
                 eprintln!("--selftest-icons: {error}");
+                1
+            }
+        };
+    }
+
+    // Development-only CCD dump; never used as a product feature.
+    if arguments
+        .first()
+        .is_some_and(|value| value == "--print-displays")
+    {
+        return match current_display_configuration() {
+            Ok(configuration) => {
+                let line = configuration.diagnostic_line();
+                println!("{line}");
+                logger.event(&line);
+                0
+            }
+            Err(error) => {
+                logger.event(&format!("display-query 실패: {error}"));
+                eprintln!("EduTools: 현재 디스플레이 구성을 읽지 못했습니다: {error}");
                 1
             }
         };
@@ -205,6 +242,15 @@ struct App {
     break_timer: Option<BreakTimerManager>,
     pending_break_request: Option<i64>,
     zoom: Option<ZoomRuntime>,
+    device_notification: Option<HDEVNOTIFY>,
+    display_change: DisplayChangeState,
+    display_stability_deadline_ms: Option<u64>,
+    display_target_table: Vec<(u32, DisplayTargetKey)>,
+    last_judged_uuids: Option<HashSet<String>>,
+    last_auto_apply_at: Option<f64>,
+    pending_display_apply: Option<usize>,
+    #[allow(dead_code)]
+    expected_after_apply: Option<HashSet<String>>, // 121b fills this after applying a plan.
     logger: Logger,
     shutting_down: bool,
 }
@@ -279,6 +325,8 @@ impl App {
             &self.settings,
             self.logger.clone(),
         )?);
+        self.register_display_notifications()?;
+        self.initialize_display_change_state();
         Ok(())
     }
 
@@ -1605,6 +1653,272 @@ impl App {
         }
     }
 
+    fn register_display_notifications(&mut self) -> Result<()> {
+        let filter = DEV_BROADCAST_DEVICEINTERFACE_W {
+            dbcc_size: u32::try_from(size_of::<DEV_BROADCAST_DEVICEINTERFACE_W>())
+                .expect("DEV_BROADCAST_DEVICEINTERFACE_W size fits u32"),
+            dbcc_devicetype: DBT_DEVTYP_DEVICEINTERFACE.0,
+            dbcc_classguid: GUID_DEVINTERFACE_MONITOR,
+            ..Default::default()
+        };
+        // SAFETY: hwnd is the live hidden top-level window and filter has the documented size/type.
+        let notification = unsafe {
+            RegisterDeviceNotificationW(
+                HANDLE(self.hwnd.0),
+                (&filter as *const DEV_BROADCAST_DEVICEINTERFACE_W).cast(),
+                DEVICE_NOTIFY_WINDOW_HANDLE,
+            )
+        }?;
+        self.device_notification = Some(notification);
+        self.logger
+            .event("디스플레이 장치 알림 등록: GUID_DEVINTERFACE_MONITOR");
+        Ok(())
+    }
+
+    fn initialize_display_change_state(&mut self) {
+        match current_display_configuration() {
+            Ok(configuration) => {
+                self.record_display_configuration(&configuration);
+                self.display_change
+                    .initialize(configuration.connected_uuids.clone());
+                self.last_judged_uuids = Some(active_display_uuids(&configuration));
+            }
+            Err(error) => {
+                self.logger
+                    .event(&format!("display-query 초기 조회 실패: {error}"));
+                self.restart_display_stability_timer("초기 조회 실패");
+            }
+        }
+    }
+
+    fn record_display_configuration(&mut self, configuration: &DisplayConfiguration) {
+        self.display_target_table = configuration.target_table.clone();
+        self.logger.event(&configuration.diagnostic_line());
+    }
+
+    fn schedule_sync(&mut self, reason: &str) {
+        self.logger
+            .event(&format!("디스플레이 변경 알림 수신: {reason}"));
+        if self.zoom.is_some() {
+            self.stop_zoom(reason, true);
+        }
+        // Reusing the same timer ID resets the 0.3 second overlay debounce.
+        if unsafe {
+            SetTimer(
+                Some(self.hwnd),
+                DISPLAY_SYNC_TIMER_ID,
+                DISPLAY_SYNC_INTERVAL_MS,
+                None,
+            )
+        } == 0
+        {
+            self.logger.event(&format!(
+                "디스플레이 오버레이 동기화 타이머 시작 실패: {}",
+                Error::from_thread()
+            ));
+        }
+        self.restart_display_stability_timer(reason);
+    }
+
+    fn restart_display_stability_timer(&mut self, reason: &str) {
+        let restarted = self.display_change.pending_generation().is_some();
+        let generation = self.display_change.notify();
+        let interval_ms = (DisplayPresetDefaults::CONNECTION_STABILITY_INTERVAL * 1_000.0) as u32;
+        self.display_stability_deadline_ms =
+            Some(monotonic_millis().saturating_add(u64::from(interval_ms)));
+        // Reusing the timer ID restarts the independent five second stability interval.
+        if unsafe {
+            SetTimer(
+                Some(self.hwnd),
+                DISPLAY_STABILITY_TIMER_ID,
+                interval_ms,
+                None,
+            )
+        } == 0
+        {
+            self.display_change.cancel(generation);
+            self.display_stability_deadline_ms = None;
+            self.logger.event(&format!(
+                "디스플레이 안정 타이머 시작 실패: {}",
+                Error::from_thread()
+            ));
+            return;
+        }
+        self.logger.event(&format!(
+            "디스플레이 안정 타이머 {}: delay={}s generation={} reason={reason}",
+            if restarted { "재시작" } else { "시작" },
+            DisplayPresetDefaults::CONNECTION_STABILITY_INTERVAL,
+            generation,
+        ));
+    }
+
+    fn handle_display_sync_timer(&mut self) {
+        let _ = unsafe { KillTimer(Some(self.hwnd), DISPLAY_SYNC_TIMER_ID) };
+        if let Some(tray) = self.tray.as_mut() {
+            tray.refresh_display("디스플레이 동기화 타이머");
+        }
+        self.synchronize_overlays("0.3초 디스플레이 동기화 타이머");
+    }
+
+    fn handle_display_stability_timer(&mut self) {
+        let _ = unsafe { KillTimer(Some(self.hwnd), DISPLAY_STABILITY_TIMER_ID) };
+        let now_ms = monotonic_millis();
+        if let Some(deadline_ms) = self.display_stability_deadline_ms {
+            if now_ms < deadline_ms {
+                let remaining_ms = u32::try_from(deadline_ms - now_ms).unwrap_or(u32::MAX);
+                // A WM_TIMER from the replaced generation can already be queued; wait to the
+                // newest deadline before consulting the connection set.
+                let timer = unsafe {
+                    SetTimer(
+                        Some(self.hwnd),
+                        DISPLAY_STABILITY_TIMER_ID,
+                        remaining_ms.max(1),
+                        None,
+                    )
+                };
+                if timer == 0 {
+                    self.display_stability_deadline_ms = None;
+                    self.logger.event(&format!(
+                        "디스플레이 안정 타이머 재대기 실패: {}",
+                        Error::from_thread()
+                    ));
+                } else {
+                    return;
+                }
+            }
+        }
+        self.display_stability_deadline_ms = None;
+        let Some(generation) = self.display_change.pending_generation() else {
+            self.logger
+                .event("디스플레이 안정 타이머 만료 무시: pending 없음");
+            return;
+        };
+        self.logger.event(&format!(
+            "디스플레이 안정 타이머 만료: generation={generation}"
+        ));
+        let configuration = match current_display_configuration() {
+            Ok(configuration) => configuration,
+            Err(error) => {
+                self.display_change.cancel(generation);
+                self.logger
+                    .event(&format!("display-query 안정 후 조회 실패: {error}"));
+                return;
+            }
+        };
+        self.record_display_configuration(&configuration);
+        if configuration.unavailable_target_count > 0 {
+            self.logger.event(&format!(
+                "디스플레이 안정 판정 보류: targetAvailable=FALSE count={}",
+                configuration.unavailable_target_count
+            ));
+            self.restart_display_stability_timer("targetAvailable=FALSE");
+            return;
+        }
+        match self
+            .display_change
+            .settle(generation, &configuration.connected_uuids)
+        {
+            ConnectionSetOutcome::Stale => self.logger.event(&format!(
+                "디스플레이 안정 판정 무시: stale generation={generation}"
+            )),
+            ConnectionSetOutcome::Unchanged => self
+                .logger
+                .event("디스플레이 자동 전환 판단=Ignore reason=연결 집합 동일"),
+            ConnectionSetOutcome::Changed => {
+                self.judge_display_auto_switch(&configuration, "연결 집합 변경")
+            }
+        }
+    }
+
+    fn judge_display_auto_switch(&mut self, configuration: &DisplayConfiguration, reason: &str) {
+        let current_uuids = active_display_uuids(configuration);
+        match is_console_session() {
+            Ok(true) => {}
+            Ok(false) => {
+                self.last_judged_uuids = Some(current_uuids);
+                self.logger.event(&format!(
+                    "디스플레이 자동 전환 판단 비활성: RDP/비콘솔 세션 reason={reason}"
+                ));
+                return;
+            }
+            Err(error) => {
+                self.logger.event(&format!(
+                    "디스플레이 자동 전환 세션 확인 실패: {error} reason={reason}"
+                ));
+                return;
+            }
+        }
+        let now = monotonic_seconds();
+        let decision = DisplayAutoSwitchPolicy::decide(
+            &configuration.online,
+            &self.settings.display.presets,
+            self.settings.display.auto_switch_enabled,
+            self.last_judged_uuids.as_ref(),
+            self.last_auto_apply_at,
+            now,
+            DisplayPresetDefaults::AUTOMATIC_APPLY_COOLDOWN,
+        );
+        match decision {
+            DisplayAutoSwitchDecision::Ignore => {
+                self.last_judged_uuids = Some(current_uuids);
+                self.logger.event(&format!(
+                    "디스플레이 자동 전환 판단=Ignore reason={reason} enabled={}",
+                    self.settings.display.auto_switch_enabled
+                ));
+            }
+            DisplayAutoSwitchDecision::Apply(index) => {
+                self.last_judged_uuids = Some(current_uuids);
+                let replaced = self.pending_display_apply.replace(index);
+                if let Some(preset) = self.settings.display.presets.get(index) {
+                    self.logger.event(&format!(
+                        "디스플레이 자동 전환 판단=Apply 자동 전환 대상: presetHash={} index={} replacedPending={:?} — 적용은 121b",
+                        hash_prefix8(&preset.name),
+                        index,
+                        replaced,
+                    ));
+                } else {
+                    self.logger.event(&format!(
+                        "디스플레이 자동 전환 판단=Apply 인덱스 범위 오류: index={index} — 적용은 121b"
+                    ));
+                }
+            }
+            DisplayAutoSwitchDecision::Retry(after) => {
+                self.logger.event(&format!(
+                    "디스플레이 자동 전환 판단=Retry after={after:.3}s reason={reason}"
+                ));
+                self.schedule_display_retry(after);
+            }
+        }
+    }
+
+    fn schedule_display_retry(&self, after: f64) {
+        let delay_ms = (after.max(0.001) * 1_000.0).ceil().min(f64::from(u32::MAX)) as u32;
+        if unsafe { SetTimer(Some(self.hwnd), DISPLAY_RETRY_TIMER_ID, delay_ms, None) } == 0 {
+            self.logger.event(&format!(
+                "디스플레이 자동 전환 재시도 타이머 시작 실패: {}",
+                Error::from_thread()
+            ));
+        }
+    }
+
+    fn handle_display_retry_timer(&mut self) {
+        let _ = unsafe { KillTimer(Some(self.hwnd), DISPLAY_RETRY_TIMER_ID) };
+        let configuration = match current_display_configuration() {
+            Ok(configuration) => configuration,
+            Err(error) => {
+                self.logger
+                    .event(&format!("display-query 재시도 조회 실패: {error}"));
+                return;
+            }
+        };
+        self.record_display_configuration(&configuration);
+        if configuration.unavailable_target_count > 0 {
+            self.restart_display_stability_timer("재시도 중 targetAvailable=FALSE");
+            return;
+        }
+        self.judge_display_auto_switch(&configuration, "쿨다운 재시도");
+    }
+
     fn synchronize_overlays(&mut self, reason: &str) {
         self.cancel_text_entry("모니터 변경");
         if let Some(overlays) = self.overlays.as_mut() {
@@ -2399,6 +2713,16 @@ impl App {
             return;
         }
         self.shutting_down = true;
+        let _ = unsafe { KillTimer(Some(self.hwnd), DISPLAY_SYNC_TIMER_ID) };
+        let _ = unsafe { KillTimer(Some(self.hwnd), DISPLAY_STABILITY_TIMER_ID) };
+        let _ = unsafe { KillTimer(Some(self.hwnd), DISPLAY_RETRY_TIMER_ID) };
+        if let Some(notification) = self.device_notification.take() {
+            // SAFETY: notification was returned for this live hidden window and is released once.
+            if let Err(error) = unsafe { UnregisterDeviceNotification(notification) } {
+                self.logger
+                    .event(&format!("디스플레이 장치 알림 해제 실패: {error}"));
+            }
+        }
         if let Some(music) = self.music.as_mut() {
             music.stop_music_for_termination();
         }
@@ -2427,6 +2751,23 @@ impl App {
     }
 }
 
+fn active_display_uuids(configuration: &DisplayConfiguration) -> HashSet<String> {
+    configuration
+        .online
+        .iter()
+        .filter_map(|display| (!display.uuid.is_empty()).then(|| display.uuid.clone()))
+        .collect()
+}
+
+fn is_console_session() -> Result<bool> {
+    let mut process_session = 0;
+    // SAFETY: process_session is writable and the process ID is for the current process.
+    unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut process_session) }?;
+    // SAFETY: this function has no preconditions and returns u32::MAX when no console is attached.
+    let console_session = unsafe { WTSGetActiveConsoleSessionId() };
+    Ok(console_session != u32::MAX && process_session == console_session)
+}
+
 fn run_message_loop(logger: Logger) -> Result<i32> {
     // SAFETY: None requests the current executable module handle.
     let module = unsafe { GetModuleHandleW(None) }?;
@@ -2447,7 +2788,7 @@ fn run_message_loop(logger: Logger) -> Result<i32> {
             WS_EX_TOOLWINDOW,
             WINDOW_CLASS,
             w!("EduTools"),
-            WS_OVERLAPPED,
+            WS_POPUP,
             0,
             0,
             0,
@@ -2504,6 +2845,14 @@ fn run_message_loop(logger: Logger) -> Result<i32> {
         break_timer: None,
         pending_break_request: None,
         zoom: None,
+        device_notification: None,
+        display_change: DisplayChangeState::default(),
+        display_stability_deadline_ms: None,
+        display_target_table: Vec::new(),
+        last_judged_uuids: None,
+        last_auto_apply_at: None,
+        pending_display_apply: None,
+        expected_after_apply: None,
         logger,
         shutting_down: false,
     });
@@ -2569,6 +2918,18 @@ unsafe extern "system" fn window_proc(
             return LRESULT(0);
         }
         match message {
+            WM_TIMER if wparam.0 == DISPLAY_SYNC_TIMER_ID => {
+                app.handle_display_sync_timer();
+                return LRESULT(0);
+            }
+            WM_TIMER if wparam.0 == DISPLAY_STABILITY_TIMER_ID => {
+                app.handle_display_stability_timer();
+                return LRESULT(0);
+            }
+            WM_TIMER if wparam.0 == DISPLAY_RETRY_TIMER_ID => {
+                app.handle_display_retry_timer();
+                return LRESULT(0);
+            }
             WM_HOTKEY => {
                 app.handle_hotkey(wparam.0 as i32);
                 return LRESULT(0);
@@ -2660,7 +3021,7 @@ unsafe extern "system" fn window_proc(
                 return LRESULT(0);
             }
             SYNC_MESSAGE => {
-                app.synchronize_overlays("오버레이 메시지");
+                app.schedule_sync("오버레이 WM_DISPLAYCHANGE/WM_DPICHANGED");
                 return LRESULT(0);
             }
             WM_APP_PALETTE_ACTION => {
@@ -2732,13 +3093,24 @@ unsafe extern "system" fn window_proc(
                 return LRESULT(0);
             }
             WM_DISPLAYCHANGE => {
-                if app.zoom.is_some() {
-                    app.stop_zoom("WM_DISPLAYCHANGE", true);
-                }
                 if let Some(tray) = app.tray.as_mut() {
                     tray.refresh_display("WM_DISPLAYCHANGE");
                 }
-                app.synchronize_overlays("WM_DISPLAYCHANGE");
+                app.schedule_sync("WM_DISPLAYCHANGE");
+                return LRESULT(0);
+            }
+            WM_DEVICECHANGE
+                if matches!(
+                    wparam.0 as u32,
+                    DBT_DEVICEARRIVAL | DBT_DEVICEREMOVECOMPLETE
+                ) =>
+            {
+                let kind = if wparam.0 as u32 == DBT_DEVICEARRIVAL {
+                    "DBT_DEVICEARRIVAL"
+                } else {
+                    "DBT_DEVICEREMOVECOMPLETE"
+                };
+                app.schedule_sync(kind);
                 return LRESULT(0);
             }
             WM_TIMECHANGE => {
@@ -2768,6 +3140,7 @@ unsafe extern "system" fn window_proc(
                 return LRESULT(0);
             }
             WM_POWERBROADCAST if wparam.0 == 0x12 => {
+                app.schedule_sync("PBT_APMRESUMEAUTOMATIC");
                 app.synchronize_lesson_badge("PBT_APMRESUMEAUTOMATIC");
                 let result = app.break_timer.as_mut().map(|timer| {
                     timer.synchronize_after_system_event(&app.settings, "PBT_APMRESUMEAUTOMATIC")
@@ -2808,6 +3181,7 @@ unsafe extern "system" fn window_proc(
 
 fn run_selftest(logger: &Logger) -> bool {
     let mut failures = Vec::new();
+    failures.extend(crate::monitor::online_display_selftest_failures());
     failures.extend(crate::music::selftest_failures());
     failures.extend(crate::settings_file::selftest_failures());
     // SAFETY: None requests the current executable module handle.
