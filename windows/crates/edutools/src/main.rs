@@ -23,6 +23,8 @@ mod palette;
 #[cfg(windows)]
 mod render;
 #[cfg(windows)]
+mod selection;
+#[cfg(windows)]
 mod tray;
 #[cfg(windows)]
 mod z_bands;

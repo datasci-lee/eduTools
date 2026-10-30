@@ -1,6 +1,10 @@
 use crate::log::Logger;
 use crate::monitor::{Monitor, MonitorRect};
 use crate::render::{px_per_dip, COVER_STROKE_COLOR};
+use crate::selection::{
+    moved_strokes, normalized_point_bounds, resized_strokes, selected_stroke_ids, selection_bounds,
+    selection_hit, SelectionHit,
+};
 use edutools_core::eraser::{
     EraserAreaShape, EraserEngine, EraserGesture, EraserHitRule, EraserMode, EraserSettings,
     EraserTargetFilter,
@@ -11,9 +15,10 @@ use edutools_core::ink::{
 };
 use edutools_core::laser::{LaserPoint, LaserTrail};
 use edutools_core::settings::AppSettings;
-use edutools_core::shape::ShapeRecognizer;
+use edutools_core::shape::{LassoHitRule, Rect as SelectionRect, ShapeRecognizer};
 use edutools_core::state::AppState;
 use std::cmp::Ordering;
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::OnceLock;
 use windows::core::Result;
@@ -114,7 +119,14 @@ impl InkInputConfig {
 pub struct StrokeReplacement {
     pub before: Vec<InkStroke>,
     pub after: Vec<InkStroke>,
-    pub erased_strokes: usize,
+    pub kind: StrokeReplacementKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StrokeReplacementKind {
+    Eraser { erased_strokes: usize },
+    SelectionMove,
+    SelectionResize,
 }
 
 #[derive(Default)]
@@ -122,6 +134,7 @@ pub struct InputOutcome {
     pub finished: Vec<InkStroke>,
     pub recognized: Option<InkStroke>,
     pub replacement: Option<StrokeReplacement>,
+    pub selected_ids: Option<BTreeSet<String>>,
     pub redraw: bool,
 }
 
@@ -142,6 +155,13 @@ pub struct LaserRenderState {
     pub size_dip: f64,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct SelectionRenderState {
+    pub lasso: Vec<Point>,
+    pub bounds: Option<SelectionRect>,
+    pub preview_strokes: Option<Vec<InkStroke>>,
+}
+
 struct ActiveStroke {
     stroke: InkStroke,
     is_straight: bool,
@@ -156,6 +176,29 @@ struct ActiveEraser {
     canvas_size: Size,
     preview_strokes: Option<Vec<InkStroke>>,
     highlighted_strokes: Vec<InkStroke>,
+}
+
+enum ActiveSelection {
+    Lasso {
+        points: Vec<Point>,
+        before: Vec<InkStroke>,
+        canvas_size: Size,
+    },
+    Move {
+        start: Point,
+        before: Vec<InkStroke>,
+        selected_ids: BTreeSet<String>,
+        canvas_size: Size,
+        preview: Option<Vec<InkStroke>>,
+    },
+    Resize {
+        anchor: Point,
+        source_bounds: SelectionRect,
+        before: Vec<InkStroke>,
+        selected_ids: BTreeSet<String>,
+        canvas_size: Size,
+        preview: Option<Vec<InkStroke>>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -268,6 +311,7 @@ pub struct InkInputController {
     recognition_timer_waiting: bool,
     recognition_timer_reset_requested: bool,
     active_eraser: Option<ActiveEraser>,
+    active_selection: Option<ActiveSelection>,
     eraser_cursor: Option<Point>,
     laser: LaserInputState,
     logger: Logger,
@@ -290,6 +334,7 @@ impl InkInputController {
             recognition_timer_waiting: false,
             recognition_timer_reset_requested: false,
             active_eraser: None,
+            active_selection: None,
             eraser_cursor: None,
             laser: LaserInputState::default(),
             logger,
@@ -314,6 +359,13 @@ impl InkInputController {
                 "도형 인식 끔"
             };
             self.cancel_recognition(reason);
+            if self.active_selection.take().is_some() {
+                self.owner = None;
+                self.logger.event(&format!(
+                    "선택 상호작용 취소: monitor={} reason={reason}",
+                    self.monitor_key
+                ));
+            }
         }
         if clear_laser && self.laser.has_visual() {
             self.logger
@@ -410,6 +462,30 @@ impl InkInputController {
         })
     }
 
+    pub fn selection_render_state(
+        &self,
+        strokes: &[InkStroke],
+        selected_ids: &BTreeSet<String>,
+        canvas_size: Size,
+    ) -> Option<SelectionRenderState> {
+        let (lasso, preview_strokes) = match self.active_selection.as_ref() {
+            Some(ActiveSelection::Lasso { points, .. }) => (points.clone(), None),
+            Some(ActiveSelection::Move { preview, .. })
+            | Some(ActiveSelection::Resize { preview, .. }) => (Vec::new(), preview.clone()),
+            None => (Vec::new(), None),
+        };
+        let bounds_source = preview_strokes.as_deref().unwrap_or(strokes);
+        let bounds = selection_bounds(bounds_source, selected_ids, canvas_size);
+        if lasso.is_empty() && bounds.is_none() && preview_strokes.is_none() {
+            return None;
+        }
+        Some(SelectionRenderState {
+            lasso,
+            bounds,
+            preview_strokes,
+        })
+    }
+
     pub fn laser_timer_needed(&self) -> bool {
         self.laser.timer_needed()
     }
@@ -453,6 +529,7 @@ impl InkInputController {
         pointer_id: u32,
         monitor: &Monitor,
         strokes: &[InkStroke],
+        selected_ids: &BTreeSet<String>,
     ) -> Result<InputOutcome> {
         if !self.annotation_enabled {
             return Ok(InputOutcome::default());
@@ -494,7 +571,7 @@ impl InkInputController {
 
         let snapshot = PointerSnapshot::read(pointer_id, monitor.rect)?;
         if message == WM_POINTERDOWN {
-            self.handle_down(snapshot, monitor, strokes)
+            self.handle_down(snapshot, monitor, strokes, selected_ids)
         } else {
             self.handle_update_or_up(message, snapshot, monitor)
         }
@@ -505,6 +582,7 @@ impl InkInputController {
         snapshot: PointerSnapshot,
         monitor: &Monitor,
         strokes: &[InkStroke],
+        selected_ids: &BTreeSet<String>,
     ) -> Result<InputOutcome> {
         let mut outcome = InputOutcome::default();
         if let Some(owner) = self.owner {
@@ -575,6 +653,37 @@ impl InkInputController {
             // 지우개 모드 HUD는 후속 팔레트 라운드 전까지 이 로그 한 줄로 대체한다.
             self.logger
                 .event(&format!("지우개 모드 HUD 대체 로그: {:?}", settings.mode));
+            outcome.redraw = true;
+            if snapshot.canceled {
+                merge_outcome(
+                    &mut outcome,
+                    self.finish_owned("POINTER_FLAG_CANCELED", true),
+                );
+            }
+            return Ok(outcome);
+        }
+
+        if self.config.current_tool == InkTool::Select {
+            let canvas_size = Size {
+                width: f64::from(monitor.rect.width()),
+                height: f64::from(monitor.rect.height()),
+            };
+            let mut effective_strokes = outcome
+                .replacement
+                .as_ref()
+                .map(|replacement| replacement.after.clone())
+                .unwrap_or_else(|| strokes.to_vec());
+            effective_strokes.extend(outcome.finished.iter().cloned());
+            let effective_selection = outcome.selected_ids.as_ref().unwrap_or(selected_ids);
+            self.owner = Some(owner);
+            if self.begin_selection(
+                snapshot.local_point,
+                effective_strokes,
+                effective_selection,
+                canvas_size,
+            ) {
+                outcome.selected_ids = Some(BTreeSet::new());
+            }
             outcome.redraw = true;
             if snapshot.canceled {
                 merge_outcome(
@@ -769,7 +878,10 @@ impl InkInputController {
             return Ok(outcome);
         }
 
-        if self.active_eraser.is_some() {
+        if self.active_selection.is_some() {
+            self.update_selection(snapshot, monitor)?;
+            outcome.redraw = true;
+        } else if self.active_eraser.is_some() {
             let points = pointer_screen_points(snapshot.pointer_id, snapshot.device, monitor.rect)?;
             if let Some(active) = self.active_eraser.as_mut() {
                 append_unique_points(&mut active.points, points);
@@ -820,6 +932,124 @@ impl InkInputController {
             merge_outcome(&mut outcome, self.finish_owned(reason, snapshot.canceled));
         }
         Ok(outcome)
+    }
+
+    fn begin_selection(
+        &mut self,
+        point: Point,
+        before: Vec<InkStroke>,
+        selected_ids: &BTreeSet<String>,
+        canvas_size: Size,
+    ) -> bool {
+        let bounds = selection_bounds(&before, selected_ids, canvas_size);
+        match selection_hit(point, bounds) {
+            SelectionHit::Resize { anchor } => {
+                let Some(source_bounds) = normalized_point_bounds(&before, selected_ids) else {
+                    self.active_selection = Some(ActiveSelection::Lasso {
+                        points: vec![point],
+                        before,
+                        canvas_size,
+                    });
+                    self.logger
+                        .event(&format!("올가미 시작: monitor={}", self.monitor_key));
+                    return true;
+                };
+                self.active_selection = Some(ActiveSelection::Resize {
+                    anchor: InkGeometry::normalized_point(
+                        Point {
+                            x: anchor.x,
+                            y: anchor.y,
+                        },
+                        canvas_size,
+                    ),
+                    source_bounds,
+                    before,
+                    selected_ids: selected_ids.clone(),
+                    canvas_size,
+                    preview: None,
+                });
+                self.logger.event(&format!(
+                    "선택 크기 조절 시작: monitor={}",
+                    self.monitor_key
+                ));
+                false
+            }
+            SelectionHit::Move => {
+                self.active_selection = Some(ActiveSelection::Move {
+                    start: point,
+                    before,
+                    selected_ids: selected_ids.clone(),
+                    canvas_size,
+                    preview: None,
+                });
+                self.logger
+                    .event(&format!("선택 이동 시작: monitor={}", self.monitor_key));
+                false
+            }
+            SelectionHit::Lasso => {
+                self.active_selection = Some(ActiveSelection::Lasso {
+                    points: vec![point],
+                    before,
+                    canvas_size,
+                });
+                self.logger
+                    .event(&format!("올가미 시작: monitor={}", self.monitor_key));
+                true
+            }
+        }
+    }
+
+    fn update_selection(&mut self, snapshot: PointerSnapshot, monitor: &Monitor) -> Result<()> {
+        let lasso_points = matches!(self.active_selection, Some(ActiveSelection::Lasso { .. }))
+            .then(|| pointer_screen_points(snapshot.pointer_id, snapshot.device, monitor.rect))
+            .transpose()?;
+        let Some(selection) = self.active_selection.as_mut() else {
+            return Ok(());
+        };
+        match selection {
+            ActiveSelection::Lasso { points, .. } => {
+                append_unique_points(
+                    points,
+                    lasso_points.unwrap_or_else(|| vec![snapshot.local_point]),
+                );
+            }
+            ActiveSelection::Move {
+                start,
+                before,
+                selected_ids,
+                canvas_size,
+                preview,
+            } => {
+                let delta = Point {
+                    x: (snapshot.local_point.x - start.x) / canvas_size.width.max(1.0),
+                    y: (snapshot.local_point.y - start.y) / canvas_size.height.max(1.0),
+                };
+                *preview = Some(moved_strokes(before, selected_ids, delta));
+            }
+            ActiveSelection::Resize {
+                anchor,
+                source_bounds,
+                before,
+                selected_ids,
+                canvas_size,
+                preview,
+            } => {
+                let current = InkGeometry::normalized_point(snapshot.local_point, *canvas_size);
+                let destination = SelectionRect::new(
+                    anchor.x.min(current.x),
+                    anchor.y.min(current.y),
+                    (current.x - anchor.x).abs().max(0.001),
+                    (current.y - anchor.y).abs().max(0.001),
+                );
+                *preview = Some(resized_strokes(
+                    before,
+                    selected_ids,
+                    *source_bounds,
+                    destination,
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn handle_hover(&mut self, message: u32, snapshot: PointerSnapshot) -> Result<InputOutcome> {
@@ -925,6 +1155,9 @@ impl InkInputController {
     fn finish_owned(&mut self, reason: &str, hide_laser_point: bool) -> InputOutcome {
         let owner = self.owner.take();
         let mut outcome = InputOutcome::default();
+        let had_selection = self.active_selection.is_some();
+        merge_outcome(&mut outcome, self.take_active_selection(reason));
+        outcome.redraw |= had_selection;
         let had_stroke = self.active_stroke.is_some();
         if let Some((stroke, recognized)) = self.take_active_stroke(reason, owner) {
             outcome.finished.push(stroke);
@@ -932,7 +1165,10 @@ impl InkInputController {
         }
         outcome.redraw |= had_stroke;
         let had_eraser = self.active_eraser.is_some();
-        outcome.replacement = self.take_active_eraser(reason, owner);
+        if let Some(replacement) = self.take_active_eraser(reason, owner) {
+            debug_assert!(outcome.replacement.is_none());
+            outcome.replacement = Some(replacement);
+        }
         outcome.redraw |= had_eraser;
         if owner.is_some() && self.laser.trailing && self.laser.break_trail(hide_laser_point) {
             self.logger.event(&format!(
@@ -1049,8 +1285,102 @@ impl InkInputController {
         (active.before != after).then_some(StrokeReplacement {
             before: active.before,
             after,
-            erased_strokes,
+            kind: StrokeReplacementKind::Eraser { erased_strokes },
         })
+    }
+
+    fn take_active_selection(&mut self, reason: &str) -> InputOutcome {
+        let Some(active) = self.active_selection.take() else {
+            return InputOutcome::default();
+        };
+        let should_commit = matches!(reason, "WM_POINTERUP" | "누락 up 복구");
+        if !should_commit {
+            self.logger.event(&format!(
+                "선택 상호작용 취소: monitor={} reason={reason}",
+                self.monitor_key
+            ));
+            return InputOutcome {
+                redraw: true,
+                ..InputOutcome::default()
+            };
+        }
+
+        match active {
+            ActiveSelection::Lasso {
+                points,
+                before,
+                canvas_size,
+            } => {
+                let selected = if points.len() < 3 {
+                    BTreeSet::new()
+                } else {
+                    selected_stroke_ids(&before, &points, self.selection_hit_rule(), canvas_size)
+                };
+                self.logger.event(&format!(
+                    "올가미 확정: monitor={} selected={}",
+                    self.monitor_key,
+                    selected.len()
+                ));
+                InputOutcome {
+                    selected_ids: Some(selected),
+                    redraw: true,
+                    ..InputOutcome::default()
+                }
+            }
+            ActiveSelection::Move {
+                before, preview, ..
+            } => self.finish_selection_transform(
+                before,
+                preview,
+                StrokeReplacementKind::SelectionMove,
+                "이동",
+            ),
+            ActiveSelection::Resize {
+                before, preview, ..
+            } => self.finish_selection_transform(
+                before,
+                preview,
+                StrokeReplacementKind::SelectionResize,
+                "크기 조절",
+            ),
+        }
+    }
+
+    fn finish_selection_transform(
+        &self,
+        before: Vec<InkStroke>,
+        preview: Option<Vec<InkStroke>>,
+        kind: StrokeReplacementKind,
+        label: &str,
+    ) -> InputOutcome {
+        let replacement = preview
+            .filter(|after| *after != before)
+            .map(|after| StrokeReplacement {
+                before,
+                after,
+                kind,
+            });
+        self.logger.event(&format!(
+            "선택 {label} 확정: monitor={} Undo={}",
+            self.monitor_key,
+            usize::from(replacement.is_some())
+        ));
+        InputOutcome {
+            replacement,
+            redraw: true,
+            ..InputOutcome::default()
+        }
+    }
+
+    fn selection_hit_rule(&self) -> LassoHitRule {
+        match self
+            .config
+            .eraser_settings
+            .map(|settings| settings.hit_rule)
+        {
+            Some(EraserHitRule::Contained) => LassoHitRule::Contained,
+            Some(EraserHitRule::Touching) | None => LassoHitRule::Touching,
+        }
     }
 
     fn refresh_eraser_preview(&mut self) {
@@ -1486,6 +1816,9 @@ fn merge_outcome(target: &mut InputOutcome, mut incoming: InputOutcome) {
     if incoming.replacement.is_some() {
         debug_assert!(target.replacement.is_none());
         target.replacement = incoming.replacement;
+    }
+    if incoming.selected_ids.is_some() {
+        target.selected_ids = incoming.selected_ids;
     }
     target.redraw |= incoming.redraw;
 }

@@ -2,11 +2,12 @@
 
 use crate::board::{BoardKind, BoardPresentation};
 use crate::eraser::{EraserAreaShape, EraserMode};
-use crate::ink::{ArrowStyle, InkTool, ToolMemorySlot};
+use crate::ink::{ArrowStyle, InkCommand, InkLayerState, InkStroke, InkTool, ToolMemorySlot};
 use crate::settings::{
     AppSettings, FavoriteTool, FavoritesDefaults, SettingsColor, SettingsRanges,
 };
 use crate::zoom::ZoomSessionState;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 
@@ -163,6 +164,7 @@ pub struct AppState {
     palette_visible: bool,
     presented_board: Option<BoardPresentation>,
     zoom_session: Option<ZoomSessionState>,
+    selected_stroke_ids_by_display: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl Default for AppState {
@@ -180,6 +182,7 @@ impl Default for AppState {
             palette_visible: true,
             presented_board: None,
             zoom_session: None,
+            selected_stroke_ids_by_display: BTreeMap::new(),
         }
     }
 }
@@ -198,6 +201,102 @@ impl AppState {
     // Swift: AppState.setActiveDisplay(_:)
     pub fn set_active_display(&mut self, display_id: impl Into<String>) {
         self.active_display_id = Some(display_id.into());
+    }
+
+    // Swift: AppState.selectedStrokeIdentifiers(on:)
+    pub fn selected_stroke_ids(&self, display_id: &str) -> BTreeSet<String> {
+        self.selected_stroke_ids_by_display
+            .get(display_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    // Swift: AppState.setSelectedStrokeIdentifiers(_:on:)
+    pub fn set_selected_stroke_ids(
+        &mut self,
+        display_id: &str,
+        ids: BTreeSet<String>,
+        strokes: &[InkStroke],
+    ) -> bool {
+        let available = strokes
+            .iter()
+            .map(|stroke| stroke.identifier.as_str())
+            .collect::<BTreeSet<_>>();
+        let selection = ids
+            .into_iter()
+            .filter(|identifier| available.contains(identifier.as_str()))
+            .collect::<BTreeSet<_>>();
+        if self.selected_stroke_ids(display_id) == selection {
+            return false;
+        }
+        if selection.is_empty() {
+            self.selected_stroke_ids_by_display.remove(display_id);
+        } else {
+            self.selected_stroke_ids_by_display
+                .insert(display_id.to_owned(), selection);
+        }
+        true
+    }
+
+    // Swift: AppState.clearSelection(on:)
+    pub fn clear_selection(&mut self, display_id: &str) -> bool {
+        self.selected_stroke_ids_by_display
+            .remove(display_id)
+            .is_some_and(|selection| !selection.is_empty())
+    }
+
+    // Swift: AppState.deleteSelection(on:)
+    pub fn delete_selection(&mut self, display_id: &str, layer: &mut InkLayerState) -> bool {
+        self.reconcile_selection_after_ink_change(display_id, layer.strokes());
+        let selected = self.selected_stroke_ids(display_id);
+        if selected.is_empty() {
+            return false;
+        }
+        let before = layer.strokes().to_vec();
+        let after = before
+            .iter()
+            .filter(|stroke| !selected.contains(&stroke.identifier))
+            .cloned()
+            .collect::<Vec<_>>();
+        self.clear_selection(display_id);
+        self.execute_ink_command(
+            display_id,
+            layer,
+            InkCommand::ReplaceStrokes { before, after },
+        );
+        true
+    }
+
+    // Every ink-list mutation goes through this wrapper so selection never keeps a missing id.
+    pub fn execute_ink_command(
+        &mut self,
+        display_id: &str,
+        layer: &mut InkLayerState,
+        command: InkCommand,
+    ) {
+        layer.execute(command);
+        self.reconcile_selection_after_ink_change(display_id, layer.strokes());
+    }
+
+    pub fn undo_ink(&mut self, display_id: &str, layer: &mut InkLayerState) -> bool {
+        let changed = layer.undo();
+        if changed {
+            self.reconcile_selection_after_ink_change(display_id, layer.strokes());
+        }
+        changed
+    }
+
+    pub fn redo_ink(&mut self, display_id: &str, layer: &mut InkLayerState) -> bool {
+        let changed = layer.redo();
+        if changed {
+            self.reconcile_selection_after_ink_change(display_id, layer.strokes());
+        }
+        changed
+    }
+
+    fn reconcile_selection_after_ink_change(&mut self, display_id: &str, strokes: &[InkStroke]) {
+        let selected = self.selected_stroke_ids(display_id);
+        self.set_selected_stroke_ids(display_id, selected, strokes);
     }
 
     // Swift: AppState.isAnnotationModeEnabled
@@ -822,5 +921,103 @@ const fn tool_name(tool: InkTool) -> &'static str {
         InkTool::Text => "text",
         InkTool::Select => "select",
         InkTool::Cover => "cover",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppState;
+    use crate::ink::{
+        InkCommand, InkLayerState, InkPoint, InkStroke, InkStrokeContent, InkStrokeTool, Point,
+    };
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn selection_intersection_is_preserved_after_undo_redo_and_delete_table() {
+        let display = "display-a";
+        let first = stroke("first");
+        let second = stroke("second");
+        let mut layer = InkLayerState::new();
+        let mut state = AppState::new();
+        state.execute_ink_command(display, &mut layer, InkCommand::AddStroke(first.clone()));
+        state.execute_ink_command(display, &mut layer, InkCommand::AddStroke(second.clone()));
+        state.set_selected_stroke_ids(
+            display,
+            ids(&["first", "second", "missing"]),
+            layer.strokes(),
+        );
+        assert_eq!(
+            state.selected_stroke_ids(display),
+            ids(&["first", "second"]),
+            "set intersects with current strokes"
+        );
+
+        let mut observations = Vec::new();
+        state.execute_ink_command(
+            display,
+            &mut layer,
+            InkCommand::ReplaceStrokes {
+                before: vec![first.clone(), second.clone()],
+                after: vec![first.clone()],
+            },
+        );
+        observations.push(snapshot("replace", &state, display, &layer));
+        assert!(state.undo_ink(display, &mut layer), "undo");
+        observations.push(snapshot("undo", &state, display, &layer));
+        assert!(state.redo_ink(display, &mut layer), "redo");
+        observations.push(snapshot("redo", &state, display, &layer));
+
+        assert!(state.delete_selection(display, &mut layer), "delete");
+        observations.push(snapshot("delete", &state, display, &layer));
+        assert!(state.undo_ink(display, &mut layer), "undo delete");
+        observations.push(snapshot("undo-delete", &state, display, &layer));
+
+        let expected = [
+            ("replace", vec!["first"], vec!["first"]),
+            ("undo", vec!["first"], vec!["first", "second"]),
+            ("redo", vec!["first"], vec!["first"]),
+            ("delete", Vec::new(), Vec::new()),
+            ("undo-delete", Vec::new(), vec!["first"]),
+        ];
+        for ((name, selected, strokes), (expected_name, expected_selected, expected_strokes)) in
+            observations.into_iter().zip(expected)
+        {
+            assert_eq!(name, expected_name);
+            assert_eq!(selected, expected_selected, "{name} selection");
+            assert_eq!(strokes, expected_strokes, "{name} strokes");
+        }
+    }
+
+    fn ids(values: &[&str]) -> BTreeSet<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    fn snapshot<'a>(
+        name: &'a str,
+        state: &AppState,
+        display: &str,
+        layer: &InkLayerState,
+    ) -> (&'a str, Vec<String>, Vec<String>) {
+        (
+            name,
+            state.selected_stroke_ids(display).into_iter().collect(),
+            layer
+                .strokes()
+                .iter()
+                .map(|stroke| stroke.identifier.clone())
+                .collect(),
+        )
+    }
+
+    fn stroke(identifier: &str) -> InkStroke {
+        InkStroke::new(
+            identifier,
+            InkStrokeTool::Pen,
+            [0.1, 0.2, 0.3, 1.0],
+            4.0,
+            false,
+            vec![InkPoint::new(Point { x: 0.5, y: 0.5 }, 1.0, 0.0)],
+            InkStrokeContent::Freehand,
+        )
     }
 }
