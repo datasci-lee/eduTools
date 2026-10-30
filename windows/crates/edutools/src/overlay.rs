@@ -18,7 +18,7 @@ use edutools_core::ink::{
 use edutools_core::settings::{AppSettings, SettingsColor};
 use edutools_core::state::AppState;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{c_void, OsString};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -67,6 +67,8 @@ pub struct OverlayManager {
     annotation_enabled: bool,
     input_config: InkInputConfig,
     debug_overlay: bool,
+    pending_preset_archive_display_ids: HashSet<String>,
+    preset_restoration_deferred: bool,
     logger: Logger,
 }
 
@@ -95,6 +97,8 @@ impl OverlayManager {
             annotation_enabled: false,
             input_config,
             debug_overlay,
+            pending_preset_archive_display_ids: HashSet::new(),
+            preset_restoration_deferred: false,
             logger,
         };
         manager.synchronize("시작")?;
@@ -112,6 +116,15 @@ impl OverlayManager {
             .collect::<Vec<_>>();
         let discovered = monitors.iter().map(Monitor::snapshot).collect::<Vec<_>>();
         let plan = plan_monitor_sync(&current, &discovered);
+
+        if !plan.removed.is_empty() && !self.pending_preset_archive_display_ids.is_empty() {
+            self.logger.event(&format!(
+                "화면 프리셋 제거 직전 보관 훅: removedOverlays={} displayIds={} status=보관 구현 미완",
+                plan.removed.len(),
+                self.pending_preset_archive_display_ids.len()
+            ));
+            self.pending_preset_archive_display_ids.clear();
+        }
 
         for key in &plan.removed {
             if let Some(mut overlay) = self.overlays.remove(key) {
@@ -161,6 +174,37 @@ impl OverlayManager {
         ));
         raise_band_order()?;
         Ok(())
+    }
+
+    pub fn archive_disconnected_displays_for_preset(
+        &mut self,
+        display_ids: &HashSet<String>,
+    ) -> HashSet<String> {
+        self.pending_preset_archive_display_ids = display_ids.clone();
+        self.logger.event(&format!(
+            "archive_disconnected_displays_for_preset: displayIds={} status=보관 구현 미완",
+            display_ids.len()
+        ));
+        display_ids.clone()
+    }
+
+    pub fn restore_displays_archived_for_failed_preset(&mut self, display_ids: &HashSet<String>) {
+        self.pending_preset_archive_display_ids.clear();
+        self.logger.event(&format!(
+            "restore_displays_archived_for_failed_preset: displayIds={} status=보관 구현 미완",
+            display_ids.len()
+        ));
+    }
+
+    pub fn set_display_preset_restoration_deferred(
+        &mut self,
+        deferred: bool,
+        resume_pending: bool,
+    ) {
+        self.preset_restoration_deferred = deferred;
+        self.logger.event(&format!(
+            "set_display_preset_restoration_deferred: deferred={deferred} resumePending={resume_pending} status=복원 질문 구현 미완"
+        ));
     }
 
     pub fn set_annotation_mode(
