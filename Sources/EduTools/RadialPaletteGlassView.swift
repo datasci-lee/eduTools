@@ -33,7 +33,7 @@ struct RadialPaletteSectorGeometry {
 enum RadialPaletteMetrics {
     static let collapsedDiameter: CGFloat = 44
     static let expandedDiameter: CGFloat = 280
-    // 3pt focus-ring overhang plus room for the Liquid Glass edge light and shadow.
+    // Focus-ring overhang plus room for the active-arc glow.
     static let windowMargin: CGFloat = 10
     static let centerRadius: CGFloat = collapsedDiameter / 2
     static let groupInnerRadius: CGFloat = 28
@@ -42,8 +42,6 @@ enum RadialPaletteMetrics {
     static let entryOuterRadius: CGFloat = 96
     static let optionInnerRadius: CGFloat = 102
     static let optionOuterRadius: CGFloat = 138
-    // 속성 라벨 칩이 가운데 칸의 안쪽 가장자리에 걸치므로 내용을 바깥으로 비킨다.
-    static let optionContentRadialOffset: CGFloat = 5
     static let dragThreshold: CGFloat = 4
     static let commandHoldDuration: TimeInterval = 0.5
     static let sectorGap: CGFloat = 2 * .pi / 180
@@ -253,56 +251,37 @@ struct RadialSectorShape: Shape {
     }
 }
 
-private struct RadialPaletteGlassSurfaceModifier<Surface: Shape>: ViewModifier {
-    let glass: Glass
-    let surface: Surface
-    let faceOpacity: Double?
-    let faceTone: RadialPaletteFaceTone
+private struct RadialArcShape: Shape {
+    let radius: CGFloat
+    let startAngle: CGFloat
+    let endAngle: CGFloat
 
-    func body(content: Content) -> some View {
-        content
-            .glassEffect(glass, in: surface)
-            .overlay {
-                if let faceOpacity {
-                    surface.fill(
-                        Color(nsColor: RadialPaletteGlassStyle.surfaceFaceColor(
-                            opacity: faceOpacity,
-                            tone: faceTone
-                        ))
-                    )
-                }
-            }
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.addArc(
+            center: CGPoint(x: rect.midX, y: rect.midY),
+            radius: radius,
+            startAngle: .radians(Double(startAngle - .pi / 2)),
+            endAngle: .radians(Double(endAngle - .pi / 2)),
+            clockwise: false
+        )
+        return path
     }
 }
 
 private extension View {
-    func radialPaletteGlass<Surface: Shape>(
-        _ glass: Glass,
-        in surface: Surface,
-        faceOpacity: Double? = nil,
-        tone: RadialPaletteFaceTone
-    ) -> some View {
-        modifier(RadialPaletteGlassSurfaceModifier(
-            glass: glass,
-            surface: surface,
-            faceOpacity: faceOpacity,
-            faceTone: tone
-        ))
-    }
-
     func radialPalettePreviewOutline<Outline: Shape>(
-        in outline: Outline,
-        tone: RadialPaletteFaceTone
+        in outline: Outline
     ) -> some View {
         overlay {
             outline.stroke(
-                Color(nsColor: RadialPaletteGlassStyle.regularBorderColor(tone: tone)),
+                Color(nsColor: RadialPaletteGlassStyle.regularBorderColor(tone: .dark)),
                 lineWidth: RadialPaletteMetrics.previewOutlineOuterWidth
             )
         }
         .overlay {
             outline.stroke(
-                Color(nsColor: RadialPaletteGlassStyle.previewOutlineInnerColor(tone: tone)),
+                Color(nsColor: RadialPaletteGlassStyle.previewOutlineInnerColor(tone: .dark)),
                 lineWidth: RadialPaletteMetrics.previewOutlineInnerWidth
             )
         }
@@ -317,6 +296,7 @@ struct RadialPaletteGlassView: View {
             let bounds = CGRect(origin: .zero, size: proxy.size)
             ZStack {
                 if model.state.isExpanded {
+                    groupRing(in: bounds)
                     ForEach(model.state.cells) { cell in
                         cellView(cell, in: bounds)
                     }
@@ -329,54 +309,53 @@ struct RadialPaletteGlassView: View {
         .allowsHitTesting(false)
     }
 
-    private func cellView(_ cell: RadialPaletteRenderCell, in bounds: CGRect) -> some View {
-        let shape = RadialSectorShape(geometry: cell.geometry)
-        let contentPosition = RadialSectorShape.point(
-            center: CGPoint(x: bounds.midX, y: bounds.midY),
-            radius: (cell.geometry.innerRadius + cell.geometry.outerRadius) / 2
-                + (cell.ring == .option ? RadialPaletteMetrics.optionContentRadialOffset : 0),
-            angle: (cell.geometry.startAngle + cell.geometry.endAngle) / 2
-        )
+    private func groupRing(in bounds: CGRect) -> some View {
+        let thickness = RadialPaletteMetrics.groupOuterRadius
+            - RadialPaletteMetrics.groupInnerRadius
+        let centerlineDiameter = RadialPaletteMetrics.groupOuterRadius
+            + RadialPaletteMetrics.groupInnerRadius
         return ZStack {
-            Color.clear
-                .frame(width: bounds.width, height: bounds.height)
-                .radialPaletteGlass(
-                    glass(for: cell),
-                    in: shape,
-                    faceOpacity: cell.isSelected && cell.color == nil
-                        ? nil
-                        : model.glassOpacity,
-                    tone: model.state.faceTone
+            Circle()
+                .stroke(surfaceColor, lineWidth: thickness)
+                .frame(width: centerlineDiameter, height: centerlineDiameter)
+            Circle()
+                .strokeBorder(
+                    Color(nsColor: RadialPaletteArcStyle.outerBorderColor),
+                    lineWidth: RadialPaletteMetrics.cellStrokeWidth
                 )
+                .frame(
+                    width: RadialPaletteMetrics.groupOuterRadius * 2,
+                    height: RadialPaletteMetrics.groupOuterRadius * 2
+                )
+        }
+        .frame(width: bounds.width, height: bounds.height)
+    }
 
-            shape.stroke(baseBorderColor(for: cell), lineWidth: baseBorderWidth(for: cell))
+    @ViewBuilder
+    private func cellView(_ cell: RadialPaletteRenderCell, in bounds: CGRect) -> some View {
+        switch cell.ring {
+        case .group:
+            groupCellView(cell, in: bounds)
+        case .entry, .option:
+            nodeCellView(cell, in: bounds)
+        }
+    }
 
-            if cell.isFocused {
-                shape.stroke(
-                    Color(nsColor: RadialPaletteGlassStyle.focusOuterColor(
-                        tone: model.state.faceTone
-                    )),
-                    lineWidth: RadialPaletteMetrics.focusOuterWidth
-                )
-                shape.stroke(
-                    Color(nsColor: RadialPaletteGlassStyle.selectedContentColor),
-                    lineWidth: RadialPaletteMetrics.focusInnerWidth
-                )
+    private func groupCellView(
+        _ cell: RadialPaletteRenderCell,
+        in bounds: CGRect
+    ) -> some View {
+        let shape = RadialSectorShape(geometry: cell.geometry)
+        let contentPosition = nodePosition(for: cell, in: bounds)
+        return ZStack {
+            if cell.isHovered, cell.isEnabled {
+                shape.fill(Color(nsColor: RadialPaletteArcStyle.hoverFillColor))
             }
 
-            if cell.color != nil, cell.isSelected {
-                let selectionShape = RadialSectorShape(
-                    geometry: cell.geometry.inset(by: cell.isFocused ? 4 : 0)
-                )
-                selectionShape.stroke(
-                    Color(nsColor: RadialPaletteGlassStyle.colorSelectionOuterColor(
-                        tone: model.state.faceTone
-                    )),
-                    lineWidth: RadialPaletteMetrics.colorSelectionOuterWidth
-                )
-                selectionShape.stroke(
-                    Color(nsColor: RadialPaletteGlassStyle.selectedContentColor),
-                    lineWidth: RadialPaletteMetrics.colorSelectionInnerWidth
+            if cell.isSelected {
+                activeArc(
+                    for: cell,
+                    radius: cell.geometry.outerRadius - RadialPaletteArcStyle.arcWidth / 2
                 )
             }
 
@@ -389,6 +368,143 @@ struct RadialPaletteGlassView: View {
             }
         }
         .frame(width: bounds.width, height: bounds.height)
+    }
+
+    private func nodeCellView(
+        _ cell: RadialPaletteRenderCell,
+        in bounds: CGRect
+    ) -> some View {
+        let diameter = nodeDiameter(for: cell)
+        let circle = Circle()
+        let position = nodePosition(for: cell, in: bounds)
+        return ZStack {
+            edgeArc(for: cell)
+
+            ZStack {
+                circle.fill(surfaceColor)
+
+                if cell.isHovered, cell.isEnabled {
+                    circle.fill(Color(nsColor: RadialPaletteArcStyle.hoverFillColor))
+                }
+
+                circle.stroke(
+                    Color(nsColor: RadialPaletteArcStyle.outerBorderColor),
+                    lineWidth: RadialPaletteMetrics.cellStrokeWidth
+                )
+
+                if cell.isFocused {
+                    circle.stroke(
+                        Color(nsColor: RadialPaletteGlassStyle.focusOuterColor(tone: .dark)),
+                        lineWidth: RadialPaletteMetrics.focusOuterWidth
+                    )
+                    circle.stroke(
+                        Color(nsColor: RadialPaletteArcStyle.activeIconColor),
+                        lineWidth: RadialPaletteMetrics.focusInnerWidth
+                    )
+                }
+
+                if cell.color != nil, cell.isSelected {
+                    let selectionCircle = circle.inset(by: cell.isFocused ? 4 : 0)
+                    selectionCircle.stroke(
+                        Color(nsColor: RadialPaletteGlassStyle.colorSelectionOuterColor(
+                            tone: .dark
+                        )),
+                        lineWidth: RadialPaletteMetrics.colorSelectionOuterWidth
+                    )
+                    selectionCircle.stroke(
+                        Color(nsColor: RadialPaletteArcStyle.activeIconColor),
+                        lineWidth: RadialPaletteMetrics.colorSelectionInnerWidth
+                    )
+                }
+
+                if model.state.showsKeyCaps, !cell.shortcut.isEmpty {
+                    keyCap(cell.shortcut)
+                } else {
+                    cellContent(cell)
+                }
+            }
+            .frame(width: diameter, height: diameter)
+            .position(position)
+        }
+        .frame(width: bounds.width, height: bounds.height)
+    }
+
+    private func edgeArc(for cell: RadialPaletteRenderCell) -> some View {
+        let isActive = cell.isSelected
+            || cell.isFocused
+            || (cell.isHovered && cell.isEnabled)
+        let radius = cell.geometry.innerRadius
+            + RadialPaletteArcStyle.arcWidth / 2
+            + RadialPaletteArcStyle.edgeArcInset
+        let color = isActive
+            ? RadialPaletteArcStyle.activeColor
+            : RadialPaletteArcStyle.inactiveArcColor
+        return RadialArcShape(
+            radius: radius,
+            startAngle: cell.geometry.startAngle,
+            endAngle: cell.geometry.endAngle
+        )
+        .stroke(
+            Color(nsColor: color),
+            style: StrokeStyle(
+                lineWidth: RadialPaletteArcStyle.arcWidth,
+                lineCap: .round
+            )
+        )
+        .shadow(
+            color: isActive
+                ? Color(nsColor: RadialPaletteArcStyle.activeGlowColor)
+                : .clear,
+            radius: isActive ? RadialPaletteArcStyle.activeGlowRadius : 0
+        )
+        .opacity(cell.isEnabled ? 1 : RadialPaletteGlassStyle.disabledContentOpacity)
+    }
+
+    private func activeArc(
+        for cell: RadialPaletteRenderCell,
+        radius: CGFloat
+    ) -> some View {
+        RadialArcShape(
+            radius: radius,
+            startAngle: cell.geometry.startAngle,
+            endAngle: cell.geometry.endAngle
+        )
+        .stroke(
+            Color(nsColor: RadialPaletteArcStyle.activeColor),
+            style: StrokeStyle(
+                lineWidth: RadialPaletteArcStyle.arcWidth,
+                lineCap: .round
+            )
+        )
+        .shadow(
+            color: Color(nsColor: RadialPaletteArcStyle.activeGlowColor),
+            radius: RadialPaletteArcStyle.activeGlowRadius
+        )
+        .opacity(cell.isEnabled ? 1 : RadialPaletteGlassStyle.disabledContentOpacity)
+    }
+
+    private func nodeDiameter(for cell: RadialPaletteRenderCell) -> CGFloat {
+        let radius = (cell.geometry.innerRadius + cell.geometry.outerRadius) / 2
+        let arcLength = (cell.geometry.endAngle - cell.geometry.startAngle) * radius
+        let maximum = cell.ring == .entry
+            ? RadialPaletteArcStyle.entryNodeMaximumDiameter
+            : RadialPaletteArcStyle.optionNodeMaximumDiameter
+        return max(0, min(maximum, arcLength - RadialPaletteArcStyle.nodeArcPadding))
+    }
+
+    private func nodePosition(
+        for cell: RadialPaletteRenderCell,
+        in bounds: CGRect
+    ) -> CGPoint {
+        RadialSectorShape.point(
+            center: CGPoint(x: bounds.midX, y: bounds.midY),
+            radius: (cell.geometry.innerRadius + cell.geometry.outerRadius) / 2,
+            angle: (cell.geometry.startAngle + cell.geometry.endAngle) / 2
+        )
+    }
+
+    private var surfaceColor: Color {
+        Color(nsColor: RadialPaletteArcStyle.surfaceColor(opacity: model.glassOpacity))
     }
 
     @ViewBuilder
@@ -426,7 +542,7 @@ struct RadialPaletteGlassView: View {
                         width: RadialPaletteMetrics.colorPreviewDiameter,
                         height: RadialPaletteMetrics.colorPreviewDiameter
                     )
-                    .radialPalettePreviewOutline(in: Circle(), tone: model.state.faceTone)
+                    .radialPalettePreviewOutline(in: Circle())
                     .accessibilityLabel(Text(cell.accessibilityLabel))
             } else if let preview = cell.preview {
                 VStack(spacing: RadialPaletteMetrics.previewSpacing) {
@@ -481,7 +597,7 @@ struct RadialPaletteGlassView: View {
             Capsule()
                 .fill(Color(nsColor: color))
                 .frame(width: RadialPaletteMetrics.strokePreviewLength, height: width)
-                .radialPalettePreviewOutline(in: Capsule(), tone: model.state.faceTone)
+                .radialPalettePreviewOutline(in: Capsule())
         case let .textSize(relative, color):
             let size = previewDimension(
                 relative: relative,
@@ -493,13 +609,13 @@ struct RadialPaletteGlassView: View {
                 .foregroundStyle(Color(nsColor: color))
                 .shadow(
                     color: Color(nsColor: RadialPaletteGlassStyle.previewOutlineInnerColor(
-                        tone: model.state.faceTone
+                        tone: .dark
                     )),
                     radius: 0.5
                 )
                 .shadow(
                     color: Color(nsColor: RadialPaletteGlassStyle.regularBorderColor(
-                        tone: model.state.faceTone
+                        tone: .dark
                     )),
                     radius: 1
                 )
@@ -515,7 +631,7 @@ struct RadialPaletteGlassView: View {
                 width: RadialPaletteMetrics.opacityPreviewWidth,
                 height: RadialPaletteMetrics.opacityPreviewHeight
             )
-            .radialPalettePreviewOutline(in: sample, tone: model.state.faceTone)
+            .radialPalettePreviewOutline(in: sample)
         case let .eraserDiameter(relative):
             let diameter = previewDimension(
                 relative: relative,
@@ -548,7 +664,7 @@ struct RadialPaletteGlassView: View {
                 uiColor: contentNSColor(for: cell),
                 backgroundColor: RadialPaletteGlassStyle.estimatedBackdropColor(
                     selected: cell.isSelected,
-                    tone: model.state.faceTone
+                    tone: .dark
                 ),
                 visualState: AttrIconVisualState(
                     isSelected: cell.isSelected,
@@ -570,35 +686,32 @@ struct RadialPaletteGlassView: View {
     private func centerView(in bounds: CGRect) -> some View {
         let state = model.state
         let circle = Circle()
-        var glass = Glass.regular
-        if state.centerIsPassThroughEnabled {
-            glass = Glass.regular.tint(
-                Color.accentColor.opacity(RadialPaletteGlassStyle.selectedTintOpacity)
-            )
-        }
-        if state.centerIsHovered {
-            glass = glass.interactive()
-        }
         return ZStack {
-            Color.clear
-                .frame(
-                    width: RadialPaletteMetrics.collapsedDiameter,
-                    height: RadialPaletteMetrics.collapsedDiameter
+            circle.fill(surfaceColor)
+
+            if state.centerIsPassThroughEnabled {
+                circle.fill(
+                    Color(nsColor: RadialPaletteArcStyle.activeColor)
+                        .opacity(RadialPaletteGlassStyle.selectedTintOpacity)
                 )
-                .radialPaletteGlass(
-                    glass,
-                    in: circle,
-                    faceOpacity: state.centerIsPassThroughEnabled ? nil : model.glassOpacity,
-                    tone: state.faceTone
-                )
+            }
+
+            if state.centerIsHovered {
+                circle.fill(Color(nsColor: RadialPaletteArcStyle.hoverFillColor))
+            }
+
+            circle.stroke(
+                Color(nsColor: RadialPaletteArcStyle.outerBorderColor),
+                lineWidth: RadialPaletteMetrics.cellStrokeWidth
+            )
 
             if state.centerIsFocused {
                 circle.stroke(
-                    Color(nsColor: RadialPaletteGlassStyle.focusOuterColor(tone: state.faceTone)),
+                    Color(nsColor: RadialPaletteGlassStyle.focusOuterColor(tone: .dark)),
                     lineWidth: RadialPaletteMetrics.focusOuterWidth
                 )
                 circle.stroke(
-                    Color(nsColor: RadialPaletteGlassStyle.selectedContentColor),
+                    Color(nsColor: RadialPaletteArcStyle.activeIconColor),
                     lineWidth: RadialPaletteMetrics.focusInnerWidth
                 )
             }
@@ -619,10 +732,9 @@ struct RadialPaletteGlassView: View {
                     .scaledToFit()
                     .frame(width: 18, height: 18)
                     .foregroundStyle(
-                        Color(nsColor: RadialPaletteGlassStyle.contentColor(
-                            isSelected: state.centerIsPassThroughEnabled,
-                            isEnabled: true,
-                            tone: state.faceTone
+                        Color(nsColor: RadialPaletteArcStyle.iconColor(
+                            isActive: state.centerIsPassThroughEnabled,
+                            isEnabled: true
                         ))
                     )
                     .accessibilityLabel(
@@ -640,32 +752,22 @@ struct RadialPaletteGlassView: View {
     private func keyCap(_ text: String) -> some View {
         Text(text)
             .font(.system(size: 8.5, weight: .medium))
-            .foregroundStyle(Color(nsColor: RadialPaletteGlassStyle.primaryContentColor(
-                tone: model.state.faceTone
-            )))
+            .foregroundStyle(Color(nsColor: RadialPaletteArcStyle.activeIconColor))
             .padding(.horizontal, 5)
             .padding(.vertical, 3)
             .frame(minWidth: 18, minHeight: 18)
-            .radialPaletteGlass(
-                .regular,
-                in: RoundedRectangle(cornerRadius: 5),
-                faceOpacity: model.glassOpacity,
-                tone: model.state.faceTone
-            )
+            .background {
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(surfaceColor)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 5)
+                            .stroke(
+                                Color(nsColor: RadialPaletteArcStyle.outerBorderColor),
+                                lineWidth: RadialPaletteMetrics.cellStrokeWidth
+                            )
+                    }
+            }
             .fixedSize()
-    }
-
-    private func glass(for cell: RadialPaletteRenderCell) -> Glass {
-        var glass = Glass.regular
-        if cell.isSelected, cell.color == nil {
-            glass = Glass.regular.tint(
-                Color.accentColor.opacity(RadialPaletteGlassStyle.selectedTintOpacity)
-            )
-        }
-        if cell.isHovered, cell.isEnabled {
-            glass = glass.interactive()
-        }
-        return glass
     }
 
     private func contentColor(for cell: RadialPaletteRenderCell) -> Color {
@@ -673,10 +775,9 @@ struct RadialPaletteGlassView: View {
     }
 
     private func contentNSColor(for cell: RadialPaletteRenderCell) -> NSColor {
-        RadialPaletteGlassStyle.contentColor(
-            isSelected: cell.isSelected && cell.color == nil,
-            isEnabled: cell.isEnabled,
-            tone: model.state.faceTone
+        RadialPaletteArcStyle.iconColor(
+            isActive: cell.isSelected && cell.color == nil,
+            isEnabled: cell.isEnabled
         )
     }
 
@@ -691,14 +792,13 @@ struct RadialPaletteGlassView: View {
                 selected: true,
                 attributeConfiguration: configuration,
                 pointSize: 18,
-                uiColor: RadialPaletteGlassStyle.contentColor(
-                    isSelected: state.centerIsPassThroughEnabled,
-                    isEnabled: true,
-                    tone: state.faceTone
+                uiColor: RadialPaletteArcStyle.iconColor(
+                    isActive: state.centerIsPassThroughEnabled,
+                    isEnabled: true
                 ),
                 backgroundColor: RadialPaletteGlassStyle.estimatedBackdropColor(
                     selected: state.centerIsPassThroughEnabled,
-                    tone: state.faceTone
+                    tone: .dark
                 ),
                 visualState: AttrIconVisualState(
                     isSelected: state.centerIsPassThroughEnabled,
@@ -717,25 +817,4 @@ struct RadialPaletteGlassView: View {
         )
     }
 
-    private func baseBorderColor(for cell: RadialPaletteRenderCell) -> Color {
-        if cell.isHovered, cell.isEnabled {
-            return .accentColor
-        }
-        if cell.isSelected {
-            return Color(nsColor: RadialPaletteGlassStyle.selectedContentColor)
-        }
-        return Color(nsColor: RadialPaletteGlassStyle.regularBorderColor(
-            tone: model.state.faceTone
-        ))
-    }
-
-    private func baseBorderWidth(for cell: RadialPaletteRenderCell) -> CGFloat {
-        if cell.isHovered, cell.isEnabled {
-            return RadialPaletteMetrics.hoverStrokeWidth
-        }
-        if cell.isSelected {
-            return RadialPaletteMetrics.selectedStrokeWidth
-        }
-        return RadialPaletteMetrics.cellStrokeWidth
-    }
 }

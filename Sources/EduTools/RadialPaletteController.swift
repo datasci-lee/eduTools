@@ -526,10 +526,9 @@ private final class RadialPaletteTooltip {
 
     private let panel: RadialPaletteTooltipPanel
     private let label = NSTextField(labelWithString: "")
-    private let glassView = NSGlassEffectView(frame: .zero)
-    private let glassContentView = NSView(frame: .zero)
+    private let surfaceView = NSView(frame: .zero)
 
-    init(glassOpacity: Double, faceTone: RadialPaletteFaceTone) {
+    init(glassOpacity: Double, faceTone _: RadialPaletteFaceTone) {
         panel = RadialPaletteTooltipPanel(
             contentRect: .zero,
             styleMask: [.borderless, .nonactivatingPanel],
@@ -546,37 +545,34 @@ private final class RadialPaletteTooltip {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.sharingType = .none
 
-        glassView.style = .regular
-        glassView.cornerRadius = Self.cornerRadius
-        glassContentView.wantsLayer = true
-        glassContentView.layer?.backgroundColor = RadialPaletteGlassStyle.surfaceFaceColor(
-            opacity: glassOpacity,
-            tone: faceTone
+        surfaceView.wantsLayer = true
+        surfaceView.layer?.backgroundColor = RadialPaletteArcStyle.surfaceColor(
+            opacity: glassOpacity
         ).cgColor
-        glassContentView.layer?.cornerRadius = Self.cornerRadius
-        glassContentView.layer?.masksToBounds = true
+        surfaceView.layer?.borderColor = RadialPaletteArcStyle.outerBorderColor.cgColor
+        surfaceView.layer?.borderWidth = RadialPaletteMetrics.cellStrokeWidth
+        surfaceView.layer?.cornerRadius = Self.cornerRadius
+        surfaceView.layer?.masksToBounds = true
         label.font = .systemFont(ofSize: 12, weight: .medium)
-        label.textColor = RadialPaletteGlassStyle.primaryContentColor(tone: faceTone)
+        label.textColor = RadialPaletteArcStyle.activeIconColor
         label.maximumNumberOfLines = 2
         label.usesSingleLineMode = false
         label.translatesAutoresizingMaskIntoConstraints = false
-        glassContentView.addSubview(label)
+        surfaceView.addSubview(label)
         NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: glassContentView.leadingAnchor, constant: 9),
-            label.trailingAnchor.constraint(equalTo: glassContentView.trailingAnchor, constant: -9),
-            label.topAnchor.constraint(equalTo: glassContentView.topAnchor, constant: 6),
-            label.bottomAnchor.constraint(equalTo: glassContentView.bottomAnchor, constant: -6),
+            label.leadingAnchor.constraint(equalTo: surfaceView.leadingAnchor, constant: 9),
+            label.trailingAnchor.constraint(equalTo: surfaceView.trailingAnchor, constant: -9),
+            label.topAnchor.constraint(equalTo: surfaceView.topAnchor, constant: 6),
+            label.bottomAnchor.constraint(equalTo: surfaceView.bottomAnchor, constant: -6),
         ])
-        glassView.contentView = glassContentView
-        panel.contentView = glassView
+        panel.contentView = surfaceView
     }
 
-    func updateAppearance(glassOpacity: Double, faceTone: RadialPaletteFaceTone) {
-        glassContentView.layer?.backgroundColor = RadialPaletteGlassStyle.surfaceFaceColor(
-            opacity: glassOpacity,
-            tone: faceTone
+    func updateAppearance(glassOpacity: Double, faceTone _: RadialPaletteFaceTone) {
+        surfaceView.layer?.backgroundColor = RadialPaletteArcStyle.surfaceColor(
+            opacity: glassOpacity
         ).cgColor
-        label.textColor = RadialPaletteGlassStyle.primaryContentColor(tone: faceTone)
+        label.textColor = RadialPaletteArcStyle.activeIconColor
     }
 
     func show(
@@ -1678,7 +1674,7 @@ final class RadialPaletteController: NSObject {
         let groupEntries = entries(for: group)
         if !groupEntries.isEmpty {
             let count = CGFloat(groupEntries.count)
-            let span = min(max(count * 24 * .pi / 180, 72 * .pi / 180), 200 * .pi / 180)
+            let span = min(max(count * 24 * .pi / 180, 90 * .pi / 180), 200 * .pi / 180)
             let slice = span / count
             let groupCenter = CGFloat(group.id.rawValue) * groupSlice
             let start = groupCenter - span / 2
