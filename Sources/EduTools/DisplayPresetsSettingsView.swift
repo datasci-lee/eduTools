@@ -41,7 +41,6 @@ struct DisplayPresetsSettingsView: View {
                         }
                     )
                 )
-                .disabled(true)
                 Spacer()
                 Button {
                     refreshOnlineDisplays(showingErrors: true)
@@ -49,6 +48,10 @@ struct DisplayPresetsSettingsView: View {
                     Label("연결 상태 새로 고침", systemImage: "arrow.clockwise")
                 }
             }
+
+            Text("연결된 모니터가 프리셋의 자동 체크 모니터와 정확히 같으면 5초 안정된 뒤 자동으로 적용합니다. 적용 뒤 30초는 다시 바꾸지 않습니다.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text("자동 집합이 같으면 목록의 위쪽 프리셋이 우선입니다.")
