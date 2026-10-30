@@ -51,8 +51,8 @@ use crate::tray::{
     self, display_preset_index, Tray, CALLBACK_MESSAGE, MENU_EXIT, MENU_TOGGLE_ANNOTATION,
 };
 use crate::zoom_view::{
-    decode_pointer, decode_wheel, ZoomView, WM_APP_ZOOM_POINTER, WM_APP_ZOOM_REDRAW,
-    WM_APP_ZOOM_WHEEL,
+    decode_pointer, decode_wheel, ZoomView, WM_APP_ZOOM_INK_INPUT, WM_APP_ZOOM_POINTER,
+    WM_APP_ZOOM_REDRAW, WM_APP_ZOOM_WHEEL,
 };
 use edutools_core::board::BoardPresentation;
 use edutools_core::dispatch::{dispatch, DispatchContext, Effect, PressedShortcuts};
@@ -78,8 +78,9 @@ use edutools_core::shortcut::{
 };
 use edutools_core::state::{AppState, FavoriteSaveResult, SettingsMutation};
 use edutools_core::zoom::{
-    stop_or_cancel_preview_action, Point as ZoomPoint, Size as ZoomSize, ZoomFollowMode,
-    ZoomGeometry, ZoomSessionState, ZoomStopAction,
+    stop_or_cancel_preview_action, zoom_gesture_control_locked, Point as ZoomPoint,
+    Rect as ZoomRect, Size as ZoomSize, ZoomFollowMode, ZoomGeometry, ZoomGestureControl,
+    ZoomSessionState, ZoomStopAction,
 };
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -104,7 +105,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow, DispatchMessageW, GetCursorPos,
     GetForegroundWindow, GetMessageW, GetWindowLongPtrW, IsWindow, KillTimer, LoadImageW,
     PostQuitMessage, RegisterClassW, RegisterDeviceNotificationW, RegisterWindowMessageW,
-    SetForegroundWindow, SetTimer, SetWindowLongPtrW, TranslateMessage,
+    SetCursorPos, SetForegroundWindow, SetTimer, SetWindowLongPtrW, TranslateMessage,
     UnregisterDeviceNotification, DBT_DEVICEARRIVAL, DBT_DEVICEREMOVECOMPLETE,
     DBT_DEVTYP_DEVICEINTERFACE, DEVICE_NOTIFY_WINDOW_HANDLE, DEV_BROADCAST_DEVICEINTERFACE_W,
     GDI_IMAGE_TYPE, GWLP_USERDATA, HDEVNOTIFY, HICON, IMAGE_ICON, LR_DEFAULTCOLOR, MSG,
@@ -765,6 +766,18 @@ impl App {
             ));
             return;
         };
+        if !event.is_key_up
+            && event.scope == HookScope::Zoom
+            && zoom_control_for_shortcut(&definition.command).is_some_and(|control| {
+                zoom_gesture_control_locked(self.zoom_gesture_in_progress(), control)
+            })
+        {
+            self.logger.event(&format!(
+                "줌 제스처 잠금으로 키 거부: key={} definition={}",
+                event.key_code, definition.id
+            ));
+            return;
+        }
         self.logger.event(&format!(
             "모드 키 {:?} {}: physicalKey={:#x} 정의={} 소비={}",
             event.scope,
@@ -1389,7 +1402,25 @@ impl App {
         }
         if runtime_state_changed {
             self.refresh_runtime_state("core effect");
+            self.render_zoom("core effect");
         }
+    }
+
+    fn zoom_gesture_in_progress(&self) -> bool {
+        if crate::text_entry::text_input_active() {
+            return true;
+        }
+        let Some(display_id) = self
+            .state
+            .borrow()
+            .zoom_session()
+            .map(|session| session.display_id.clone())
+        else {
+            return false;
+        };
+        self.overlays
+            .as_ref()
+            .is_some_and(|overlays| overlays.zoom_gesture_in_progress(&display_id))
     }
 
     fn start_zoom(&mut self) {
@@ -1457,8 +1488,16 @@ impl App {
         };
         self.state.borrow_mut().set_zoom_session(session.clone());
         let previous_foreground = unsafe { GetForegroundWindow() };
+        let shared_graphics = self.overlays.as_ref().map(OverlayManager::graphics_device);
+        let initial_ink_frame = self
+            .overlays
+            .as_ref()
+            .and_then(|overlays| overlays.zoom_ink_frame(&session.display_id));
         let result = (|| -> Result<ZoomRuntime> {
-            let graphics = GraphicsDevice::new()?;
+            let graphics = match shared_graphics {
+                Some(graphics) => graphics,
+                None => GraphicsDevice::new()?,
+            };
             let mut view = ZoomView::new(
                 self.hwnd,
                 self.hinstance,
@@ -1468,7 +1507,7 @@ impl App {
             )?;
             view.set_pointer(center);
             view.show_message(ZoomGeometry::magnification_label(magnification));
-            view.render(&session)?;
+            view.render(&session, initial_ink_frame.as_ref())?;
             let capture = ZoomCapture::start(
                 self.hwnd,
                 monitor.handle,
@@ -1515,11 +1554,30 @@ impl App {
     }
 
     fn stop_zoom(&mut self, reason: &str, notify: bool) {
-        let Some(runtime) = self.zoom.take() else {
+        let warp_destination = self
+            .state
+            .borrow()
+            .zoom_session()
+            .filter(|session| session.is_frozen && !session.is_previewing)
+            .and_then(|session| {
+                self.zoom_pointer_location().map(|presentation| {
+                    ZoomGeometry::original_point(
+                        presentation,
+                        session.screen_size,
+                        session.source_rect(),
+                    )
+                })
+            });
+        let Some(mut runtime) = self.zoom.take() else {
             self.state.borrow_mut().end_zoom();
             self.synchronize_keyboard_hook();
             return;
         };
+        if let Some(destination) = warp_destination {
+            if warp_zoom_pointer(&self.logger, &runtime.monitor, destination).is_some() {
+                runtime.view.set_pointer(destination);
+            }
+        }
         let previous_foreground = runtime.previous_foreground;
         let overwritten = runtime.capture.overwritten_count();
         drop(runtime);
@@ -1548,7 +1606,7 @@ impl App {
     }
 
     fn adjust_zoom(&mut self, steps: i32) {
-        if steps == 0 || self.zoom.is_none() {
+        if steps == 0 || self.zoom.is_none() || self.zoom_gesture_in_progress() {
             return;
         }
         let Some(mut session) = self.state.borrow().zoom_session().cloned() else {
@@ -1577,6 +1635,9 @@ impl App {
     }
 
     fn reset_zoom(&mut self) {
+        if self.zoom_gesture_in_progress() {
+            return;
+        }
         let Some(mut session) = self.state.borrow().zoom_session().cloned() else {
             return;
         };
@@ -1599,6 +1660,9 @@ impl App {
     }
 
     fn cycle_zoom_follow_mode(&mut self) {
+        if self.zoom_gesture_in_progress() {
+            return;
+        }
         let Some(mut session) = self.state.borrow().zoom_session().cloned() else {
             return;
         };
@@ -1618,26 +1682,45 @@ impl App {
     }
 
     fn toggle_zoom_freeze(&mut self) {
-        let Some(runtime) = self.zoom.as_mut() else {
+        if self.zoom_gesture_in_progress() {
+            return;
+        }
+        let Some(runtime) = self.zoom.as_ref() else {
             return;
         };
         if !runtime.view.has_frame() {
-            runtime.view.show_message("첫 화면을 캡처하는 중입니다");
+            if let Some(runtime) = self.zoom.as_mut() {
+                runtime.view.show_message("첫 화면을 캡처하는 중입니다");
+            }
             return;
         }
         let Some(mut session) = self.state.borrow().zoom_session().cloned() else {
             return;
         };
+        let warp_destination = self.zoom_pointer_location().map(|pointer| {
+            if session.is_frozen {
+                ZoomGeometry::original_point(pointer, session.screen_size, session.source_rect())
+            } else {
+                ZoomGeometry::pointer_presentation_point(pointer, &session)
+            }
+        });
         session.is_frozen = !session.is_frozen;
         let frozen = session.is_frozen;
-        runtime
-            .capture
-            .set_accepting_frames(!frozen || session.is_previewing);
-        runtime.view.show_message(if frozen {
-            "정지 줌 · 판서 켜짐"
-        } else {
-            "라이브 줌"
-        });
+        if let Some(runtime) = self.zoom.as_mut() {
+            runtime
+                .capture
+                .set_accepting_frames(!frozen || session.is_previewing);
+            runtime.view.show_message(if frozen {
+                "정지 줌 · 판서 켜짐"
+            } else {
+                "라이브 줌"
+            });
+            if let Some(destination) = warp_destination {
+                if warp_zoom_pointer(&self.logger, &runtime.monitor, destination).is_some() {
+                    runtime.view.set_pointer(destination);
+                }
+            }
+        }
         self.state.borrow_mut().set_zoom_session(session);
         let should_enable_annotation = frozen && !self.state.borrow().is_annotation_mode_enabled();
         if should_enable_annotation {
@@ -1652,6 +1735,9 @@ impl App {
     }
 
     fn begin_zoom_preview(&mut self) {
+        if self.zoom_gesture_in_progress() {
+            return;
+        }
         let Some(mut session) = self.state.borrow().zoom_session().cloned() else {
             return;
         };
@@ -1736,7 +1822,7 @@ impl App {
                 runtime.capture.set_accepting_frames(false);
             }
         }
-        if !session.is_frozen && !session.is_previewing {
+        if !session.is_frozen && !session.is_previewing && !self.zoom_gesture_in_progress() {
             if let Some(pointer) = self.zoom_pointer_location() {
                 session.center = ZoomGeometry::followed_center(
                     session.center,
@@ -1766,6 +1852,10 @@ impl App {
         if let Some(runtime) = self.zoom.as_mut() {
             runtime.view.set_pointer(point);
         }
+        if self.zoom_gesture_in_progress() {
+            self.render_zoom("제스처 중 포인터 이동");
+            return;
+        }
         if session.is_previewing {
             session.center =
                 ZoomGeometry::clamped_center(point, session.screen_size, session.magnification);
@@ -1784,7 +1874,37 @@ impl App {
         self.render_zoom("포인터 이동");
     }
 
+    fn handle_zoom_ink_input(&mut self, pointer_id: u32, message: u32) {
+        let Some(session) = self.state.borrow().zoom_session().cloned() else {
+            return;
+        };
+        if session.is_previewing || !self.state.borrow().is_annotation_mode_enabled() {
+            return;
+        }
+        let result = self
+            .overlays
+            .as_mut()
+            .map(|overlays| overlays.handle_zoom_input(message, pointer_id, &session));
+        match result {
+            Some(Ok(())) => self.render_zoom("줌 판서 입력"),
+            Some(Err(error)) => self.report_overlay_error("줌 판서 입력", &error),
+            None => self
+                .logger
+                .event("줌 판서 입력 실패: 오버레이 관리자가 없음"),
+        }
+    }
+
     fn handle_zoom_wheel(&mut self, delta: i32, control_down: bool) {
+        if self.zoom_gesture_in_progress() {
+            if delta != 0 {
+                self.logger
+                    .event("줌 제스처 잠금으로 키 거부: key=Ctrl+Wheel");
+            }
+            if let Some(runtime) = self.zoom.as_mut() {
+                runtime.wheel_accumulator = 0;
+            }
+            return;
+        }
         let previewing = self
             .state
             .borrow()
@@ -1856,6 +1976,10 @@ impl App {
         let Some(session) = self.state.borrow().zoom_session().cloned() else {
             return;
         };
+        let ink_frame = self
+            .overlays
+            .as_ref()
+            .and_then(|overlays| overlays.zoom_ink_frame(&session.display_id));
         if let Some(pointer) = self.zoom_pointer_location() {
             if let Some(runtime) = self.zoom.as_mut() {
                 runtime.view.set_pointer(pointer);
@@ -1864,7 +1988,7 @@ impl App {
         let result = self
             .zoom
             .as_mut()
-            .map(|runtime| runtime.view.render(&session));
+            .map(|runtime| runtime.view.render(&session, ink_frame.as_ref()));
         if let Some(Err(error)) = result {
             let message = format!("줌 창 렌더 실패 ({reason}): {error}");
             self.stop_zoom("렌더 장치 실패", false);
@@ -3108,6 +3232,7 @@ impl App {
                 .logger
                 .event("텍스트 스트로크 추가 실패: 오버레이 관리자가 없음"),
         }
+        self.render_zoom("텍스트 확정");
     }
 
     fn cancel_text_entry(&mut self, reason: &str) {
@@ -3438,6 +3563,10 @@ unsafe extern "system" fn window_proc(
             }
             WM_APP_ZOOM_WHEEL => {
                 app.handle_zoom_wheel(decode_wheel(wparam), lparam.0 != 0);
+                return LRESULT(0);
+            }
+            WM_APP_ZOOM_INK_INPUT => {
+                app.handle_zoom_ink_input(wparam.0 as u32, lparam.0 as u32);
                 return LRESULT(0);
             }
             WM_APP_ZOOM_RECREATE => {
@@ -3898,5 +4027,55 @@ fn eraser_mode_name(mode: EraserMode) -> &'static str {
         EraserMode::Partial => "partial",
         EraserMode::Stroke => "stroke",
         EraserMode::Area => "area",
+    }
+}
+
+fn zoom_control_for_shortcut(command: &ShortcutCommand) -> Option<ZoomGestureControl> {
+    match command {
+        ShortcutCommand::AdjustZoom(_) | ShortcutCommand::ResetZoom => {
+            Some(ZoomGestureControl::Magnification)
+        }
+        ShortcutCommand::ToggleZoomFreeze => Some(ZoomGestureControl::FreezeKey),
+        ShortcutCommand::BeginZoomPreview => Some(ZoomGestureControl::PreviewKey),
+        ShortcutCommand::CycleZoomFollowMode => Some(ZoomGestureControl::FollowKey),
+        _ => None,
+    }
+}
+
+fn warp_zoom_pointer(
+    logger: &Logger,
+    monitor: &Monitor,
+    view_point: ZoomPoint,
+) -> Option<ZoomPoint> {
+    let monitor_rect = ZoomRect::new(
+        f64::from(monitor.rect.left),
+        f64::from(monitor.rect.top),
+        f64::from(monitor.rect.width()),
+        f64::from(monitor.rect.height()),
+    );
+    let Some(screen_point) = ZoomGeometry::warp_screen_point(view_point, monitor_rect) else {
+        logger.event(&format!(
+            "줌 포인터 워프 건너뜀: monitor={} view=({:.1},{:.1}) reason=target-outside-monitor",
+            monitor.session_key, view_point.x, view_point.y
+        ));
+        return None;
+    };
+    let x = screen_point.x.round() as i32;
+    let y = screen_point.y.round() as i32;
+    match unsafe { SetCursorPos(x, y) } {
+        Ok(()) => {
+            logger.event(&format!(
+                "줌 포인터 워프 성공: monitor={} view=({:.1},{:.1}) screen=({x},{y})",
+                monitor.session_key, view_point.x, view_point.y
+            ));
+            Some(screen_point)
+        }
+        Err(error) => {
+            logger.event(&format!(
+                "줌 포인터 워프 실패: monitor={} screen=({x},{y}) error={error}",
+                monitor.session_key
+            ));
+            None
+        }
     }
 }

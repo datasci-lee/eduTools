@@ -1,5 +1,6 @@
 use crate::log::Logger;
 use crate::render::px_per_dip;
+use crate::z_bands::{raise_band_order, Band, BandRegistration};
 use edutools_core::ink::{
     text_entry_action, text_entry_width, Point, Size, TextEntryAction, TextEntryKey,
 };
@@ -59,6 +60,7 @@ pub struct TextEntryRequest {
     pub monitor_top: i32,
     pub monitor_size: Size,
     pub origin: Point,
+    pub display_origin: Point,
     pub dpi: u32,
     pub color: [f64; 4],
     pub font_size: f64,
@@ -100,6 +102,7 @@ pub struct TextEntryWindow {
     previous_foreground: HWND,
     request: TextEntryRequest,
     state: Box<TextEntryWindowState>,
+    _band: BandRegistration,
 }
 
 impl TextEntryWindow {
@@ -111,13 +114,13 @@ impl TextEntryWindow {
     ) -> Result<Self> {
         register_window_class(hinstance)?;
         let scale = px_per_dip(request.dpi);
-        let origin_x_dip = request.origin.x / scale;
+        let origin_x_dip = request.display_origin.x / scale;
         let monitor_width_dip = request.monitor_size.width / scale;
         let width_dip = text_entry_width(monitor_width_dip, origin_x_dip);
         let width = (width_dip * scale).round().max(1.0) as i32;
         let height = (110.0 * scale).round().max(1.0) as i32;
-        let x = request.monitor_left + request.origin.x.round() as i32;
-        let y = request.monitor_top + request.origin.y.round() as i32;
+        let x = request.monitor_left + request.display_origin.x.round() as i32;
+        let y = request.monitor_top + request.display_origin.y.round() as i32;
         let background = COLORREF(unsafe { GetSysColor(COLOR_WINDOW) });
         let background_brush = unsafe { CreateSolidBrush(background) };
         if background_brush.is_invalid() {
@@ -276,6 +279,11 @@ impl TextEntryWindow {
         if let Err(error) = unsafe { SetFocus(Some(edit)) } {
             logger.event(&format!("텍스트 EDIT 포커스 설정 실패: {error}"));
         }
+        let band = BandRegistration::new(hwnd, Band::Dialog);
+        if let Err(error) = raise_band_order() {
+            let _ = unsafe { DestroyWindow(hwnd) };
+            return Err(error);
+        }
         logger.event(&format!(
             "텍스트 편집 창 열림: monitor={} 위치=({x},{y}) 폭={width_dip:.2}DIP/{width}px 글꼴={:.2}DIP dpi={}",
             request.monitor_key, request.font_size, request.dpi
@@ -286,6 +294,7 @@ impl TextEntryWindow {
             previous_foreground,
             request,
             state,
+            _band: band,
         })
     }
 

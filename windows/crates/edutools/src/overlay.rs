@@ -1,6 +1,6 @@
 use crate::ink_view::{
-    pointer_id_from_wparam, stroke_shape_label, InkInputConfig, InkInputController, InputOutcome,
-    StrokeReplacementKind, TextEntrySeed,
+    pointer_id_from_wparam, stroke_shape_label, InkInputConfig, InkInputController,
+    InkInputMapping, InputOutcome, StrokeReplacementKind, TextEntrySeed,
 };
 use crate::log::Logger;
 use crate::monitor::{
@@ -27,6 +27,7 @@ use windows::Win32::Foundation::{
     COLORREF, ERROR_CLASS_ALREADY_EXISTS, ERROR_SUCCESS, E_FAIL, HINSTANCE, HWND, LPARAM, LRESULT,
     RECT, WIN32_ERROR, WPARAM,
 };
+use windows::Win32::Graphics::Direct2D::ID2D1Bitmap1;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos, GetWindowLongPtrW, GetWindowRect,
     KillTimer, RegisterClassW, SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW,
@@ -245,6 +246,60 @@ impl OverlayManager {
 
     pub fn contains_monitor(&self, monitor_key: &str) -> bool {
         self.overlays.contains_key(monitor_key)
+    }
+
+    pub fn graphics_device(&self) -> GraphicsDevice {
+        self.graphics.clone()
+    }
+
+    pub fn zoom_ink_frame(&self, monitor_key: &str) -> Option<ID2D1Bitmap1> {
+        self.overlays
+            .get(monitor_key)
+            .and_then(|overlay| overlay.state.renderer.as_ref())
+            .and_then(OverlayRenderer::frame_bitmap)
+    }
+
+    pub fn zoom_gesture_in_progress(&self, monitor_key: &str) -> bool {
+        self.overlays
+            .get(monitor_key)
+            .is_some_and(|overlay| overlay.state.input.gesture_in_progress())
+    }
+
+    pub fn handle_zoom_input(
+        &mut self,
+        message: u32,
+        pointer_id: u32,
+        session: &edutools_core::zoom::ZoomSessionState,
+    ) -> Result<()> {
+        if !self.annotation_enabled || session.is_previewing {
+            return Ok(());
+        }
+        let Some(overlay) = self.overlays.get_mut(&session.display_id) else {
+            return Err(Error::new(
+                E_FAIL,
+                format!("줌 판서 대상 오버레이가 없음: {}", session.display_id),
+            ));
+        };
+        let mapping = InkInputMapping::for_zoom(session);
+        if message == WM_POINTERDOWN {
+            self.logger.event(&format!(
+                "줌 판서 입력 시작: monitor={} pointerId={pointer_id} mapping={}",
+                session.display_id,
+                mapping.label()
+            ));
+        }
+        overlay.handle_pointer_message(message, pointer_id, mapping)?;
+        if matches!(
+            message,
+            WM_POINTERUP | WM_POINTERCAPTURECHANGED | WM_POINTERLEAVE
+        ) {
+            self.logger.event(&format!(
+                "줌 판서 입력 종료: monitor={} pointerId={pointer_id} mapping={} message={message:#x}",
+                session.display_id,
+                mapping.label()
+            ));
+        }
+        Ok(())
     }
 
     pub fn add_text_stroke(&mut self, commit: TextEntryCommit) -> Result<Size> {
@@ -667,6 +722,7 @@ impl OverlayWindowState {
                 height: f64::from(self.monitor.rect.height()),
             },
             origin: seed.origin,
+            display_origin: seed.display_origin,
             dpi: self.monitor.dpi.0,
             color: seed.color,
             font_size: seed.font_size,
@@ -799,6 +855,32 @@ impl OverlayWindowState {
         self.input.recognize_active();
         Ok(())
     }
+
+    fn handle_pointer_message(
+        &mut self,
+        hwnd: HWND,
+        message: u32,
+        pointer_id: u32,
+        mapping: InkInputMapping,
+    ) -> Result<()> {
+        let strokes = self.current_strokes();
+        let selected_ids = self
+            .app_state
+            .borrow()
+            .selected_stroke_ids(&self.monitor.session_key);
+        self.input
+            .handle_message(
+                message,
+                pointer_id,
+                &self.monitor,
+                &strokes,
+                &selected_ids,
+                mapping,
+            )
+            .and_then(|outcome| self.apply_input_outcome(outcome))
+            .and_then(|()| self.sync_laser_timer(hwnd))
+            .and_then(|()| self.sync_recognition_timer(hwnd))
+    }
 }
 
 struct OverlayWindow {
@@ -905,6 +987,16 @@ impl OverlayWindow {
 
     fn hwnd(&self) -> HWND {
         self.hwnd
+    }
+
+    fn handle_pointer_message(
+        &mut self,
+        message: u32,
+        pointer_id: u32,
+        mapping: InkInputMapping,
+    ) -> Result<()> {
+        self.state
+            .handle_pointer_message(self.hwnd, message, pointer_id, mapping)
     }
 
     fn monitor(&self) -> &Monitor {
@@ -1208,17 +1300,12 @@ unsafe extern "system" fn overlay_window_proc(
             | WM_POINTERCAPTURECHANGED
             | WM_POINTERLEAVE => {
                 let pointer_id = pointer_id_from_wparam(wparam.0);
-                let strokes = state.current_strokes();
-                let selected_ids = state
-                    .app_state
-                    .borrow()
-                    .selected_stroke_ids(&state.monitor.session_key);
-                let result = state
-                    .input
-                    .handle_message(message, pointer_id, &state.monitor, &strokes, &selected_ids)
-                    .and_then(|outcome| state.apply_input_outcome(outcome))
-                    .and_then(|()| state.sync_laser_timer(hwnd))
-                    .and_then(|()| state.sync_recognition_timer(hwnd));
+                let result = state.handle_pointer_message(
+                    hwnd,
+                    message,
+                    pointer_id,
+                    InkInputMapping::Identity,
+                );
                 match result {
                     Ok(()) => {}
                     Err(error) => state.logger.event(&format!(

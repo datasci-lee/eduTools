@@ -1,9 +1,11 @@
 use crate::capture::CapturedFrame;
+use crate::ink_view::pointer_id_from_wparam;
 use crate::log::Logger;
 use crate::monitor::{Monitor, MonitorRect};
 use crate::render::{
     create_swap_chain, create_swap_target, pixel_format, read_bitmap_bgra, GraphicsDevice,
 };
+use crate::text_entry;
 use crate::z_bands::{raise_band_order, Band, BandRegistration};
 use edutools_core::zoom::{Point, Rect, ZoomGeometry, ZoomSessionState};
 use std::ffi::c_void;
@@ -21,9 +23,9 @@ use windows::Win32::Graphics::Direct2D::{
     CLSID_D2D1Brightness, CLSID_D2D1Saturation, ID2D1Bitmap1, ID2D1DeviceContext, ID2D1Factory,
     ID2D1Image, ID2D1PathGeometry, ID2D1RenderTarget, D2D1_BITMAP_OPTIONS_NONE,
     D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1, D2D1_BRIGHTNESS_PROP_BLACK_POINT,
-    D2D1_BRIGHTNESS_PROP_WHITE_POINT, D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_INTERPOLATION_MODE_LINEAR,
-    D2D1_PROPERTY_TYPE_FLOAT, D2D1_PROPERTY_TYPE_VECTOR2, D2D1_ROUNDED_RECT,
-    D2D1_SATURATION_PROP_SATURATION,
+    D2D1_BRIGHTNESS_PROP_WHITE_POINT, D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_ELLIPSE,
+    D2D1_INTERPOLATION_MODE_LINEAR, D2D1_PROPERTY_TYPE_FLOAT, D2D1_PROPERTY_TYPE_VECTOR2,
+    D2D1_ROUNDED_RECT, D2D1_SATURATION_PROP_SATURATION,
 };
 use windows::Win32::Graphics::DirectComposition::{IDCompositionTarget, IDCompositionVisual};
 use windows::Win32::Graphics::DirectWrite::{
@@ -35,16 +37,19 @@ use windows::Win32::Graphics::DirectWrite::{
 use windows::Win32::Graphics::Dxgi::{IDXGISurface, IDXGISwapChain1};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateCursor, CreateWindowExW, DefWindowProcW, DestroyCursor, DestroyWindow, GetCursorPos,
-    GetWindowLongPtrW, KillTimer, PostMessageW, RegisterClassW, SetCursor, SetForegroundWindow,
-    SetTimer, SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos, ShowWindow, CREATESTRUCTW,
-    GWLP_USERDATA, HCURSOR, SWP_SHOWWINDOW, SW_SHOW, WDA_EXCLUDEFROMCAPTURE, WM_MOUSEMOVE,
-    WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_SETCURSOR, WM_TIMER, WNDCLASSW,
-    WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    GetForegroundWindow, GetWindowLongPtrW, KillTimer, PostMessageW, RegisterClassW, SendMessageW,
+    SetCursor, SetForegroundWindow, SetTimer, SetWindowDisplayAffinity, SetWindowLongPtrW,
+    SetWindowPos, ShowWindow, CREATESTRUCTW, GWLP_USERDATA, HCURSOR, SWP_SHOWWINDOW, SW_SHOW,
+    WDA_EXCLUDEFROMCAPTURE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY,
+    WM_POINTERCAPTURECHANGED, WM_POINTERDOWN, WM_POINTERLEAVE, WM_POINTERUP, WM_POINTERUPDATE,
+    WM_SETCURSOR, WM_TIMER, WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_POPUP,
 };
 
 pub const WM_APP_ZOOM_POINTER: u32 = 0x8000 + 142;
 pub const WM_APP_ZOOM_WHEEL: u32 = 0x8000 + 143;
 pub const WM_APP_ZOOM_REDRAW: u32 = 0x8000 + 145;
+pub const WM_APP_ZOOM_INK_INPUT: u32 = 0x8000 + 180;
 const ZOOM_CLASS: windows::core::PCWSTR = w!("EduToolsZoomView");
 const MESSAGE_TIMER_ID: usize = 0xED17;
 
@@ -145,7 +150,7 @@ impl ZoomView {
                 }
             };
         let _ = unsafe { ShowWindow(hwnd, SW_SHOW) };
-        let focused = unsafe { SetForegroundWindow(hwnd) }.as_bool();
+        let focused = focus_zoom_window(hwnd);
         logger.event(&format!(
             "줌 창 생성: monitor={} rect=({},{} {}x{}) WDA_EXCLUDEFROMCAPTURE=true focus={focused}",
             monitor.session_key,
@@ -204,7 +209,11 @@ impl ZoomView {
         }
     }
 
-    pub fn render(&mut self, session: &ZoomSessionState) -> Result<()> {
+    pub fn render(
+        &mut self,
+        session: &ZoomSessionState,
+        ink_frame: Option<&ID2D1Bitmap1>,
+    ) -> Result<()> {
         if self
             .message
             .as_ref()
@@ -214,6 +223,7 @@ impl ZoomView {
         }
         self.renderer.render(
             self.current_frame.as_ref(),
+            ink_frame,
             session,
             self.pointer,
             self.message.as_ref().map(|(message, _)| message.as_str()),
@@ -221,8 +231,15 @@ impl ZoomView {
     }
 
     pub fn focus(&self) -> bool {
-        unsafe { SetForegroundWindow(self.hwnd) }.as_bool()
+        focus_zoom_window(self.hwnd)
     }
+}
+
+fn focus_zoom_window(hwnd: HWND) -> bool {
+    if text_entry::text_input_active() || unsafe { GetForegroundWindow() } == hwnd {
+        return true;
+    }
+    unsafe { SetForegroundWindow(hwnd) }.as_bool()
 }
 
 impl Drop for ZoomView {
@@ -293,14 +310,15 @@ impl ZoomRenderer {
     }
 
     fn render(
-        &self,
+        &mut self,
         frame: Option<&CapturedFrame>,
+        ink_frame: Option<&ID2D1Bitmap1>,
         session: &ZoomSessionState,
         pointer: Point,
         message: Option<&str>,
     ) -> Result<()> {
         let bitmap = frame.map(|frame| self.capture_bitmap(frame)).transpose()?;
-        self.draw_scene(bitmap.as_ref(), session, pointer, message)?;
+        self.draw_scene(bitmap.as_ref(), ink_frame, session, pointer, message)?;
         unsafe { self.swap_chain.Present(1, Default::default()).ok()? };
         Ok(())
     }
@@ -332,8 +350,9 @@ impl ZoomRenderer {
     }
 
     fn draw_scene(
-        &self,
+        &mut self,
         bitmap: Option<&ID2D1Bitmap1>,
+        ink_frame: Option<&ID2D1Bitmap1>,
         session: &ZoomSessionState,
         pointer: Point,
         message: Option<&str>,
@@ -414,6 +433,28 @@ impl ZoomRenderer {
                     };
                 }
             }
+            if let Some(ink_frame) = ink_frame {
+                let source = if session.is_previewing {
+                    D2D_RECT_F {
+                        left: 0.0,
+                        top: 0.0,
+                        right: self.width as f32,
+                        bottom: self.height as f32,
+                    }
+                } else {
+                    d2d_rect(session.source_rect())
+                };
+                unsafe {
+                    self.context.DrawBitmap(
+                        ink_frame,
+                        Some(&full),
+                        1.0,
+                        D2D1_INTERPOLATION_MODE_LINEAR,
+                        Some(&source),
+                        None,
+                    )
+                };
+            }
             self.draw_pointer(session, pointer)?;
             if let Some(message) = message {
                 let width = 300.0_f32.min((self.width as f32 - 32.0).max(0.0));
@@ -484,6 +525,7 @@ impl ZoomRenderer {
     fn draw_pointer(&self, session: &ZoomSessionState, pointer: Point) -> Result<()> {
         let presented = ZoomGeometry::pointer_presentation_point(pointer, session);
         let scale = ZoomGeometry::pointer_scale(session) as f32;
+        // 줌 창이 시스템 커서를 투명으로 덮어 실제 모양을 얻을 수 없음 — 결정 #35 대안.
         let geometry = make_pointer_geometry(&self.factory, presented, scale)?;
         let fill = D2D1_COLOR_F {
             r: 0.0,
@@ -546,7 +588,7 @@ impl ZoomRenderer {
         Ok(())
     }
 
-    fn selftest_failures(&self) -> Result<Vec<String>> {
+    fn selftest_failures(&mut self) -> Result<Vec<String>> {
         let result = self.selftest_failures_inner();
         if let Some(target) = self.swap_target.as_ref() {
             let image: ID2D1Image = target.cast()?;
@@ -555,12 +597,13 @@ impl ZoomRenderer {
         result
     }
 
-    fn selftest_failures_inner(&self) -> Result<Vec<String>> {
+    fn selftest_failures_inner(&mut self) -> Result<Vec<String>> {
         let width = self.width;
         let height = self.height;
         let target = create_test_bitmap(&self.context, width, height, true, None)?;
         let source_pixels = synthetic_grid(width, height);
         let source = create_test_bitmap(&self.context, width, height, false, Some(&source_pixels))?;
+        let ink = create_synthetic_ink_bitmap(&self.context, width, height, Point::new(0.5, 0.5))?;
         let target_image: ID2D1Image = target.cast()?;
         unsafe { self.context.SetTarget(&target_image) };
         let mut failures = Vec::new();
@@ -576,7 +619,13 @@ impl ZoomRenderer {
             is_frozen: false,
             is_previewing: false,
         };
-        self.draw_scene(Some(&source), &session, Point::new(300.0, 180.0), None)?;
+        self.draw_scene(
+            Some(&source),
+            None,
+            &session,
+            Point::new(300.0, 180.0),
+            None,
+        )?;
         let (pixels, pitch) = read_bitmap_bgra(&self.context, &target)?;
         let sample = pixel(&pixels, pitch, 60, 30);
         let expected = grid_color(150, 65);
@@ -590,24 +639,34 @@ impl ZoomRenderer {
             ));
         }
 
-        unsafe {
-            self.context.BeginDraw();
-            self.context.Clear(None);
-        }
-        self.draw_pointer(&session, Point::new(160.0, 100.0))?;
-        unsafe { self.context.EndDraw(None, None)? };
-        let (pointer_pixels, pointer_pitch) = read_bitmap_bgra(&self.context, &target)?;
-        let pointer_alpha = pointer_pixels
-            .chunks(pointer_pitch as usize)
-            .flat_map(|row| row[..width as usize * 4].chunks_exact(4))
-            .filter(|pixel| pixel[3] != 0)
-            .count();
-        if pointer_alpha == 0 {
-            failures.push("zoom pointer: 화살표 영역 alpha가 모두 0".to_owned());
+        for frozen in [false, true] {
+            session.is_frozen = frozen;
+            self.draw_scene(
+                Some(&source),
+                Some(&ink),
+                &session,
+                Point::new(300.0, 180.0),
+                None,
+            )?;
+            let (ink_pixels, ink_pitch) = read_bitmap_bgra(&self.context, &target)?;
+            let ink_sample = pixel(&ink_pixels, ink_pitch, 80, 100);
+            if ink_sample[2] < 180 || ink_sample[3] == 0 {
+                failures.push(format!(
+                    "zoom ink {}: expected red/alpha at (80,100), BGRA={ink_sample:?}",
+                    if frozen { "frozen" } else { "live" }
+                ));
+            }
         }
 
+        session.is_frozen = false;
         session.is_previewing = true;
-        self.draw_scene(Some(&source), &session, Point::new(300.0, 180.0), None)?;
+        self.draw_scene(
+            Some(&source),
+            Some(&ink),
+            &session,
+            Point::new(300.0, 180.0),
+            None,
+        )?;
         let (preview_pixels, preview_pitch) = read_bitmap_bgra(&self.context, &target)?;
         let preview_sample = pixel(&preview_pixels, preview_pitch, 20, 20);
         let original = grid_color(20, 20);
@@ -655,7 +714,7 @@ pub fn selftest_failures(hinstance: HINSTANCE, logger: Logger) -> Vec<String> {
         session_key: "zoom-selftest".to_owned(),
     };
     match ZoomView::new(HWND::default(), hinstance, &monitor, &graphics, logger) {
-        Ok(view) => view
+        Ok(mut view) => view
             .renderer
             .selftest_failures()
             .unwrap_or_else(|error| vec![format!("zoom: 오프스크린 렌더 실패: {error}")]),
@@ -741,6 +800,22 @@ unsafe extern "system" fn zoom_window_proc(
                         WM_APP_ZOOM_WHEEL,
                         WPARAM(encoded_delta),
                         LPARAM(isize::from(control)),
+                    )
+                };
+                return LRESULT(0);
+            }
+            WM_POINTERDOWN
+            | WM_POINTERUPDATE
+            | WM_POINTERUP
+            | WM_POINTERCAPTURECHANGED
+            | WM_POINTERLEAVE => {
+                let pointer_id = pointer_id_from_wparam(wparam.0);
+                unsafe {
+                    SendMessageW(
+                        state.owner,
+                        WM_APP_ZOOM_INK_INPUT,
+                        Some(WPARAM(pointer_id as usize)),
+                        Some(LPARAM(message as isize)),
                     )
                 };
                 return LRESULT(0);
@@ -863,6 +938,41 @@ fn create_test_bitmap(
             &properties,
         )
     }
+}
+
+fn create_synthetic_ink_bitmap(
+    context: &ID2D1DeviceContext,
+    width: u32,
+    height: u32,
+    normalized_point: Point,
+) -> Result<ID2D1Bitmap1> {
+    let bitmap = create_test_bitmap(context, width, height, true, None)?;
+    let image: ID2D1Image = bitmap.cast()?;
+    unsafe {
+        context.SetTarget(&image);
+        context.BeginDraw();
+        context.Clear(None);
+    }
+    let red = D2D1_COLOR_F {
+        r: 1.0,
+        g: 0.0,
+        b: 0.0,
+        a: 1.0,
+    };
+    let brush = unsafe { context.CreateSolidColorBrush(&red, None) }?;
+    let ellipse = D2D1_ELLIPSE {
+        point: D2D1_ELLIPSE::default().point,
+        radiusX: 4.0,
+        radiusY: 4.0,
+    };
+    let mut ellipse = ellipse;
+    ellipse.point.X = (normalized_point.x * f64::from(width)) as f32;
+    ellipse.point.Y = (normalized_point.y * f64::from(height)) as f32;
+    unsafe {
+        context.FillEllipse(&ellipse, &brush);
+        context.EndDraw(None, None)?;
+    }
+    Ok(bitmap)
 }
 
 fn synthetic_grid(width: u32, height: u32) -> Vec<u8> {

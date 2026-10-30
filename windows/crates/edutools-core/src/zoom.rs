@@ -127,6 +127,29 @@ impl AffineTransform {
 pub struct ZoomGeometry;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ZoomInkInputMode {
+    Identity,
+    ThroughPresentation,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ZoomGestureControl {
+    FollowMovement,
+    Magnification,
+    PreviewKey,
+    FreezeKey,
+    FollowKey,
+}
+
+// Swift: InkView.localLocation(for:), ZoomController.isInkGestureActive()
+pub const fn zoom_gesture_control_locked(
+    gesture_in_progress: bool,
+    _control: ZoomGestureControl,
+) -> bool {
+    gesture_in_progress
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ZoomControlInput {
     IncreaseKey,
     DecreaseKey,
@@ -289,6 +312,35 @@ impl ZoomGeometry {
         )
     }
 
+    // Swift: InkView.localLocation(for:)
+    pub fn ink_input_point(
+        screen_point: Point,
+        monitor_rect: Rect,
+        zoomed_size: Size,
+        source_rect: Rect,
+        mode: ZoomInkInputMode,
+    ) -> Point {
+        let view_point = Point::new(
+            screen_point.x - monitor_rect.x,
+            screen_point.y - monitor_rect.y,
+        );
+        match mode {
+            ZoomInkInputMode::Identity => view_point,
+            ZoomInkInputMode::ThroughPresentation => {
+                Self::original_point(view_point, zoomed_size, source_rect)
+            }
+        }
+    }
+
+    // Swift: ZoomController.warpPointer(toViewPoint:)
+    pub fn warp_screen_point(view_point: Point, monitor_rect: Rect) -> Option<Point> {
+        let inside = view_point.x >= 0.0
+            && view_point.y >= 0.0
+            && view_point.x < monitor_rect.width
+            && view_point.y < monitor_rect.height;
+        inside.then(|| Point::new(monitor_rect.x + view_point.x, monitor_rect.y + view_point.y))
+    }
+
     // Swift: ZoomGeometry.presentationTransform(sourceRect:destinationSize:)
     pub fn presentation_transform(source_rect: Rect, destination_size: Size) -> AffineTransform {
         if source_rect.width <= 0.0 || source_rect.height <= 0.0 {
@@ -330,9 +382,70 @@ impl ZoomGeometry {
 #[cfg(test)]
 mod tests {
     use super::{
-        stop_or_cancel_preview_action, zoom_control_effect, ZoomControlEffect, ZoomControlInput,
-        ZoomStopAction,
+        stop_or_cancel_preview_action, zoom_control_effect, zoom_gesture_control_locked, Point,
+        Rect, Size, ZoomControlEffect, ZoomControlInput, ZoomGeometry, ZoomGestureControl,
+        ZoomInkInputMode, ZoomStopAction,
     };
+
+    #[test]
+    fn zoom_ink_input_mapping_table() {
+        let monitor = Rect::new(-1_920.0, -120.0, 1_920.0, 1_080.0);
+        let zoomed_size = Size::new(1_920.0, 1_080.0);
+        let source = Rect::new(480.0, 270.0, 960.0, 540.0);
+        let cases = [
+            (
+                ZoomInkInputMode::Identity,
+                Point::new(-1_440.0, 150.0),
+                Point::new(480.0, 270.0),
+            ),
+            (
+                ZoomInkInputMode::ThroughPresentation,
+                Point::new(-960.0, 420.0),
+                Point::new(960.0, 540.0),
+            ),
+        ];
+        for (mode, screen, expected) in cases {
+            assert_eq!(
+                ZoomGeometry::ink_input_point(screen, monitor, zoomed_size, source, mode),
+                expected,
+                "{mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn zoom_gesture_lock_table() {
+        let controls = [
+            ZoomGestureControl::FollowMovement,
+            ZoomGestureControl::Magnification,
+            ZoomGestureControl::PreviewKey,
+            ZoomGestureControl::FreezeKey,
+            ZoomGestureControl::FollowKey,
+        ];
+        for gesture in [false, true] {
+            for control in controls {
+                assert_eq!(
+                    zoom_gesture_control_locked(gesture, control),
+                    gesture,
+                    "gesture={gesture} control={control:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn warp_target_table() {
+        let monitor = Rect::new(-1_920.0, -120.0, 1_920.0, 1_080.0);
+        let cases = [
+            (Point::new(0.0, 0.0), Some(Point::new(-1_920.0, -120.0))),
+            (Point::new(1_919.0, 1_079.0), Some(Point::new(-1.0, 959.0))),
+            (Point::new(-1.0, 10.0), None),
+            (Point::new(1_920.0, 10.0), None),
+        ];
+        for (view, expected) in cases {
+            assert_eq!(ZoomGeometry::warp_screen_point(view, monitor), expected);
+        }
+    }
 
     #[test]
     fn zoom_key_and_wheel_effect_table() {

@@ -100,6 +100,7 @@ macro_rules! d2d_point {
     }};
 }
 
+#[derive(Clone)]
 pub struct GraphicsDevice {
     d3d_device: ID3D11Device,
     d2d_device: ID2D1Device,
@@ -179,6 +180,7 @@ pub struct OverlayRenderer {
     dwrite: IDWriteFactory,
     swap_target: Option<ID2D1Bitmap1>,
     completed_bitmap: Option<ID2D1Bitmap1>,
+    zoom_frame_bitmap: Option<ID2D1Bitmap1>,
     _dcomp_target: IDCompositionTarget,
     _visual: IDCompositionVisual,
     width: u32,
@@ -234,6 +236,7 @@ impl OverlayRenderer {
         let dwrite = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED) }?;
         let swap_target = Some(create_swap_target(&context, &swap_chain)?);
         let completed_bitmap = Some(create_completed_bitmap(&context, width, height)?);
+        let zoom_frame_bitmap = Some(create_completed_bitmap(&context, width, height)?);
         let swap_image: ID2D1Image = swap_target
             .as_ref()
             .expect("swap target was just created")
@@ -262,6 +265,7 @@ impl OverlayRenderer {
             dwrite,
             swap_target,
             completed_bitmap,
+            zoom_frame_bitmap,
             _dcomp_target: dcomp_target,
             _visual: visual,
             width,
@@ -289,6 +293,7 @@ impl OverlayRenderer {
         unsafe { self.context.SetTarget(None::<&ID2D1Image>) };
         self.swap_target = None;
         self.completed_bitmap = None;
+        self.zoom_frame_bitmap = None;
         if self.width != width || self.height != height {
             unsafe {
                 self.swap_chain.ResizeBuffers(
@@ -302,6 +307,7 @@ impl OverlayRenderer {
         }
         self.swap_target = Some(create_swap_target(&self.context, &self.swap_chain)?);
         self.completed_bitmap = Some(create_completed_bitmap(&self.context, width, height)?);
+        self.zoom_frame_bitmap = Some(create_completed_bitmap(&self.context, width, height)?);
         let swap_image: ID2D1Image = self
             .swap_target
             .as_ref()
@@ -319,6 +325,10 @@ impl OverlayRenderer {
     pub fn swap_chain_size(&self) -> Result<(u32, u32)> {
         let description = unsafe { self.swap_chain.GetDesc1() }?;
         Ok((description.Width, description.Height))
+    }
+
+    pub fn frame_bitmap(&self) -> Option<ID2D1Bitmap1> {
+        self.zoom_frame_bitmap.clone()
     }
 
     pub fn selftest_pixel_failures(
@@ -891,8 +901,12 @@ impl OverlayRenderer {
             .swap_target
             .as_ref()
             .expect("swap target exists outside resize");
+        let zoom_frame = self
+            .zoom_frame_bitmap
+            .as_ref()
+            .expect("zoom frame bitmap exists outside resize");
         self.draw_frame_to_bitmap(
-            swap_target,
+            zoom_frame,
             self.completed_bitmap(),
             active_stroke,
             eraser,
@@ -903,6 +917,23 @@ impl OverlayRenderer {
             highlighter_opacity,
             debug_visible,
         )?;
+        self.set_target(swap_target)?;
+        let bounds = frame_bounds(self.width, self.height);
+        unsafe {
+            self.context.BeginDraw();
+            self.context.SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_COPY);
+            self.context.DrawBitmap(
+                zoom_frame,
+                Some(&bounds),
+                1.0,
+                D2D1_INTERPOLATION_MODE_LINEAR,
+                Some(&bounds),
+                None,
+            );
+            self.context
+                .SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_SOURCE_OVER);
+            self.context.EndDraw(None, None)?;
+        }
         unsafe { self.swap_chain.Present(1, Default::default()).ok() }
     }
 
