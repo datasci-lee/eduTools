@@ -1,0 +1,189 @@
+{
+  "appVersion" : "0.1.0",
+  "createdOS" : "macOS 26",
+  "format" : "kr.datasci.edutools.pansetting",
+  "formatVersion" : 1,
+  "includedBundles" : [
+    "general",
+    "tools",
+    "eraser",
+    "zoom",
+    "board",
+    "timer",
+    "display",
+    "shortcuts",
+    "help"
+  ],
+  "includesComputerSpecific" : false,
+  "payload" : {
+    "board" : {
+      "backgroundPattern" : "none",
+      "blackboardColor" : {
+        "alpha" : 1,
+        "blue" : 0,
+        "green" : 0,
+        "red" : 0
+      },
+      "whiteboardColor" : {
+        "alpha" : 1,
+        "blue" : 1,
+        "green" : 1,
+        "red" : 1
+      }
+    },
+    "display" : {
+      "presets" : [
+
+      ]
+    },
+    "eraser" : {
+      "areaShape" : "rectangle",
+      "diameter" : 24,
+      "hitRule" : "touching",
+      "mode" : "partial",
+      "presetDiameters" : [
+        12,
+        24,
+        60
+      ],
+      "targetFilter" : "all"
+    },
+    "general" : {
+      "autoArchiveEnabled" : true,
+      "automaticallyRestoresDisconnectedDisplays" : false,
+      "clearsInkWhenAnnotationModeEnds" : false,
+      "displayDisconnectPolicy" : "archive",
+      "launchAtLogin" : false
+    },
+    "help" : {
+      "showsHelpInSharing" : false
+    },
+    "shortcuts" : {
+      "appModifier" : "controlOption",
+      "overrides" : {
+
+      }
+    },
+    "timer" : {
+      "autoStartBreak" : false,
+      "breakBackgroundColor" : {
+        "alpha" : 1,
+        "blue" : 0.14,
+        "green" : 0.12,
+        "red" : 0.12
+      },
+      "breakDefaultMinutes" : 10,
+      "breakMessage" : "수업 재개 시각",
+      "defaultPlaylistIndex" : 0,
+      "fadeDuration" : 60,
+      "fadeEnabled" : true,
+      "lessonBadgeOpacity" : 0.9,
+      "lessonBadgeSize" : "medium",
+      "lessonDefaultMinutes" : 50,
+      "lessonDisplayMode" : "remaining",
+      "lessonPresets" : [
+        25,
+        45,
+        50,
+        90
+      ],
+      "musicBrowser" : "chrome",
+      "musicEnabled" : false,
+      "notificationSound" : "Glass",
+      "playlistURLs" : [
+
+      ]
+    },
+    "tools" : {
+      "colors" : [
+        {
+          "alpha" : 1,
+          "blue" : 0.188,
+          "green" : 0.231,
+          "red" : 1
+        },
+        {
+          "alpha" : 1,
+          "blue" : 0,
+          "green" : 0.584,
+          "red" : 1
+        },
+        {
+          "alpha" : 1,
+          "blue" : 0,
+          "green" : 0.8,
+          "red" : 1
+        },
+        {
+          "alpha" : 1,
+          "blue" : 0.349,
+          "green" : 0.78,
+          "red" : 0.204
+        },
+        {
+          "alpha" : 1,
+          "blue" : 1,
+          "green" : 0.478,
+          "red" : 0
+        },
+        {
+          "alpha" : 1,
+          "blue" : 1,
+          "green" : 1,
+          "red" : 1
+        }
+      ],
+      "favorites" : [
+
+      ],
+      "highlighterOpacity" : 0.4,
+      "laserColor" : {
+        "alpha" : 1,
+        "blue" : 0.188,
+        "green" : 0.231,
+        "red" : 1
+      },
+      "laserSize" : 8,
+      "laserTrailDuration" : 1,
+      "paletteGlassOpacity" : 0.86,
+      "paletteStyle" : "radial",
+      "perToolMemory" : {
+        "arrow" : {
+          "colorIndex" : 0,
+          "size" : 3
+        },
+        "ellipse" : {
+          "colorIndex" : 0,
+          "size" : 3
+        },
+        "highlighter" : {
+          "colorIndex" : 0,
+          "size" : 18
+        },
+        "pen" : {
+          "colorIndex" : 0,
+          "size" : 3
+        },
+        "rectangle" : {
+          "colorIndex" : 0,
+          "size" : 3
+        },
+        "text" : {
+          "colorIndex" : 0,
+          "size" : 24
+        }
+      },
+      "pressureMinimumWidthRatio" : 0.2,
+      "shapeRecognitionEnabled" : true
+    },
+    "zoom" : {
+      "followMode" : "edge",
+      "followSmoothness" : 0.22,
+      "liveByDefault" : true,
+      "magnificationStep" : 0.25,
+      "maximumMagnification" : 8,
+      "previewDimming" : 0.62,
+      "startingMagnification" : 2
+    }
+  }
+}

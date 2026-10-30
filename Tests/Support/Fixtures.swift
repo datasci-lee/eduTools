@@ -18,6 +18,30 @@ public enum FixtureError: Error, CustomStringConvertible {
   }
 }
 
+public struct ShortcutFixtureBinding {
+  public let definitionID: String
+  public let scope: String
+  public let portableString: String
+
+  public init(definitionID: String, scope: String, portableString: String) {
+    self.definitionID = definitionID
+    self.scope = scope
+    self.portableString = portableString
+  }
+}
+
+public struct ShortcutDefaultsFixture: Codable, Equatable {
+  public let formatVersion: Int
+  public let bindings: [String: String]
+  public let unbound: [String]
+
+  public init(formatVersion: Int, bindings: [String: String], unbound: [String]) {
+    self.formatVersion = formatVersion
+    self.bindings = bindings
+    self.unbound = unbound
+  }
+}
+
 public enum Fixtures {
   private static let repositoryRoot = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent()
@@ -59,5 +83,18 @@ public enum Fixtures {
     } catch {
       throw FixtureError.decodingFailed(path: relativePath, reason: String(describing: error))
     }
+  }
+
+  public static func shortcutDefaults(
+    bindings: [ShortcutFixtureBinding],
+    unbound: [String]
+  ) -> ShortcutDefaultsFixture {
+    ShortcutDefaultsFixture(
+      formatVersion: 1,
+      bindings: Dictionary(uniqueKeysWithValues: bindings.map {
+        ("\($0.definitionID)|\($0.scope)", $0.portableString)
+      }),
+      unbound: unbound.sorted()
+    )
   }
 }

@@ -98,8 +98,8 @@
 | --- | --- | --- |
 | 순수 로직 | `Tests/MIGRATION-LEDGER.md`가 가리키는 새 Swift 시험의 입력·기대값을 `selftest.rs` 에 옮긴다. 단, 속성 아이콘 3군은 `fixtures/vectors/attr-icon-*.json`, 플래너 격자 배치는 `fixtures/vectors/display-grid-layouts.json` 이 정본이며 Windows `selftest.rs`도 이 JSON을 읽는다. 기대값이 같으면 동치. 이산 결과(갈라진 획 수·도형 종류·적중 여부)는 정확히, 좌표는 `1e-9` 허용 | macOS 는 `./build.sh test` 또는 `scripts/test.sh unit integration`; Rust 는 이식분만(`cargo test` 1개 + `edutools.exe --selftest`) |
 | 동치 추적 | Rust 함수마다 대응 Swift 심볼 한 줄 주석. 이후 Swift 로직 PR 은 Rust 대응 수정 또는 이슈(`windows-sync` 라벨, §7 #18)를 동반 | — |
-| .pansetting | 저장소 루트 `fixtures/pansetting/` 에 **macOS 가 내보낸 파일 1개 + Windows 가 내보낸 파일 1개**(둘 다 아직 없음 — §5.4). macOS 는 `Tests/UnitTests/SettingsTests.swift:9` `UnitTests.SettingsTests/jsonRoundTripPreservesValues()`, `:27` `UnitTests.SettingsTests/decodingIgnoresUnknownKeysAndDefaultsMissingValues()`, `:54` `UnitTests.SettingsTests/exportIncludesPresetsAndExcludesComputerSpecificValues()`에 두 파일의 `SettingsTransfer.decode` → `appliedSettings(current: .default, 전체 묶음)` 입력을 더해 `.default` 와 같은지(`archiveFolderPath` 없음, `appVersion`·`createdOS` 무시) 본다. Windows `selftest.rs`도 같은 파일을 읽는다. macOS 파일은 **현재 main 으로 재생성**(묶음 9개·`display:{"presets":[]}`·`pressureMinimumWidthRatio`·`perToolMemory`·`favorites:[]`·`paletteStyle`·`paletteGlassOpacity`·`previewDimming` 포함) | macOS: 기존 설정 시험에 입력 추가. 새 시험 ID 0 |
-| 기본 단축키 | `fixtures/shortcuts-default.json`(예정) = `{"formatVersion":1,"bindings":{"<정의 id>\|<scope>":"<토큰>",…},"unbound":["<id>",…]}`(키 형식 = override 키 `SC:456-458`; 기본 키 없는 기존 정의 6개 + `display.preset.1…8` = 14개가 `unbound`). 예: `palette.radial.toggle\|annotation`=`M`, `help.show\|annotation`=`Shift+/`, `edit.redo\|annotation`=`Shift+Primary+Z`. 정의 id 는 아이콘 키(§3.2.3)와 같다. `annotation.pass-through\|annotation`=`U` 도 포함(#35·#42·#53 머지됨 — 정의 58개). macOS `Tests/UnitTests/ShortcutTests.swift:72` `UnitTests.ShortcutTests/catalogBindingsAreUniqueWithinScope()`와 Windows 카탈로그 점검이 같은 파일과 대조 | 같음 |
+| .pansetting | 저장소 루트 `fixtures/pansetting/` 에 **macOS 가 내보낸 파일 1개 + Windows 가 내보낼 파일 1개**. `macos-v1.pansetting`은 현재 main 기본값으로 완료했고, `windows-v1.pansetting`은 Windows 쪽 산출물이다(§5.4). macOS 는 `Tests/UnitTests/SettingsTests.swift:56` `UnitTests.SettingsTests/exportIncludesPresetsAndExcludesComputerSpecificValues()`에서 macOS 파일을 `SettingsTransfer.decode` → `appliedSettings(current: .default, 전체 묶음)`으로 적용해 `.default` 와 같은지(`archiveFolderPath` 없음, `appVersion`·`createdOS` 무시) 본다. Windows `selftest.rs`도 같은 파일을 읽는다. macOS 파일은 묶음 9개·`display:{"presets":[]}`·`pressureMinimumWidthRatio`·`perToolMemory`·`favorites:[]`·`paletteStyle`·`paletteGlassOpacity`·`previewDimming`을 포함한다 | macOS: 기존 설정 시험에 입력 추가. 새 시험 ID 0 |
+| 기본 단축키 | `fixtures/shortcuts-default.json` = `{"formatVersion":1,"bindings":{"<정의 id>\|<scope>":"<토큰>",…},"unbound":["<id>",…]}`(키 형식 = override 키 `SC:456-458`; 기본 키 없는 기존 정의 6개 + `display.preset.1…8` = 14개가 `unbound`). 예: `palette.radial.toggle\|annotation`=`M`, `help.show\|annotation`=`Shift+/`, `edit.redo\|annotation`=`Shift+Primary+Z`. 정의 id 는 아이콘 키(§3.2.3)와 같다. `annotation.pass-through\|annotation`=`U` 도 포함(#35·#42·#53 머지됨 — 정의 58개). macOS `Tests/UnitTests/ShortcutTests.swift:72` `UnitTests.ShortcutTests/catalogBindingsAreUniqueWithinScope()`와 Windows 카탈로그 점검이 같은 파일과 대조 | 같음 |
 | 슬롯 override | `fixtures/`에 기본 키 없는 정의 1개의 허용 범위 override를 넣어 macOS `Tests/UnitTests/ShortcutTests.swift:72` `UnitTests.ShortcutTests/catalogBindingsAreUniqueWithinScope()`와 Windows 점검에서 같은 바인딩이 생성되는 케이스를 둔다. 전역 슬롯은 `AppMod` 필수, 비전역 슬롯은 `AppMod` 금지이며 잘못된 값은 해당 항목만 무시한다 | macOS: 기존 카탈로그 시험 입력에 추가. 새 시험 ID 0 |
 | 기본값 | 위 픽스처가 "기본값 = 양 OS 동일" 을 강제. macOS 기본값을 바꾸면 픽스처가 빨개져 Windows 동기를 요구 | — |
 
@@ -484,15 +484,17 @@ assets/                       # 읽기 전용 입력(앱 아이콘 SVG·트레�
 
 | 항목 | 버전·선택 | 비고 |
 | --- | --- | --- |
-| Windows | 11 x64 (24H2 이상 권장) | 개발 PC = 실기 1호 |
+| Windows | Parallels "Windows 11" ARM64 VM(24H2 이상 권장) | x64 에뮬레이션으로 `x86_64-pc-windows-msvc` 앱 실행 |
 | Visual Studio Build Tools | 2022(17.x) 이상, 워크로드 "C++를 사용한 데스크톱 개발" | MSVC v143 링커·`rc.exe`·`mt.exe` |
 | Windows SDK | 10.0.26100 (Windows 11 24H2 SDK) | Build Tools 설치 시 함께 선택. `signtool`·`makeappx` 포함 |
-| Rust | rustup → `stable-x86_64-pc-windows-msvc`, rustc 1.95 이상(macOS 쪽 실측 1.95.0) | `rustup target add aarch64-pc-windows-msvc`(ARM64 빌드 시) |
+| Rust | rustup → `stable-x86_64-pc-windows-msvc`, rustc 1.95 이상(macOS 쪽 실측 1.95.0) | ARM64 빌드는 만들지 않음 |
 | Git | Git for Windows + `gh` | `git config core.autocrlf false`(Swift 원본 줄바꿈 보존) |
 | 에디터 | VS Code + `rust-lang.rust-analyzer` · `ms-vscode.cpptools`(MSVC 디버거) · `tamasfe.even-better-toml` | 대안: RustRover |
 | 진단 도구(선택) | Spy++(Build Tools 포함 안 됨 → VS 설치 시), Accessibility Insights, WinDbg | 창 스타일·z순서·메시지 확인 |
 | 실기 장비 | 펜(Wacom + 드라이버 "Windows Ink 사용" 체크, 또는 Surface 펜), 배율 다른 모니터 2대(예 100%·150%), 프로젝터 복제 | §6 실기 항목 |
 | 시험 앱 | PowerPoint, Chrome(YouTube Music 로그인), Teams 또는 Zoom, 한글 IME | |
+
+- core 개발·시험은 맥에서 `cd windows && cargo test -p edutools-core`로 실행한다.
 
 ### 5.2 클론 후 첫 빌드 (W1 에서 workspace 생성 후)
 
@@ -508,35 +510,18 @@ cargo build --release --locked               # 배포용
 - 매니페스트(PerMonitorV2·Common Controls v6)·아이콘은 `crates/edutools/build.rs` 에서 `rc.exe` 로 `.res` 를 만들어 링크한다(`cargo:rustc-link-arg=<res>`). 외부 크레이트 불필요.
 - macOS 빌드(`build.sh`)는 Windows 에서 안 된다 — Swift 는 읽기만.
 - macOS 교차 컴파일·폐쇄망 벤더링은 이 계획의 범위 밖.
+- Windows 앱 실행 시험은 Parallels "Windows 11"(ARM64, x64 에뮬레이션) VM에서 `x86_64-pc-windows-msvc` 빌드로 한다.
 
-### 5.3 CI (`windows-latest`, 공개 저장소라 무료)
+### 5.3 로컬 게이트
 
-에셋만 바뀐 PR(디자이너 재내보내기)이 임베드 빌드·SVG 허용 요소 검사(§3.2.2)를 건너뛰지 않게 `paths` 에 `'assets/**'` 를 넣는다.
-
-```yaml
-on: { push: { paths: ['windows/**','fixtures/**','assets/**'] }, pull_request: { paths: ['windows/**','fixtures/**','assets/**'] } }
-jobs:
-  build:
-    runs-on: windows-latest
-    strategy: { matrix: { target: [x86_64-pc-windows-msvc, aarch64-pc-windows-msvc] } }
-    defaults: { run: { working-directory: windows } }
-    steps:
-      - uses: actions/checkout@v4
-      - run: rustup target add ${{ matrix.target }}
-      - run: cargo test -p edutools-core --locked
-      - run: cargo build --release --locked --target ${{ matrix.target }}
-      - run: target/x86_64-pc-windows-msvc/release/edutools.exe --selftest
-        if: matrix.target == 'x86_64-pc-windows-msvc'
-      - uses: actions/upload-artifact@v4
-        with: { name: edutools-${{ matrix.target }}, path: windows/target/${{ matrix.target }}/release/edutools.exe }
-```
+**GitHub Actions를 쓰지 않는다(사용자 지시).** 로컬 게이트는 맥의 `cargo test -p edutools-core`와 Parallels VM의 `x86_64-pc-windows-msvc` 빌드·`edutools.exe --selftest`다.
 
 ### 5.4 macOS 쪽에서 받아야 할 것
 
 | 항목 | 누가 | 언제 |
 | --- | --- | --- |
-| `fixtures/pansetting/macos-v1.pansetting`(**현재 main 으로 내보낸 기본값** — §2.2) + `Tests/UnitTests/SettingsTests.swift:9` `UnitTests.SettingsTests/jsonRoundTripPreservesValues()`, `:27` `UnitTests.SettingsTests/decodingIgnoresUnknownKeysAndDefaultsMissingValues()`, `:54` `UnitTests.SettingsTests/exportIncludesPresetsAndExcludesComputerSpecificValues()`가 이 파일과 `windows-v1` 을 읽게 입력만 수정 | macOS 쪽 | W2 착수 전 |
-| `fixtures/shortcuts-default.json`(§2.2 형식, 정의 58개, `M`·`annotation.pass-through\|annotation`=`U`, 기존 6개 + `display.preset.1…8` = unbound 14개, 슬롯 override 케이스 1개) | macOS 쪽(카탈로그에서 생성) | W2 착수 전 |
+| `fixtures/pansetting/macos-v1.pansetting`(**현재 main 으로 내보낸 기본값** — §2.2) + `Tests/UnitTests/SettingsTests.swift:56` `UnitTests.SettingsTests/exportIncludesPresetsAndExcludesComputerSpecificValues()`의 픽스처 입력 | macOS 쪽 | 완료(#99) |
+| `fixtures/shortcuts-default.json`(§2.2 형식, 정의 58개, `M`·`annotation.pass-through\|annotation`=`U`, 기존 6개 + `display.preset.1…8` = unbound 14개). 슬롯 override 케이스는 W2 `shortcut.rs`에서 후속 | macOS 쪽(카탈로그에서 생성) | 완료(#99) |
 | `docs/design.md` 낡은 문장 3곳(:14 "Windows 10/11", :262 미디어 키 일시정지, :368 Fluent 아이콘)을 확정 결정(#1·#7·아이콘 세트)에 맞게 수정 | macOS 쪽 | W1 착수 전(§7 #19) |
 | 앱 아이콘 PNG(16·20·24·32·40·48·64·256) + 묶은 `.ico` → `assets/app-icon/`(지금은 `build.sh` 가 코드로만 그림) | macOS 쪽 | W1 착수 전(없으면 임시 아이콘) |
 | `symbol-map.tsv` 에 `eraser.area-shape`·`palette.radial.toggle` 연결 또는 폴백 확정, `annotation.pass-through` 디자인·`docs/icons.md` 행 복구 | macOS 쪽 | W4a 착수 전 |
@@ -575,7 +560,7 @@ macOS 쪽 선행 작업은 §5.4.
 | # | 결정 | 상태·권장 |
 | --- | --- | --- |
 | 1 | 최소 Windows: 11 만 / 10 22H2 포함 | ✅ **결정(2026-10-28): Windows 11 부터.** 매니페스트 `supportedOS` 와 설치기에서 Win11 미만 거부 |
-| 2 | CPU: x64 만 / x64+ARM64 | 🔶 둘 다(CI 행렬 한 줄, Snapdragon·VM 대응) |
+| 2 | CPU: x64 만 / x64+ARM64 | ✅ **결정(2026-10-30): x64 만.** ARM64 빌드는 제외한다. 개발 VM은 Parallels "Windows 11" ARM64이고 x64 에뮬레이션으로 실행한다 |
 | 3 | 실기 장비: 펜 기종·모니터 2대·프로젝터 | ✅ **결정(2026-10-28): 펜 + 노트북 내장 화면·외부 모니터·빔 프로젝터(배율이 서로 다름).** 펜은 삼성 갤럭시 탭(S펜) 검토 중 — Android 기기라 Windows 펜 입력이 되려면 화면 확장 앱(예: Samsung Second Screen, SuperDisplay)이 Windows Ink 펜으로 압력을 넘겨야 한다 [확인 필요: W1 ③ 에서 `WM_POINTER` 펜 타입·압력 수신 여부] |
 | 4 | Windows 쪽 개발 주체(사람 / AI 도구)와 PR 검수자 | 🔶 **부분 결정(2026-10-28): 개발은 별도 Windows PC 에서.** 주체·PR 검수자·macOS 쪽 검수 연결 여부는 미정 |
 | 5 | 서명 인증서: OV/EV·보관 방식(토큰/클라우드 HSM)·명의 | ✅ **결정(2026-10-28): 셀프 서명으로 시작**, 실제 배포 시점에 공인 인증서로 교체. 셀프 서명은 인증서를 설치한 PC 에서만 경고가 사라진다(신뢰 루트·신뢰 게시자에 설치). 교체는 서명 단계만 바꾼다 |

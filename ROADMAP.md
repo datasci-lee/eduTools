@@ -72,6 +72,7 @@
 | 5 개선 | 094 팔레트 저장 허용 0.55…0.90을 유지하고 UI·렌더 하한을 0.75로 상향 | #91 |
 | 5 개선 | 097 화면 구성 자동 적용 경로(검증·즉시 복구·항상 idle 복귀) | #94 |
 | 5 개선 | 098 화면 구성 자동 전환(판정 정책·연결 안정화 감시·쿨다운·설정 스위치) | — |
+| 5 개선 | 099 Windows 착수 전 macOS 선행 — `.pansetting`·기본 단축키 픽스처와 x64 개발 결정 반영 | — |
 
 ## 남은 것
 
@@ -81,7 +82,7 @@
 | Developer ID 서명·공증 | 인증서 확보 후 `EDUTOOLS_SIGN_IDENTITY`·`EDUTOOLS_NOTARY_PROFILE` 로 `./build.sh dmg` |
 | 자동 업데이트(Sparkle) | 배포 주소 확정 후 |
 | 펜 태블릿·iPad(Sidecar) 기종 실기 | 필압 최소 굵기 0.05·0.2·1 비교, iPad 위 판서와 압력·Pencil 더블탭 전달 확인 대기 |
-| Windows 버전 | Rust 로 별도 구현(macOS 는 Swift 유지), Windows PC 에서 개발 — 계획·인계서 [`docs/windows-plan.md`](docs/windows-plan.md) |
+| Windows 버전 | 착수 — Rust 로 별도 구현(macOS 는 Swift 유지), 맥에서 core 시험 + Parallels Windows 11 ARM64 VM의 x64 에뮬레이션으로 앱 빌드·실행 — 계획·인계서 [`docs/windows-plan.md`](docs/windows-plan.md) |
 | 화면 구성 프리셋 후속 | 3단계 구현, 실기 확인 대기 |
 | 원형 팔레트 후속 | 펜 질감 |
 | 구조 정리 후속 | 1~6차(#70~#76) 완료. D2·D6·H1·H7 은 코드 재확인 결과 묶어도 줄지 않아 보류 — 투명 패널 설정은 값이 달라 묶으면 매개변수만 늘고, 빌드 스크립트↔Swift 는 상수를 공유할 수 없고, 외부 식별자는 모아도 그대로다 |
