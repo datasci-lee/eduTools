@@ -611,7 +611,16 @@ mod windows_impl {
                 WM_NCHITTEST => return LRESULT(HTCLIENT as isize),
                 WM_POINTERACTIVATE => return LRESULT(PA_NOACTIVATE as isize),
                 WM_MOUSEACTIVATE => return LRESULT(MA_NOACTIVATE as isize),
-                WM_SETTINGCHANGE | WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
+                WM_SETTINGCHANGE => {
+                    if let Err(error) = apply_window_frame(hwnd, state) {
+                        state
+                            .logger
+                            .event(&format!("원형 팔레트 작업 영역 변경 반영 실패: {error}"));
+                    }
+                    post_owner(state, WM_APP_RADIAL_REDRAW);
+                    return LRESULT(0);
+                }
+                WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
                     post_owner(state, WM_APP_RADIAL_REDRAW);
                     return LRESULT(0);
                 }
@@ -814,15 +823,20 @@ mod windows_impl {
     }
 
     fn clamped_center(center: POINT, diameter: i32, monitor: &Monitor) -> POINT {
-        let radius = diameter / 2;
+        let leading_radius = diameter / 2;
+        let trailing_radius = diameter - leading_radius;
         let work = monitor.work_rect;
         let x = if work.width() >= diameter {
-            center.x.clamp(work.left + radius, work.right - radius)
+            center
+                .x
+                .clamp(work.left + leading_radius, work.right - trailing_radius)
         } else {
             work.left + work.width() / 2
         };
         let y = if work.height() >= diameter {
-            center.y.clamp(work.top + radius, work.bottom - radius)
+            center
+                .y
+                .clamp(work.top + leading_radius, work.bottom - trailing_radius)
         } else {
             work.top + work.height() / 2
         };
