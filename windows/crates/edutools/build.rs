@@ -99,10 +99,15 @@ fn main() {
 
 fn generate_icon_table(repository_root: &Path, manifest_dir: &Path) {
     let icons_dir = repository_root.join("assets/icons");
+    let attr_dir = repository_root.join("assets/symbols/attr");
+    let attr_svg_dir = attr_dir.join("svg");
+    let attr_manifest_path = attr_dir.join("manifest.json");
     let symbol_map_path = repository_root.join("assets/symbol-map.tsv");
     let os_map_path = repository_root.join("windows/icon-os.tsv");
     let validator_path = manifest_dir.join("src/icon_assets.rs");
     println!("cargo:rerun-if-changed={}", icons_dir.display());
+    println!("cargo:rerun-if-changed={}", attr_manifest_path.display());
+    println!("cargo:rerun-if-changed={}", attr_svg_dir.display());
     println!("cargo:rerun-if-changed={}", symbol_map_path.display());
     println!("cargo:rerun-if-changed={}", os_map_path.display());
     println!("cargo:rerun-if-changed={}", validator_path.display());
@@ -188,6 +193,53 @@ fn generate_icon_table(repository_root: &Path, manifest_dir: &Path) {
         );
     }
 
+    let attr_manifest = fs::read_to_string(&attr_manifest_path).unwrap_or_else(|error| {
+        panic!(
+            "{} 읽기에 실패했습니다: {error}",
+            attr_manifest_path.display()
+        )
+    });
+    let (referenced_attr_layers, attr_tool_count) = attr_manifest_inventory(&attr_manifest)
+        .unwrap_or_else(|error| panic!("{}: {error}", attr_manifest_path.display()));
+    let mut attr_icons = fs::read_dir(&attr_svg_dir)
+        .unwrap_or_else(|error| panic!("{} 읽기에 실패했습니다: {error}", attr_svg_dir.display()))
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|value| value == "svg"))
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    attr_icons.sort();
+    let attr_icon_names = attr_icons
+        .iter()
+        .map(|path| {
+            path.file_stem()
+                .and_then(|value| value.to_str())
+                .expect("속성 아이콘 파일명은 UTF-8이어야 합니다")
+                .to_owned()
+        })
+        .collect::<BTreeSet<_>>();
+    let missing = referenced_attr_layers
+        .difference(&attr_icon_names)
+        .cloned()
+        .collect::<Vec<_>>();
+    let unused = attr_icon_names
+        .difference(&referenced_attr_layers)
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(
+        missing.is_empty() && unused.is_empty(),
+        "속성 아이콘 manifest/파일 불일치: missing=[{}], unused=[{}]",
+        missing.join(", "),
+        unused.join(", ")
+    );
+    for path in &attr_icons {
+        validate_svg_file(path);
+    }
+    println!(
+        "cargo:warning=속성 아이콘 임베드 검증: 레이어 파일 {}개, 도구 {}개",
+        attr_icons.len(),
+        attr_tool_count
+    );
+
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is required"));
     let output_path = out_dir.join("icons_embed.rs");
     let mut output =
@@ -214,9 +266,213 @@ pub(crate) static OS_ICON_OVERRIDES: &[(&str, &str)] = &[\n",
     for (app_key, source) in &os_overrides {
         output.push_str(&format!("    ({app_key:?}, {source:?}),\n"));
     }
-    output.push_str("];\n");
+    output.push_str("];\npub(crate) static EMBEDDED_ATTR_ICONS: &[(&str, &[u8], &str)] = &[\n");
+    for path in attr_icons {
+        let key = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .expect("속성 아이콘 파일명은 UTF-8이어야 합니다");
+        let absolute = fs::canonicalize(&path)
+            .unwrap_or_else(|error| panic!("{} 경로 확인 실패: {error}", path.display()));
+        output.push_str(&format!(
+            "    ({key:?}, include_bytes!({path:?}), {source:?}),\n",
+            path = absolute.to_string_lossy(),
+            source = path.display().to_string(),
+        ));
+    }
+    let absolute_manifest = fs::canonicalize(&attr_manifest_path)
+        .unwrap_or_else(|error| panic!("{} 경로 확인 실패: {error}", attr_manifest_path.display()));
+    output.push_str(&format!(
+        "];\npub(crate) static ATTR_ICON_MANIFEST: &str = include_str!({:?});\n",
+        absolute_manifest.to_string_lossy()
+    ));
     fs::write(&output_path, output)
         .unwrap_or_else(|error| panic!("{} 생성에 실패했습니다: {error}", output_path.display()));
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum JsonToken {
+    String(String),
+    LeftBrace,
+    RightBrace,
+    LeftBracket,
+    RightBracket,
+    Colon,
+    Comma,
+}
+
+fn attr_manifest_inventory(source: &str) -> Result<(BTreeSet<String>, usize), String> {
+    let tokens = json_tokens(source)?;
+    let tools_key = tokens
+        .windows(3)
+        .position(|window| {
+            matches!(&window[0], JsonToken::String(value) if value == "tools")
+                && window[1] == JsonToken::Colon
+                && window[2] == JsonToken::LeftBrace
+        })
+        .ok_or_else(|| "tools 객체가 없습니다".to_owned())?;
+    let tools_start = tools_key + 2;
+    let tools_end = matching_token(&tokens, tools_start)?;
+    let mut layers = BTreeSet::new();
+    let mut tool_count = 0usize;
+    let mut cursor = tools_start + 1;
+    while cursor < tools_end {
+        if tokens[cursor] == JsonToken::Comma {
+            cursor += 1;
+            continue;
+        }
+        let JsonToken::String(tool_key) = &tokens[cursor] else {
+            return Err(format!(
+                "tools 객체의 키 위치가 잘못되었습니다: token {cursor}"
+            ));
+        };
+        if !tool_key.starts_with("tool.")
+            || tokens.get(cursor + 1) != Some(&JsonToken::Colon)
+            || tokens.get(cursor + 2) != Some(&JsonToken::LeftBrace)
+        {
+            return Err(format!(
+                "속성 아이콘 도구 정의가 잘못되었습니다: {tool_key}"
+            ));
+        }
+        let tool_start = cursor + 2;
+        let tool_end = matching_token(&tokens, tool_start)?;
+        tool_count += 1;
+        let layers_key = (tool_start + 1..tool_end)
+            .find(|index| {
+                matches!(&tokens[*index], JsonToken::String(value) if value == "layers")
+                    && tokens.get(*index + 1) == Some(&JsonToken::Colon)
+                    && tokens.get(*index + 2) == Some(&JsonToken::LeftBracket)
+            })
+            .ok_or_else(|| format!("{tool_key}: layers 배열이 없습니다"))?;
+        let layers_start = layers_key + 2;
+        let layers_end = matching_token(&tokens, layers_start)?;
+        let mut layer_cursor = layers_start + 1;
+        while layer_cursor < layers_end {
+            if tokens[layer_cursor] == JsonToken::Comma {
+                layer_cursor += 1;
+                continue;
+            }
+            if tokens[layer_cursor] != JsonToken::LeftBracket {
+                return Err(format!("{tool_key}: layer 행이 배열이 아닙니다"));
+            }
+            let row_end = matching_token(&tokens, layer_cursor)?;
+            let template = match tokens.get(layer_cursor + 1) {
+                Some(JsonToken::String(value)) => value,
+                _ => return Err(format!("{tool_key}: layer 이름이 문자열이 아닙니다")),
+            };
+            for name in expanded_attr_layer_names(template)? {
+                layers.insert(name);
+            }
+            layer_cursor = row_end + 1;
+        }
+        cursor = tool_end + 1;
+    }
+    if tool_count == 0 || layers.is_empty() {
+        return Err("도구 또는 레이어가 비어 있습니다".to_owned());
+    }
+    Ok((layers, tool_count))
+}
+
+fn expanded_attr_layer_names(template: &str) -> Result<Vec<String>, String> {
+    let widths: &[&str] = if template.contains("{width}") {
+        &["1", "2", "3", "4"]
+    } else {
+        &[""]
+    };
+    let heads: &[&str] = if template.contains("{heads}") {
+        &["single", "double"]
+    } else {
+        &[""]
+    };
+    let mut names = Vec::new();
+    for width in widths {
+        for head in heads {
+            let name = template.replace("{width}", width).replace("{heads}", head);
+            if name.contains('{') || name.contains('}') {
+                return Err(format!("지원하지 않는 layer 자리표시자: {template}"));
+            }
+            names.push(name);
+        }
+    }
+    Ok(names)
+}
+
+fn matching_token(tokens: &[JsonToken], start: usize) -> Result<usize, String> {
+    let (open, close) = match tokens.get(start) {
+        Some(JsonToken::LeftBrace) => (JsonToken::LeftBrace, JsonToken::RightBrace),
+        Some(JsonToken::LeftBracket) => (JsonToken::LeftBracket, JsonToken::RightBracket),
+        _ => return Err(format!("token {start}: 여는 구분자가 아닙니다")),
+    };
+    let mut depth = 0usize;
+    for (index, token) in tokens.iter().enumerate().skip(start) {
+        if *token == open {
+            depth += 1;
+        } else if *token == close {
+            depth = depth
+                .checked_sub(1)
+                .ok_or_else(|| format!("token {index}: 닫는 구분자가 너무 많습니다"))?;
+            if depth == 0 {
+                return Ok(index);
+            }
+        }
+    }
+    Err(format!("token {start}: 닫는 구분자가 없습니다"))
+}
+
+fn json_tokens(source: &str) -> Result<Vec<JsonToken>, String> {
+    let bytes = source.as_bytes();
+    let mut tokens = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'{' => tokens.push(JsonToken::LeftBrace),
+            b'}' => tokens.push(JsonToken::RightBrace),
+            b'[' => tokens.push(JsonToken::LeftBracket),
+            b']' => tokens.push(JsonToken::RightBracket),
+            b':' => tokens.push(JsonToken::Colon),
+            b',' => tokens.push(JsonToken::Comma),
+            b'"' => {
+                cursor += 1;
+                let mut value = String::new();
+                while cursor < bytes.len() && bytes[cursor] != b'"' {
+                    if bytes[cursor] == b'\\' {
+                        cursor += 1;
+                        let escaped = *bytes
+                            .get(cursor)
+                            .ok_or_else(|| "문자열 escape가 닫히지 않았습니다".to_owned())?;
+                        value.push(match escaped {
+                            b'"' => '"',
+                            b'\\' => '\\',
+                            b'/' => '/',
+                            b'b' => '\u{0008}',
+                            b'f' => '\u{000c}',
+                            b'n' => '\n',
+                            b'r' => '\r',
+                            b't' => '\t',
+                            _ => return Err("지원하지 않는 JSON 문자열 escape입니다".to_owned()),
+                        });
+                    } else {
+                        let rest = std::str::from_utf8(&bytes[cursor..])
+                            .map_err(|error| format!("manifest가 UTF-8이 아닙니다: {error}"))?;
+                        let character = rest
+                            .chars()
+                            .next()
+                            .ok_or_else(|| "문자열이 닫히지 않았습니다".to_owned())?;
+                        value.push(character);
+                        cursor += character.len_utf8() - 1;
+                    }
+                    cursor += 1;
+                }
+                if cursor >= bytes.len() {
+                    return Err("문자열이 닫히지 않았습니다".to_owned());
+                }
+                tokens.push(JsonToken::String(value));
+            }
+            _ => {}
+        }
+        cursor += 1;
+    }
+    Ok(tokens)
 }
 
 fn read_tsv(path: &Path) -> Vec<(String, String)> {

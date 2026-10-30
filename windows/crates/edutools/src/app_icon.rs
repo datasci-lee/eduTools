@@ -1,7 +1,9 @@
+use crate::attr_icon_input::AttrIconVisualState;
 use crate::log::Logger;
 use crate::render::{count_nonzero_alpha, read_bitmap_bgra, GraphicsDevice};
+use edutools_core::attr_icon::{AttrIconColor, AttrIconConfiguration, AttrIconPaint, AttrIconPure};
 use edutools_core::shortcut::ShortcutCatalog;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::mem::size_of;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
@@ -97,6 +99,13 @@ struct EmbeddedAsset {
 }
 
 #[derive(Clone, Copy)]
+struct EmbeddedAttrAsset {
+    key: &'static str,
+    bytes: &'static [u8],
+    source: &'static str,
+}
+
+#[derive(Clone, Copy)]
 struct FallbackGlyph {
     family: &'static str,
     glyph: char,
@@ -122,6 +131,15 @@ struct SvgCacheKey {
     color: Option<u32>,
 }
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct AttrSvgCacheKey {
+    signature: String,
+    key: &'static str,
+    color: u32,
+    dpi: u32,
+    visual_state: AttrIconVisualState,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct TintProbe {
     root_color_pixels: usize,
@@ -133,7 +151,9 @@ pub struct AppIconRenderer {
     context5: ID2D1DeviceContext5,
     dwrite: IDWriteFactory,
     cache: HashMap<SvgCacheKey, ID2D1SvgDocument>,
+    attr_cache: HashMap<AttrSvgCacheKey, ID2D1SvgDocument>,
     missing: BTreeSet<String>,
+    attr_failures: BTreeSet<String>,
     logged_fallbacks: BTreeSet<String>,
     fluent_available: bool,
     tint_method: SvgTintMethod,
@@ -160,7 +180,9 @@ impl AppIconRenderer {
             context5,
             dwrite,
             cache: HashMap::new(),
+            attr_cache: HashMap::new(),
             missing: BTreeSet::new(),
+            attr_failures: BTreeSet::new(),
             logged_fallbacks: BTreeSet::new(),
             fluent_available,
             tint_method: SvgTintMethod::RootColor,
@@ -254,6 +276,97 @@ impl AppIconRenderer {
             ));
         }
         self.draw_text_fallback(rect, tint, '?', false)
+    }
+
+    pub fn draw_attr_icon(
+        &mut self,
+        configuration: &AttrIconConfiguration,
+        ui_color: IconTint,
+        background_color: IconTint,
+        rect: D2D_RECT_F,
+        dpi: u32,
+        visual_state: AttrIconVisualState,
+    ) -> Result<()> {
+        let ui = attr_color(ui_color);
+        let background = attr_color(background_color);
+        let layers = match AttrIconPure::layers(ATTR_ICON_MANIFEST, configuration, ui, background) {
+            Ok(layers) => layers,
+            Err(error) => {
+                self.log_attr_failure_once(
+                    format!("layers.{}", configuration.tool_key),
+                    format!(
+                        "속성 아이콘 레이어 해석 실패 tool={}: {error}; 일반 아이콘 사용",
+                        configuration.tool_key
+                    ),
+                );
+                return self.draw(&configuration.tool_key, rect, ui_color);
+            }
+        };
+        let visible_layers = layers
+            .iter()
+            .filter(|layer| !visual_state.is_high_contrast || layer.paint != AttrIconPaint::Attr)
+            .collect::<Vec<_>>();
+        let layer_signature = format!(
+            "{}|{}|bg={:08X}",
+            configuration.tool_key,
+            visible_layers
+                .iter()
+                .map(|layer| layer.name.as_str())
+                .collect::<Vec<_>>()
+                .join(","),
+            tint_rgba(background_color),
+        );
+        let halo_offset = 0.5 * dpi.max(1) as f32 / 96.0;
+        let draw_result = (|| -> Result<()> {
+            for layer in visible_layers {
+                let asset = embedded_attr_asset(&layer.name).ok_or_else(|| {
+                    Error::new(
+                        E_FAIL,
+                        format!("embedded attr SVG is missing: {}", layer.name),
+                    )
+                })?;
+                if let Some(halo) = layer.halo {
+                    let tint = icon_tint(halo);
+                    for (x, y) in [
+                        (-halo_offset, 0.0),
+                        (halo_offset, 0.0),
+                        (0.0, -halo_offset),
+                        (0.0, halo_offset),
+                    ] {
+                        self.draw_attr_svg(
+                            asset,
+                            offset_rect(rect, x, y),
+                            tint,
+                            &layer_signature,
+                            dpi,
+                            visual_state,
+                        )?;
+                    }
+                }
+                let tint = match layer.paint {
+                    AttrIconPaint::Ui => ui_color,
+                    AttrIconPaint::Attr => icon_tint(
+                        configuration
+                            .color
+                            .expect("core requires color for every attr-painted layer"),
+                    ),
+                };
+                self.draw_attr_svg(asset, rect, tint, &layer_signature, dpi, visual_state)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = draw_result {
+            self.handle_possible_recreate_target(&error);
+            self.log_attr_failure_once(
+                format!("draw.{}", configuration.tool_key),
+                format!(
+                    "속성 아이콘 SVG 파싱/그리기 실패 tool={}: {error}; 일반 아이콘 사용",
+                    configuration.tool_key
+                ),
+            );
+            return self.draw(&configuration.tool_key, rect, ui_color);
+        }
+        Ok(())
     }
 
     pub fn missing_keys(&self) -> Vec<String> {
@@ -370,6 +483,92 @@ impl AppIconRenderer {
         Ok(())
     }
 
+    fn draw_attr_svg(
+        &mut self,
+        asset: EmbeddedAttrAsset,
+        rect: D2D_RECT_F,
+        tint: IconTint,
+        signature: &str,
+        dpi: u32,
+        visual_state: AttrIconVisualState,
+    ) -> Result<()> {
+        let rgb = tint_rgb(tint);
+        let cache_key = AttrSvgCacheKey {
+            signature: signature.to_owned(),
+            key: asset.key,
+            color: tint_rgba(tint),
+            dpi,
+            visual_state,
+        };
+        if !self.attr_cache.contains_key(&cache_key) {
+            let replaced;
+            let svg = match self.tint_method {
+                SvgTintMethod::RootColor => asset.bytes,
+                SvgTintMethod::ReplacedCurrentColor => {
+                    let source = std::str::from_utf8(asset.bytes).map_err(|error| {
+                        Error::new(
+                            E_FAIL,
+                            format!("{} SVG is not UTF-8: {error}", asset.source),
+                        )
+                    })?;
+                    replaced = source.replace("currentColor", &color_hex(rgb));
+                    replaced.as_bytes()
+                }
+            };
+            let stream = unsafe { SHCreateMemStream(Some(svg)) }
+                .ok_or_else(|| Error::new(E_FAIL, "SHCreateMemStream returned null"))?;
+            let document = unsafe {
+                self.context5.CreateSvgDocument(
+                    &stream,
+                    D2D_SIZE_F {
+                        width: 24.0,
+                        height: 24.0,
+                    },
+                )
+            }?;
+            self.attr_cache.insert(cache_key.clone(), document);
+        }
+        let document = self
+            .attr_cache
+            .get(&cache_key)
+            .expect("attr SVG document was inserted above")
+            .clone();
+        let root = unsafe { document.GetRoot() }?;
+        if self.tint_method == SvgTintMethod::RootColor {
+            let color = wide(&color_hex(rgb));
+            unsafe {
+                root.SetAttributeValue3(
+                    w!("color"),
+                    D2D1_SVG_ATTRIBUTE_STRING_TYPE_SVG,
+                    PCWSTR(color.as_ptr()),
+                )?;
+            }
+        }
+        let opacity = wide(&format!("{:.4}", tint.color.a.clamp(0.0, 1.0)));
+        unsafe {
+            root.SetAttributeValue3(
+                w!("opacity"),
+                D2D1_SVG_ATTRIBUTE_STRING_TYPE_SVG,
+                PCWSTR(opacity.as_ptr()),
+            )?;
+        }
+        let transform = icon_transform(&self.context, rect);
+        let mut previous = D2D1_BRUSH_PROPERTIES::default();
+        unsafe {
+            self.context.GetTransform(&mut previous.transform);
+            self.context.SetTransform(&transform.transform);
+            self.context5.DrawSvgDocument(&document);
+            self.context.SetTransform(&previous.transform);
+        }
+        Ok(())
+    }
+
+    fn log_attr_failure_once(&mut self, key: String, message: String) {
+        if self.attr_failures.insert(key) {
+            self.logger.event(&format!("아이콘 warn: {message}"));
+        }
+    }
+
     fn draw_text_fallback(
         &self,
         rect: D2D_RECT_F,
@@ -482,9 +681,97 @@ impl AppIconRenderer {
         count_nonzero_alpha(&self.context, &bitmap)
     }
 
+    fn render_attr_asset_alpha_count(&mut self, asset: EmbeddedAttrAsset) -> Result<usize> {
+        let bitmap = create_target_bitmap(&self.context, 24, 24, 96.0, 96.0)?;
+        let target: ID2D1Image = bitmap.cast()?;
+        let previous_target = unsafe { self.context.GetTarget() }?;
+        let previous_blend = unsafe { self.context.GetPrimitiveBlend() };
+        unsafe {
+            self.context.SetTarget(&target);
+            self.context
+                .SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_SOURCE_OVER);
+            self.context.BeginDraw();
+            self.context.Clear(Some(&D2D1_COLOR_F::default()));
+        }
+        let visual_state = AttrIconVisualState {
+            is_selected: false,
+            is_enabled: true,
+            is_hovered: false,
+            is_pass_through: false,
+            is_high_contrast: false,
+        };
+        let draw_result = self.draw_attr_svg(
+            asset,
+            D2D_RECT_F {
+                left: 0.0,
+                top: 0.0,
+                right: 24.0,
+                bottom: 24.0,
+            },
+            IconTint::rgba(1.0, 1.0, 1.0, 1.0),
+            &format!("selftest|{}", asset.key),
+            96,
+            visual_state,
+        );
+        let end_result = unsafe { self.context.EndDraw(None, None) };
+        unsafe {
+            self.context.SetTarget(&previous_target);
+            self.context.SetPrimitiveBlend(previous_blend);
+        }
+        draw_result?;
+        self.handle_render_result(end_result)?;
+        count_nonzero_alpha(&self.context, &bitmap)
+    }
+
+    fn render_attr_icon_alpha_count(
+        &mut self,
+        configuration: &AttrIconConfiguration,
+        high_contrast: bool,
+    ) -> Result<usize> {
+        let bitmap = create_target_bitmap(&self.context, 24, 24, 96.0, 96.0)?;
+        let target: ID2D1Image = bitmap.cast()?;
+        let previous_target = unsafe { self.context.GetTarget() }?;
+        let previous_blend = unsafe { self.context.GetPrimitiveBlend() };
+        unsafe {
+            self.context.SetTarget(&target);
+            self.context
+                .SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_SOURCE_OVER);
+            self.context.BeginDraw();
+            self.context.Clear(Some(&D2D1_COLOR_F::default()));
+        }
+        let draw_result = self.draw_attr_icon(
+            configuration,
+            IconTint::rgba(1.0, 1.0, 1.0, 1.0),
+            IconTint::rgba(0.07, 0.07, 0.07, 1.0),
+            D2D_RECT_F {
+                left: 0.0,
+                top: 0.0,
+                right: 24.0,
+                bottom: 24.0,
+            },
+            96,
+            AttrIconVisualState {
+                is_selected: false,
+                is_enabled: true,
+                is_hovered: false,
+                is_pass_through: false,
+                is_high_contrast: high_contrast,
+            },
+        );
+        let end_result = unsafe { self.context.EndDraw(None, None) };
+        unsafe {
+            self.context.SetTarget(&previous_target);
+            self.context.SetPrimitiveBlend(previous_blend);
+        }
+        draw_result?;
+        self.handle_render_result(end_result)?;
+        count_nonzero_alpha(&self.context, &bitmap)
+    }
+
     fn handle_possible_recreate_target(&mut self, error: &Error) {
         if error.code() == D2DERR_RECREATE_TARGET {
             self.cache.clear();
+            self.attr_cache.clear();
             self.logger
                 .event("아이콘 info: D2DERR_RECREATE_TARGET 수신; SVG 캐시 비움");
         }
@@ -527,6 +814,22 @@ pub fn run_selftest_icons(output_directory: &Path, logger: &Logger) -> Result<()
     result
 }
 
+pub fn run_selftest_attr_icons(logger: &Logger) -> Result<()> {
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()? };
+    let result = (|| -> Result<()> {
+        let graphics = GraphicsDevice::new()?;
+        let context = graphics.create_d2d_context()?;
+        unsafe { context.SetDpi(96.0, 96.0) };
+        let bootstrap = create_target_bitmap(&context, 24, 24, 96.0, 96.0)?;
+        let bootstrap_image: ID2D1Image = bootstrap.cast()?;
+        unsafe { context.SetTarget(&bootstrap_image) };
+        let mut renderer = AppIconRenderer::new(context, logger.clone())?;
+        verify_attr_icons(&mut renderer)
+    })();
+    unsafe { CoUninitialize() };
+    result
+}
+
 fn run_selftest_icons_initialized(output_directory: &Path, logger: &Logger) -> Result<()> {
     let graphics = GraphicsDevice::new()?;
     let factory: IWICImagingFactory =
@@ -558,6 +861,8 @@ fn run_selftest_icons_initialized(output_directory: &Path, logger: &Logger) -> R
         ));
     }
 
+    verify_attr_icons(&mut renderer)?;
+
     for dpi in [96u32, 144, 240] {
         render_icon_sheet(
             &context,
@@ -582,6 +887,62 @@ fn run_selftest_icons_initialized(output_directory: &Path, logger: &Logger) -> R
             fallback.label
         );
     }
+    Ok(())
+}
+
+fn verify_attr_icons(renderer: &mut AppIconRenderer) -> Result<()> {
+    let mut empty_attr = Vec::new();
+    for key in embedded_attr_keys() {
+        let asset = embedded_attr_asset(key).expect("embedded attr key must resolve");
+        let pixels = renderer.render_attr_asset_alpha_count(asset)?;
+        println!("attr-icon {key} px={pixels}");
+        if pixels == 0 {
+            empty_attr.push(key);
+        }
+    }
+    if !empty_attr.is_empty() {
+        return Err(Error::new(
+            E_FAIL,
+            format!(
+                "attr SVG alpha>0 pixel count is zero: {}",
+                empty_attr.join(", ")
+            ),
+        ));
+    }
+
+    let pen = |width: &str| AttrIconConfiguration {
+        tool_key: "tool.pen".to_owned(),
+        attributes: BTreeMap::from([("width".to_owned(), width.to_owned())]),
+        color: Some(AttrIconColor::new(1.0, 0.231, 0.188, 1.0)),
+    };
+    let pen_thin_pixels = renderer.render_attr_icon_alpha_count(&pen("1"), false)?;
+    let pen_thick_pixels = renderer.render_attr_icon_alpha_count(&pen("4"), false)?;
+    println!("attr-icon pen width=1 px={pen_thin_pixels}, width=4 px={pen_thick_pixels}");
+    if pen_thin_pixels == pen_thick_pixels {
+        return Err(Error::new(
+            E_FAIL,
+            "attr pen width 1 and 4 rendered the same alpha pixel count",
+        ));
+    }
+    let arrow = AttrIconConfiguration {
+        tool_key: "tool.arrow".to_owned(),
+        attributes: BTreeMap::from([
+            ("heads".to_owned(), "single".to_owned()),
+            ("width".to_owned(), "1".to_owned()),
+        ]),
+        color: Some(AttrIconColor::new(1.0, 0.231, 0.188, 1.0)),
+    };
+    let high_contrast_attr_pixels = renderer.render_attr_icon_alpha_count(&arrow, true)?;
+    println!("attr-icon high-contrast attr px={high_contrast_attr_pixels}");
+    if high_contrast_attr_pixels != 0 {
+        return Err(Error::new(
+            E_FAIL,
+            format!(
+                "high-contrast attr layer pixel count must be zero, got {high_contrast_attr_pixels}"
+            ),
+        ));
+    }
+
     Ok(())
 }
 
@@ -796,6 +1157,17 @@ fn embedded_asset(key: &str) -> Option<EmbeddedAsset> {
         })
 }
 
+fn embedded_attr_keys() -> impl Iterator<Item = &'static str> {
+    EMBEDDED_ATTR_ICONS.iter().map(|(key, _, _)| *key)
+}
+
+fn embedded_attr_asset(key: &str) -> Option<EmbeddedAttrAsset> {
+    EMBEDDED_ATTR_ICONS
+        .iter()
+        .find(|(candidate, _, _)| *candidate == key)
+        .map(|(key, bytes, source)| EmbeddedAttrAsset { key, bytes, source })
+}
+
 fn fallback_glyph(key: &str) -> Option<FallbackGlyph> {
     let (glyph, label) = match key {
         "annotation.pass-through" => ('\u{E7C9}', "pass-through"),
@@ -868,6 +1240,37 @@ fn tint_rgb(tint: IconTint) -> u32 {
     (u32::from(channel(tint.color.r)) << 16)
         | (u32::from(channel(tint.color.g)) << 8)
         | u32::from(channel(tint.color.b))
+}
+
+fn tint_rgba(tint: IconTint) -> u32 {
+    (tint_rgb(tint) << 8) | u32::from(channel(tint.color.a))
+}
+
+fn attr_color(tint: IconTint) -> AttrIconColor {
+    AttrIconColor::new(
+        f64::from(tint.color.r),
+        f64::from(tint.color.g),
+        f64::from(tint.color.b),
+        f64::from(tint.color.a),
+    )
+}
+
+pub fn icon_tint(color: AttrIconColor) -> IconTint {
+    IconTint::rgba(
+        color.red as f32,
+        color.green as f32,
+        color.blue as f32,
+        color.alpha as f32,
+    )
+}
+
+fn offset_rect(rect: D2D_RECT_F, x: f32, y: f32) -> D2D_RECT_F {
+    D2D_RECT_F {
+        left: rect.left + x,
+        top: rect.top + y,
+        right: rect.right + x,
+        bottom: rect.bottom + y,
+    }
 }
 
 fn color_hex(rgb: u32) -> String {

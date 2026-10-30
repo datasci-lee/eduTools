@@ -256,7 +256,11 @@ fn pixels(dip: f64, scale: f64) -> i32 {
 #[cfg(windows)]
 mod windows_impl {
     use super::{Orientation, PaletteItemId, PaletteLayout, PixelRect};
-    use crate::app_icon::{high_contrast, AppIconRenderer, IconTint};
+    use crate::app_icon::{high_contrast, icon_tint as attr_icon_tint, AppIconRenderer, IconTint};
+    use crate::attr_icon_input::{
+        configuration_for_tool, estimated_background, AttrIconSurface, AttrIconVisualState,
+        SystemAppearance,
+    };
     use crate::log::Logger;
     use crate::monitor::{enumerate_monitors, monitor_at_point, Monitor};
     use crate::render::{
@@ -264,6 +268,7 @@ mod windows_impl {
         GraphicsDevice,
     };
     use crate::z_bands::{raise_band_order, Band, BandRegistration};
+    use edutools_core::attr_icon::AttrIconColor;
     use edutools_core::board::BoardKind;
     use edutools_core::ink::InkTool;
     use edutools_core::radial::RadialPaletteArcStyle;
@@ -278,10 +283,12 @@ mod windows_impl {
     use edutools_core::state::AppState;
     use std::ffi::c_void;
     use std::fs;
+    use std::mem::size_of;
     use std::path::{Path, PathBuf};
     use windows::core::{w, Error, Interface, Result};
     use windows::Win32::Foundation::{
-        ERROR_CLASS_ALREADY_EXISTS, E_FAIL, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
+        ERROR_CLASS_ALREADY_EXISTS, ERROR_SUCCESS, E_FAIL, HINSTANCE, HWND, LPARAM, LRESULT, POINT,
+        RECT, WPARAM,
     };
     use windows::Win32::Graphics::Direct2D::Common::{
         D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_U,
@@ -305,6 +312,7 @@ mod windows_impl {
         GetSysColor, ScreenToClient, COLOR_GRAYTEXT, COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT,
         COLOR_WINDOW, COLOR_WINDOWTEXT,
     };
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
     use windows::Win32::UI::HiDpi::GetDpiForWindow;
     use windows::Win32::UI::Input::Pointer::{
         GetPointerInfo, POINTER_FLAG_INCONTACT, POINTER_FLAG_INRANGE, POINTER_FLAG_SECONDBUTTON,
@@ -988,6 +996,8 @@ mod windows_impl {
         inactive_icon: [f64; 4],
         active_icon: [f64; 4],
         disabled_icon: [f64; 4],
+        appearance: SystemAppearance,
+        is_high_contrast: bool,
     }
 
     impl PaletteRenderer {
@@ -1188,6 +1198,7 @@ mod windows_impl {
                 self.draw_item(
                     item.id,
                     item.rect,
+                    hover == Some(item.id),
                     selected,
                     enabled,
                     state,
@@ -1203,6 +1214,7 @@ mod windows_impl {
             &mut self,
             id: PaletteItemId,
             rect: PixelRect,
+            hovered: bool,
             selected: bool,
             enabled: bool,
             state: &AppState,
@@ -1258,6 +1270,30 @@ mod windows_impl {
             } else {
                 theme.inactive_icon
             };
+            if let Some(configuration) =
+                tool_for_item(id).and_then(|tool| configuration_for_tool(tool, state, settings))
+            {
+                let background = estimated_background(
+                    AttrIconSurface::Linear,
+                    selected,
+                    theme.appearance,
+                    attr_icon_color(theme.active_outline),
+                );
+                return self.icons.draw_attr_icon(
+                    &configuration,
+                    icon_tint(tint),
+                    attr_icon_tint(background),
+                    icon_rect,
+                    self.dpi,
+                    AttrIconVisualState {
+                        is_selected: selected,
+                        is_enabled: enabled,
+                        is_hovered: hovered,
+                        is_pass_through: false,
+                        is_high_contrast: theme.is_high_contrast,
+                    },
+                );
+            }
             self.icons
                 .draw_selected(&definition.id, selected, icon_rect, icon_tint(tint))
         }
@@ -1378,19 +1414,7 @@ mod windows_impl {
     }
 
     fn is_selected(id: PaletteItemId, state: &AppState, settings: &AppSettings) -> bool {
-        let tool = match id {
-            PaletteItemId::ToolPen => Some(InkTool::Pen),
-            PaletteItemId::ToolHighlighter => Some(InkTool::Highlighter),
-            PaletteItemId::ToolLaser => Some(InkTool::Laser),
-            PaletteItemId::ToolEraser => Some(InkTool::Eraser),
-            PaletteItemId::ToolArrow => Some(InkTool::Arrow),
-            PaletteItemId::ToolRectangle => Some(InkTool::Rectangle),
-            PaletteItemId::ToolEllipse => Some(InkTool::Ellipse),
-            PaletteItemId::ToolText => Some(InkTool::Text),
-            PaletteItemId::ToolSelect => Some(InkTool::Select),
-            PaletteItemId::ToolCover => Some(InkTool::Cover),
-            _ => None,
-        };
+        let tool = tool_for_item(id);
         if tool.is_some() {
             return tool == Some(state.current_tool());
         }
@@ -1437,7 +1461,9 @@ mod windows_impl {
     }
 
     fn palette_theme(stored_opacity: f64) -> Result<PaletteTheme> {
-        if high_contrast()? {
+        let appearance = system_appearance();
+        let is_high_contrast = high_contrast()?;
+        if is_high_contrast {
             return Ok(PaletteTheme {
                 surface: system_color(COLOR_WINDOW),
                 border: system_color(COLOR_WINDOWTEXT),
@@ -1447,6 +1473,8 @@ mod windows_impl {
                 inactive_icon: system_color(COLOR_WINDOWTEXT),
                 active_icon: system_color(COLOR_HIGHLIGHTTEXT),
                 disabled_icon: system_color(COLOR_GRAYTEXT),
+                appearance,
+                is_high_contrast,
             });
         }
         let mut disabled = RadialPaletteArcStyle::INACTIVE_ICON;
@@ -1460,7 +1488,50 @@ mod windows_impl {
             inactive_icon: RadialPaletteArcStyle::INACTIVE_ICON,
             active_icon: RadialPaletteArcStyle::ACTIVE_ICON,
             disabled_icon: disabled,
+            appearance,
+            is_high_contrast,
         })
+    }
+
+    fn tool_for_item(id: PaletteItemId) -> Option<InkTool> {
+        match id {
+            PaletteItemId::ToolPen => Some(InkTool::Pen),
+            PaletteItemId::ToolHighlighter => Some(InkTool::Highlighter),
+            PaletteItemId::ToolLaser => Some(InkTool::Laser),
+            PaletteItemId::ToolEraser => Some(InkTool::Eraser),
+            PaletteItemId::ToolArrow => Some(InkTool::Arrow),
+            PaletteItemId::ToolRectangle => Some(InkTool::Rectangle),
+            PaletteItemId::ToolEllipse => Some(InkTool::Ellipse),
+            PaletteItemId::ToolText => Some(InkTool::Text),
+            PaletteItemId::ToolSelect => Some(InkTool::Select),
+            PaletteItemId::ToolCover => Some(InkTool::Cover),
+            _ => None,
+        }
+    }
+
+    fn system_appearance() -> SystemAppearance {
+        let mut value = 0u32;
+        let mut size = u32::try_from(size_of::<u32>()).expect("DWORD size must fit in u32");
+        let status = unsafe {
+            RegGetValueW(
+                HKEY_CURRENT_USER,
+                w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
+                w!("AppsUseLightTheme"),
+                RRF_RT_REG_DWORD,
+                None,
+                Some((&mut value as *mut u32).cast::<c_void>()),
+                Some(&mut size),
+            )
+        };
+        if status == ERROR_SUCCESS && value == 1 {
+            SystemAppearance::Light
+        } else {
+            SystemAppearance::Dark
+        }
+    }
+
+    fn attr_icon_color(value: [f64; 4]) -> AttrIconColor {
+        AttrIconColor::new(value[0], value[1], value[2], value[3])
     }
 
     fn system_color(index: windows::Win32::Graphics::Gdi::SYS_COLOR_INDEX) -> [f64; 4] {

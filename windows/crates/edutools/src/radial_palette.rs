@@ -2,7 +2,11 @@
 
 #[cfg(windows)]
 mod windows_impl {
-    use crate::app_icon::{AppIconRenderer, IconTint};
+    use crate::app_icon::{high_contrast, icon_tint as attr_icon_tint, AppIconRenderer, IconTint};
+    use crate::attr_icon_input::{
+        configuration_for_radial_favorite, configuration_for_radial_tool, estimated_background,
+        AttrIconSurface, AttrIconVisualState, SystemAppearance,
+    };
     use crate::kbhook::{current_modifiers, set_radial_palette_hook_state};
     use crate::log::Logger;
     use crate::monitor::{enumerate_monitors, monitor_at_point, Monitor};
@@ -12,8 +16,9 @@ mod windows_impl {
         GraphicsDevice,
     };
     use crate::z_bands::{raise_band_order, Band, BandRegistration};
+    use edutools_core::attr_icon::{AttrIconColor, AttrIconConfiguration};
     use edutools_core::board::BoardKind;
-    use edutools_core::ink::{InkTool, Point, Rect};
+    use edutools_core::ink::{ArrowStyle, InkTool, Point, Rect};
     use edutools_core::radial::{
         group_definitions, hit_target, layout_cells, next_radial_palette_focus, primary_intent,
         radial_drag_threshold_reached, radial_palette_should_show, radial_tooltip_frame,
@@ -131,6 +136,7 @@ mod windows_impl {
         logger: Logger,
         dpi: u32,
         radial: RadialPaletteState,
+        arrow_style: ArrowStyle,
         hover: Option<String>,
         hover_screen: Option<POINT>,
         keyboard_focus: Option<RadialPaletteFocus>,
@@ -140,6 +146,7 @@ mod windows_impl {
         pending_action: Option<PendingAction>,
         resting_center: POINT,
         last_render: Option<RadialPaletteRenderState>,
+        last_attr_state: Option<(RadialPaletteState, ArrowStyle, bool)>,
         renderer: Option<RadialPaletteRenderer>,
     }
 
@@ -204,6 +211,7 @@ mod windows_impl {
                 logger: logger.clone(),
                 dpi,
                 radial,
+                arrow_style: state.arrow_style(),
                 hover: None,
                 hover_screen: None,
                 keyboard_focus: None,
@@ -213,6 +221,7 @@ mod windows_impl {
                 pending_action: None,
                 resting_center,
                 last_render: None,
+                last_attr_state: None,
                 renderer: None,
             });
             let state_ptr = window_state.as_mut() as *mut RadialPaletteWindowState;
@@ -297,6 +306,7 @@ mod windows_impl {
             reason: &str,
         ) -> Result<()> {
             refresh_radial_state(&mut self.window.state.radial, state, settings, false);
+            self.window.state.arrow_style = state.arrow_style();
             let visibility_reason = if !state.is_annotation_mode_enabled() {
                 "판서 꺼짐"
             } else if !state.is_palette_visible() {
@@ -360,14 +370,28 @@ mod windows_impl {
                 self.window.state.hover.as_deref(),
                 focused,
             );
-            if self.window.state.last_render.as_ref() != Some(&render) {
+            let is_high_contrast = high_contrast()?;
+            let attr_state = (
+                self.window.state.radial.clone(),
+                self.window.state.arrow_style,
+                is_high_contrast,
+            );
+            if self.window.state.last_render.as_ref() != Some(&render)
+                || self.window.state.last_attr_state.as_ref() != Some(&attr_state)
+            {
                 self.window
                     .state
                     .renderer
                     .as_mut()
                     .expect("radial palette renderer exists")
-                    .render(&render)?;
+                    .render(
+                        &render,
+                        &self.window.state.radial,
+                        self.window.state.arrow_style,
+                        is_high_contrast,
+                    )?;
                 self.window.state.last_render = Some(render.clone());
+                self.window.state.last_attr_state = Some(attr_state);
             }
             self.update_hint(&render)
         }
@@ -623,13 +647,18 @@ mod windows_impl {
                 failures.push(format!("radial palette: WS_POPUP 누락 ({actual_style:#x})"));
             }
             refresh_radial_state(&mut self.window.state.radial, state, settings, true);
+            self.window.state.arrow_style = state.arrow_style();
             let renderer = self
                 .window
                 .state
                 .renderer
                 .as_mut()
                 .expect("radial palette renderer exists");
-            match renderer.selftest_pixel_failures(&self.window.state.radial) {
+            match renderer.selftest_pixel_failures(
+                &self.window.state.radial,
+                self.window.state.arrow_style,
+                high_contrast().unwrap_or(false),
+            ) {
                 Ok(pixel_failures) => failures.extend(pixel_failures),
                 Err(error) => failures.push(format!("radial palette: 픽셀 readback 실패: {error}")),
             }
@@ -1396,6 +1425,7 @@ mod windows_impl {
             .expect("radial palette renderer exists")
             .resize(diameter, diameter, dpi)?;
         state.last_render = None;
+        state.last_attr_state = None;
         Ok(())
     }
 
@@ -1729,17 +1759,28 @@ mod windows_impl {
             Ok(())
         }
 
-        fn render(&mut self, state: &RadialPaletteRenderState) -> Result<()> {
+        fn render(
+            &mut self,
+            state: &RadialPaletteRenderState,
+            attr_state: &RadialPaletteState,
+            arrow_style: ArrowStyle,
+            is_high_contrast: bool,
+        ) -> Result<()> {
             let target = self
                 .swap_target
                 .as_ref()
                 .expect("radial palette swap target exists")
                 .clone();
-            self.render_to(&target, state)?;
+            self.render_to(&target, state, attr_state, arrow_style, is_high_contrast)?;
             unsafe { self.swap_chain.Present(1, Default::default()).ok() }
         }
 
-        fn selftest_pixel_failures(&mut self, radial: &RadialPaletteState) -> Result<Vec<String>> {
+        fn selftest_pixel_failures(
+            &mut self,
+            radial: &RadialPaletteState,
+            arrow_style: ArrowStyle,
+            is_high_contrast: bool,
+        ) -> Result<Vec<String>> {
             let saved_width = self.width;
             let saved_height = self.height;
             let saved_dpi = self.dpi;
@@ -1756,6 +1797,9 @@ mod windows_impl {
             self.render_to(
                 &collapsed_bitmap,
                 &render_state(&collapsed, false, None, None),
+                &collapsed,
+                arrow_style,
+                is_high_contrast,
             )?;
             let (collapsed_pixels, pitch) = read_bitmap_bgra(&self.context, &collapsed_bitmap)?;
             let alpha_at = |x: u32, y: u32| -> u8 {
@@ -1771,6 +1815,9 @@ mod windows_impl {
             self.render_to(
                 &collapsed_bitmap,
                 &render_state(&collapsed, true, None, None),
+                &collapsed,
+                arrow_style,
+                is_high_contrast,
             )?;
             let (key_cap_pixels, key_cap_pitch) =
                 read_bitmap_bgra(&self.context, &collapsed_bitmap)?;
@@ -1802,6 +1849,9 @@ mod windows_impl {
             self.render_to(
                 &expanded_bitmap,
                 &render_state(&expanded, false, None, None),
+                &expanded,
+                arrow_style,
+                is_high_contrast,
             )?;
             let (pixels, pitch) = read_bitmap_bgra(&self.context, &expanded_bitmap)?;
             let alpha_at =
@@ -1834,6 +1884,9 @@ mod windows_impl {
             &mut self,
             target: &ID2D1Bitmap1,
             state: &RadialPaletteRenderState,
+            attr_state: &RadialPaletteState,
+            arrow_style: ArrowStyle,
+            is_high_contrast: bool,
         ) -> Result<()> {
             set_context_target(&self.context, target)?;
             unsafe {
@@ -1843,22 +1896,34 @@ mod windows_impl {
                 self.context
                     .SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_SOURCE_OVER);
             }
-            let draw_result = self.draw_contents(state);
+            let draw_result = self.draw_contents(state, attr_state, arrow_style, is_high_contrast);
             let end_result = unsafe { self.context.EndDraw(None, None) };
             draw_result?;
             self.icons.handle_render_result(end_result)
         }
 
-        fn draw_contents(&mut self, state: &RadialPaletteRenderState) -> Result<()> {
+        fn draw_contents(
+            &mut self,
+            state: &RadialPaletteRenderState,
+            attr_state: &RadialPaletteState,
+            arrow_style: ArrowStyle,
+            is_high_contrast: bool,
+        ) -> Result<()> {
             if state.is_expanded {
-                self.draw_group_ring(state)?;
-                self.draw_entry_ring(state)?;
+                self.draw_group_ring(state, attr_state, arrow_style, is_high_contrast)?;
+                self.draw_entry_ring(state, attr_state, arrow_style, is_high_contrast)?;
                 self.draw_option_ring(state)?;
             }
-            self.draw_center(state)
+            self.draw_center(state, attr_state, arrow_style, is_high_contrast)
         }
 
-        fn draw_group_ring(&mut self, state: &RadialPaletteRenderState) -> Result<()> {
+        fn draw_group_ring(
+            &mut self,
+            state: &RadialPaletteRenderState,
+            attr_state: &RadialPaletteState,
+            arrow_style: ArrowStyle,
+            is_high_contrast: bool,
+        ) -> Result<()> {
             let scale = self.scale();
             let center = self.center();
             let target: ID2D1RenderTarget = self.context.cast()?;
@@ -1913,13 +1978,26 @@ mod windows_impl {
                         state.glass_opacity,
                     )?;
                 } else {
-                    self.draw_cell_icon(cell, radius / scale, GROUP_ICON_SIZE)?;
+                    self.draw_cell_icon(
+                        cell,
+                        radius / scale,
+                        GROUP_ICON_SIZE,
+                        attr_state,
+                        arrow_style,
+                        is_high_contrast,
+                    )?;
                 }
             }
             Ok(())
         }
 
-        fn draw_entry_ring(&mut self, state: &RadialPaletteRenderState) -> Result<()> {
+        fn draw_entry_ring(
+            &mut self,
+            state: &RadialPaletteRenderState,
+            attr_state: &RadialPaletteState,
+            arrow_style: ArrowStyle,
+            is_high_contrast: bool,
+        ) -> Result<()> {
             let mut cells = state
                 .cells
                 .iter()
@@ -1975,7 +2053,14 @@ mod windows_impl {
                 if state.shows_key_caps && !cell.shortcut.is_empty() {
                     self.draw_key_cap(&cell.shortcut, node, state.glass_opacity)?;
                 } else {
-                    self.draw_cell_icon(cell, orbit, ENTRY_ICON_SIZE)?;
+                    self.draw_cell_icon(
+                        cell,
+                        orbit,
+                        ENTRY_ICON_SIZE,
+                        attr_state,
+                        arrow_style,
+                        is_high_contrast,
+                    )?;
                 }
             }
             Ok(())
@@ -2197,7 +2282,13 @@ mod windows_impl {
             )
         }
 
-        fn draw_center(&mut self, state: &RadialPaletteRenderState) -> Result<()> {
+        fn draw_center(
+            &mut self,
+            state: &RadialPaletteRenderState,
+            attr_state: &RadialPaletteState,
+            arrow_style: ArrowStyle,
+            is_high_contrast: bool,
+        ) -> Result<()> {
             let target: ID2D1RenderTarget = self.context.cast()?;
             let center = self.center();
             let scale = self.scale();
@@ -2251,7 +2342,29 @@ mod windows_impl {
                 } else {
                     RadialPaletteArcStyle::INACTIVE_ICON
                 };
-                self.draw_icon(icon_key, center, CENTER_ICON_SIZE, tint)?;
+                if state.center_has_attribute_configuration {
+                    if let Some(configuration) = configuration_for_radial_tool(
+                        attr_state.current_tool,
+                        attr_state,
+                        arrow_style,
+                    ) {
+                        self.draw_radial_attr_icon(
+                            &configuration,
+                            center,
+                            CENTER_ICON_SIZE,
+                            tint,
+                            state.center_is_pass_through_enabled,
+                            true,
+                            state.center_is_hovered,
+                            state.center_is_pass_through_enabled,
+                            is_high_contrast,
+                        )?;
+                    } else {
+                        self.draw_icon(icon_key, center, CENTER_ICON_SIZE, tint)?;
+                    }
+                } else {
+                    self.draw_icon(icon_key, center, CENTER_ICON_SIZE, tint)?;
+                }
             }
             Ok(())
         }
@@ -2261,16 +2374,33 @@ mod windows_impl {
             cell: &RadialPaletteRenderCell,
             orbit: f64,
             size: f64,
+            attr_state: &RadialPaletteState,
+            arrow_style: ArrowStyle,
+            is_high_contrast: bool,
         ) -> Result<()> {
             let Some(icon_key) = cell.icon_key.as_deref() else {
                 return Ok(());
             };
-            self.draw_icon(
-                icon_key,
-                self.cell_center(cell, orbit),
-                size,
-                content_color(cell),
-            )
+            let center = self.cell_center(cell, orbit);
+            let tint = content_color(cell);
+            if cell.has_attribute_configuration {
+                if let Some(configuration) =
+                    radial_cell_configuration(cell, attr_state, arrow_style)
+                {
+                    return self.draw_radial_attr_icon(
+                        &configuration,
+                        center,
+                        size,
+                        tint,
+                        cell.is_selected,
+                        cell.is_enabled,
+                        cell.is_hovered,
+                        false,
+                        is_high_contrast,
+                    );
+                }
+            }
+            self.draw_icon(icon_key, center, size, tint)
         }
 
         fn draw_key_cap(&self, label: &str, center: [f32; 2], glass_opacity: f64) -> Result<()> {
@@ -2333,6 +2463,47 @@ mod windows_impl {
                     tint[2] as f32,
                     tint[3] as f32,
                 ),
+            )
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn draw_radial_attr_icon(
+            &mut self,
+            configuration: &AttrIconConfiguration,
+            center: [f32; 2],
+            size_dip: f64,
+            tint: RadialColor,
+            selected: bool,
+            enabled: bool,
+            hovered: bool,
+            pass_through: bool,
+            is_high_contrast: bool,
+        ) -> Result<()> {
+            let size = size_dip * self.scale();
+            let background = estimated_background(
+                AttrIconSurface::Radial,
+                selected,
+                SystemAppearance::Dark,
+                radial_attr_color(RadialPaletteArcStyle::ACTIVE),
+            );
+            self.icons.draw_attr_icon(
+                configuration,
+                IconTint::rgba(
+                    tint[0] as f32,
+                    tint[1] as f32,
+                    tint[2] as f32,
+                    tint[3] as f32,
+                ),
+                attr_icon_tint(background),
+                rect_around(center, size, size),
+                self.dpi,
+                AttrIconVisualState {
+                    is_selected: selected,
+                    is_enabled: enabled,
+                    is_hovered: hovered,
+                    is_pass_through: pass_through,
+                    is_high_contrast,
+                },
             )
         }
 
@@ -2562,6 +2733,36 @@ mod windows_impl {
             color[3] *= RadialPaletteArcStyle::DISABLED_CONTENT_OPACITY;
         }
         color
+    }
+
+    fn radial_cell_configuration(
+        cell: &RadialPaletteRenderCell,
+        state: &RadialPaletteState,
+        arrow_style: ArrowStyle,
+    ) -> Option<AttrIconConfiguration> {
+        if let Some(index) = cell
+            .id
+            .strip_prefix("palette.favorite.")
+            .and_then(|value| value.parse::<usize>().ok())
+        {
+            return configuration_for_radial_favorite(state.favorites.get(index)?, state);
+        }
+        let tool = match cell.id.as_str() {
+            "tool.pen" => InkTool::Pen,
+            "tool.highlighter" => InkTool::Highlighter,
+            "tool.laser" => InkTool::Laser,
+            "tool.eraser" | "tool.eraser-toggle" => InkTool::Eraser,
+            "tool.arrow" => InkTool::Arrow,
+            "tool.rectangle" => InkTool::Rectangle,
+            "tool.ellipse" => InkTool::Ellipse,
+            "tool.text" => InkTool::Text,
+            _ => return None,
+        };
+        configuration_for_radial_tool(tool, state, arrow_style)
+    }
+
+    fn radial_attr_color(value: RadialColor) -> AttrIconColor {
+        AttrIconColor::new(value[0], value[1], value[2], value[3])
     }
 
     fn current_diameter(state: &RadialPaletteState) -> f64 {
