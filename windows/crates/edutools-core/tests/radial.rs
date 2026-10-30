@@ -5,8 +5,7 @@ use edutools_core::radial::{
     secondary_intent, RadialPaletteCell, RadialPaletteCellAction, RadialPaletteEntry,
     RadialPaletteFocus, RadialPaletteGroupId, RadialPaletteHitTarget, RadialPaletteIntent,
     RadialPaletteNavigationKey, RadialPaletteOption, RadialPaletteOptionAction, RadialPaletteRing,
-    RadialPaletteSectorGeometry, RadialPaletteState, ENTRY_INNER_RADIUS, ENTRY_OUTER_RADIUS,
-    EXPANDED_DIAMETER, PROPERTY_GAP, SECTOR_GAP,
+    RadialPaletteSectorGeometry, RadialPaletteState,
 };
 use edutools_core::settings::FavoriteTool;
 use edutools_core::shortcut::ShortcutCommand;
@@ -93,20 +92,40 @@ fn maximum_favorite_cells_do_not_overlap_and_hit_test() {
         })
         .collect();
 
-    let entries = layout_cells(&state)
+    let cells = layout_cells(&state);
+    let groups = cells
+        .iter()
+        .filter(|cell| cell.ring == RadialPaletteRing::Group)
+        .collect::<Vec<_>>();
+    assert_eq!(groups.len(), 6);
+    assert!(groups.iter().all(|cell| {
+        (cell.geometry.inner_radius - 28.0).abs() <= EPSILON
+            && (cell.geometry.outer_radius - 58.0).abs() <= EPSILON
+    }));
+
+    let entries = cells
         .into_iter()
         .filter(|cell| cell.ring == RadialPaletteRing::Entry)
         .collect::<Vec<_>>();
     assert_eq!(entries.len(), 9);
+    assert!(entries.iter().all(|cell| {
+        (cell.geometry.inner_radius - 64.0).abs() <= EPSILON
+            && (cell.geometry.outer_radius - 100.0).abs() <= EPSILON
+    }));
     for pair in entries.windows(2) {
         let gap = pair[1].geometry.start_angle - pair[0].geometry.end_angle;
         assert!(pair[0].geometry.end_angle <= pair[1].geometry.start_angle);
-        assert!((gap - 2.0 * SECTOR_GAP).abs() <= EPSILON);
+        assert!((gap - 2.0 * 2.0_f64.to_radians()).abs() <= EPSILON);
     }
+    let first = entries.first().expect("first favorite entry");
+    let last = entries.last().expect("last favorite entry");
+    let span = last.geometry.end_angle + 2.0_f64.to_radians()
+        - (first.geometry.start_angle - 2.0_f64.to_radians());
+    assert!((span - 200.0_f64.to_radians()).abs() <= EPSILON);
 
     let target = entries.last().expect("favorite entry");
     let angle = (target.geometry.start_angle + target.geometry.end_angle) / 2.0;
-    let radius = (ENTRY_INNER_RADIUS + ENTRY_OUTER_RADIUS) / 2.0;
+    let radius = (64.0 + 100.0) / 2.0;
     let bounds = expanded_bounds();
     let point = Point {
         x: bounds.x + bounds.width / 2.0 + angle.sin() * radius,
@@ -128,6 +147,24 @@ fn maximum_favorite_cells_do_not_overlap_and_hit_test() {
         secondary_intent(&center),
         Some(RadialPaletteIntent::Execute(ShortcutCommand::StepBack))
     );
+    let center_edge = hit_target(
+        &state,
+        Point {
+            x: bounds.x + bounds.width / 2.0,
+            y: bounds.y + bounds.height / 2.0 + 22.0,
+        },
+        bounds,
+    );
+    assert!(matches!(center_edge, Some(RadialPaletteHitTarget::Center)));
+    let outside_center = hit_target(
+        &state,
+        Point {
+            x: bounds.x + bounds.width / 2.0,
+            y: bounds.y + bounds.height / 2.0 + 22.0 + 0.001,
+        },
+        bounds,
+    );
+    assert!(outside_center.is_none());
 }
 
 // Swift: RadialPaletteTests.eraserModeEntriesSelectOneModeAndRetoggleAreaShape()
@@ -176,7 +213,7 @@ fn option_ring_caps_slices_and_aligns_sections() {
     let full_circle = 2.0 * PI;
     let group_slice = full_circle / RadialPaletteGroupId::all().len() as f64;
     let maximum_slice = 30.0_f64.to_radians();
-    let maximum_cell_width = maximum_slice - SECTOR_GAP;
+    let maximum_cell_width = maximum_slice - 2.0_f64.to_radians();
 
     let mut laser_state = RadialPaletteState::default();
     laser_state.is_expanded = true;
@@ -192,10 +229,14 @@ fn option_ring_caps_slices_and_aligns_sections() {
         ((cell.geometry.end_angle - cell.geometry.start_angle) - maximum_cell_width).abs()
             <= EPSILON
     }));
+    assert!(laser_options.iter().all(|cell| {
+        (cell.geometry.inner_radius - 113.0).abs() <= EPSILON
+            && (cell.geometry.outer_radius - 149.0).abs() <= EPSILON
+    }));
     let first = laser_options.first().expect("laser first option");
     let last = laser_options.last().expect("laser last option");
-    let arc_start = first.geometry.start_angle - SECTOR_GAP / 2.0;
-    let arc_end = last.geometry.end_angle + SECTOR_GAP / 2.0;
+    let arc_start = first.geometry.start_angle - 2.0_f64.to_radians() / 2.0;
+    let arc_end = last.geometry.end_angle + 2.0_f64.to_radians() / 2.0;
     let arc_center = (arc_start + arc_end) / 2.0;
     let presenting_opposite = RadialPaletteGroupId::Presenting.index() as f64 * group_slice + PI;
     assert!(angular_distance(arc_center, presenting_opposite) <= EPSILON);
@@ -205,17 +246,33 @@ fn option_ring_caps_slices_and_aligns_sections() {
     pen_state.selected_group = RadialPaletteGroupId::Writing;
     pen_state.selected_entry_identifier = Some("tool.pen".to_owned());
     pen_state.current_tool = InkTool::Pen;
+    let pen_entries = layout_cells(&pen_state)
+        .into_iter()
+        .filter(|cell| cell.ring == RadialPaletteRing::Entry)
+        .collect::<Vec<_>>();
+    let first_entry = pen_entries.first().expect("first writing entry");
+    let last_entry = pen_entries.last().expect("last writing entry");
+    let entry_span = last_entry.geometry.end_angle + 2.0_f64.to_radians()
+        - (first_entry.geometry.start_angle - 2.0_f64.to_radians());
+    assert!((entry_span - 90.0_f64.to_radians()).abs() <= EPSILON);
+
     let pen_options = option_cells(&pen_state);
     assert_eq!(pen_options.len(), 11);
     assert!(pen_options.iter().all(|cell| {
         cell.geometry.end_angle - cell.geometry.start_angle <= maximum_cell_width + EPSILON
     }));
     assert!(
-        (pen_options[0].geometry.start_angle - SECTOR_GAP / 2.0 - PROPERTY_GAP / 2.0).abs()
+        (pen_options[0].geometry.start_angle
+            - 2.0_f64.to_radians() / 2.0
+            - 9.0_f64.to_radians() / 2.0)
+            .abs()
             <= EPSILON
     );
     assert!(
-        pen_options[6].geometry.start_angle - pen_options[5].geometry.end_angle >= PROPERTY_GAP
+        ((pen_options[6].geometry.start_angle - pen_options[5].geometry.end_angle)
+            - (9.0_f64.to_radians() + 2.0_f64.to_radians()))
+        .abs()
+            <= EPSILON
     );
 }
 
@@ -324,8 +381,8 @@ fn expanded_bounds() -> Rect {
     Rect {
         x: 0.0,
         y: 0.0,
-        width: EXPANDED_DIAMETER,
-        height: EXPANDED_DIAMETER,
+        width: 302.0,
+        height: 302.0,
     }
 }
 
