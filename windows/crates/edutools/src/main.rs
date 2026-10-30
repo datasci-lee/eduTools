@@ -22,6 +22,8 @@ mod lesson_badge;
 mod log;
 #[cfg(any(windows, test))]
 mod monitor;
+#[cfg(any(windows, test))]
+mod music;
 #[cfg(windows)]
 mod overlay;
 #[cfg(any(windows, test))]

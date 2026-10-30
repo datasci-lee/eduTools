@@ -194,6 +194,83 @@ fn compatibility_decoding_defaults_migrates_and_filters() {
     SettingsValidator::validate(&filtered).expect("filtered favorites validate");
 }
 
+#[test]
+fn break_music_playlist_mutations_enforce_limits_and_indices() {
+    let valid_a = "https://music.youtube.com/playlist?list=a";
+    let valid_b = "https://music.youtube.com/playlist?list=b";
+    let cases = [
+        ("empty", Vec::new(), 7, true, Vec::new(), 0),
+        (
+            "valid selection",
+            vec![valid_a.to_owned(), valid_b.to_owned()],
+            1,
+            true,
+            vec![valid_a.to_owned(), valid_b.to_owned()],
+            1,
+        ),
+        (
+            "exactly five",
+            (0..5)
+                .map(|index| format!("https://music.youtube.com/playlist?list={index}"))
+                .collect(),
+            4,
+            true,
+            (0..5)
+                .map(|index| format!("https://music.youtube.com/playlist?list={index}"))
+                .collect(),
+            4,
+        ),
+        (
+            "index out of range",
+            vec![valid_a.to_owned()],
+            1,
+            false,
+            Vec::new(),
+            0,
+        ),
+        (
+            "more than five",
+            (0..6)
+                .map(|index| format!("https://music.youtube.com/playlist?list={index}"))
+                .collect(),
+            0,
+            false,
+            Vec::new(),
+            0,
+        ),
+        (
+            "invalid url",
+            vec!["https://example.com/not-music".to_owned()],
+            0,
+            false,
+            Vec::new(),
+            0,
+        ),
+    ];
+
+    for (name, values, default_index, expected_result, expected_urls, expected_index) in cases {
+        let mut timer = TimerGroupSettings::default();
+        assert_eq!(
+            timer.replace_playlist_urls(values, default_index),
+            expected_result,
+            "case={name}"
+        );
+        assert_eq!(timer.playlist_urls, expected_urls, "case={name}");
+        assert_eq!(timer.default_playlist_index, expected_index, "case={name}");
+    }
+
+    let mut timer = TimerGroupSettings::default();
+    assert!(timer.replace_playlist_urls(vec![valid_a.to_owned(), valid_b.to_owned()], 0));
+    for (name, index, expected_result, expected_index) in [
+        ("negative", -1, false, 0),
+        ("valid", 1, true, 1),
+        ("too large", 2, false, 1),
+    ] {
+        assert_eq!(timer.select_playlist(index), expected_result, "case={name}");
+        assert_eq!(timer.default_playlist_index, expected_index, "case={name}");
+    }
+}
+
 // Swift: SettingsTests decoding and SettingsValidator rejection table
 #[test]
 fn rejects_bad_enums_integers_required_keys_and_ranges() {

@@ -11,6 +11,7 @@ use crate::lesson_badge::{
     WM_APP_LESSON_COMPLETED,
 };
 use crate::log::Logger;
+use crate::music::{BreakMusicManager, WM_APP_MUSIC_LAUNCH_RESULT, WM_APP_MUSIC_PAUSE_RESULT};
 use crate::overlay::{OverlayManager, SYNC_MESSAGE};
 use crate::palette::{
     command_for_item, item_enabled, PaletteItemId, PaletteManager, WM_APP_PALETTE_ACTION,
@@ -171,6 +172,7 @@ struct App {
     radial_palette: Option<RadialPaletteManager>,
     text_entry: Option<TextEntryWindow>,
     help: Option<HelpManager>,
+    music: Option<BreakMusicManager>,
     last_board_presentation: Option<BoardPresentation>,
     lesson_badge: Option<LessonBadgeManager>,
     pending_break_request: Option<i64>,
@@ -180,6 +182,7 @@ struct App {
 
 impl App {
     fn initialize(&mut self) -> Result<()> {
+        self.music = Some(BreakMusicManager::new(self.hwnd, self.logger.clone())?);
         self.tray = Some(Tray::add(self.hwnd, self.hinstance, self.logger.clone())?);
         let hotkeys = HotkeyCenter::register_defaults(
             self.hwnd,
@@ -1312,6 +1315,9 @@ impl App {
             return;
         }
         self.shutting_down = true;
+        if let Some(music) = self.music.as_mut() {
+            music.stop_music_for_termination();
+        }
         self.cancel_text_entry("앱 종료");
         self.set_keyboard_hook(false);
         // Overlay HWNDs and graphics resources must be released on the UI thread before the tray
@@ -1386,6 +1392,7 @@ fn run_message_loop(logger: Logger) -> Result<i32> {
         radial_palette: None,
         text_entry: None,
         help: None,
+        music: None,
         last_board_presentation: None,
         lesson_badge: None,
         pending_break_request: None,
@@ -1547,6 +1554,18 @@ unsafe extern "system" fn window_proc(
                 }
                 return LRESULT(0);
             }
+            WM_APP_MUSIC_LAUNCH_RESULT => {
+                if let Some(music) = app.music.as_mut() {
+                    music.handle_launch_result_message(lparam);
+                }
+                return LRESULT(0);
+            }
+            WM_APP_MUSIC_PAUSE_RESULT => {
+                if let Some(music) = app.music.as_ref() {
+                    music.handle_pause_result_message(lparam);
+                }
+                return LRESULT(0);
+            }
             WM_SETTINGCHANGE => {
                 if let Some(tray) = app.tray.as_mut() {
                     tray.refresh_theme();
@@ -1590,6 +1609,7 @@ unsafe extern "system" fn window_proc(
 
 fn run_selftest(logger: &Logger) -> bool {
     let mut failures = Vec::new();
+    failures.extend(crate::music::selftest_failures());
     // SAFETY: None requests the current executable module handle.
     let hinstance = match unsafe { GetModuleHandleW(None) } {
         Ok(module) => HINSTANCE(module.0),

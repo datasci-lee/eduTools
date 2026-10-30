@@ -564,6 +564,66 @@ impl Default for TimerGroupSettings {
     }
 }
 
+impl TimerGroupSettings {
+    pub const MAXIMUM_PLAYLIST_COUNT: usize = 5;
+
+    // Swift: BreakMusicSettings.replacePlaylistURLs(with:defaultIndex:)
+    pub fn replace_playlist_urls(&mut self, values: Vec<String>, default_index: i64) -> bool {
+        let index_is_valid = values.is_empty()
+            || usize::try_from(default_index).is_ok_and(|index| index < values.len());
+        if values.len() > Self::MAXIMUM_PLAYLIST_COUNT
+            || !values.iter().all(|value| is_valid_music_url(value))
+            || !index_is_valid
+        {
+            return false;
+        }
+
+        self.playlist_urls = values;
+        self.default_playlist_index = if self.playlist_urls.is_empty() {
+            0
+        } else {
+            default_index
+        };
+        true
+    }
+
+    // Swift: BreakMusicSettings.selectPlaylist(at:)
+    pub fn select_playlist(&mut self, index: i64) -> bool {
+        let Some(index) = usize::try_from(index).ok() else {
+            return false;
+        };
+        if index >= self.playlist_urls.len() {
+            return false;
+        }
+        self.default_playlist_index = index as i64;
+        true
+    }
+
+    // Swift: BreakMusicSettings.setMusicEnabled(_:)
+    pub fn set_music_enabled(&mut self, enabled: bool) {
+        self.music_enabled = enabled;
+    }
+
+    // Swift: BreakMusicSettings.setBrowser(_:)
+    pub fn set_browser(&mut self, browser: &str) -> bool {
+        if !MUSIC_BROWSERS.contains(&browser) {
+            return false;
+        }
+        self.music_browser = browser.to_owned();
+        true
+    }
+
+    // Swift: BreakMusicSettings.setFade(enabled:duration:)
+    pub fn set_fade(&mut self, enabled: bool, duration: f64) -> bool {
+        if !SettingsRanges::FADE_DURATION.contains(&duration) {
+            return false;
+        }
+        self.fade_enabled = enabled;
+        self.fade_duration = duration;
+        true
+    }
+}
+
 // Swift: AppModifierSetting
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
