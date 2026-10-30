@@ -3,9 +3,10 @@ use crate::text_entry;
 use edutools_core::dispatch::should_consume;
 use edutools_core::settings::AppSettings;
 use edutools_core::shortcut::{
-    ShortcutCatalog, ShortcutDefinition, ShortcutModifiers, ShortcutScope,
+    ShortcutCatalog, ShortcutCommand, ShortcutDefinition, ShortcutModifiers, ShortcutScope,
 };
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicBool, Ordering};
 use windows::core::{Error, Result};
 use windows::Win32::Foundation::{E_FAIL, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -22,6 +23,12 @@ const KEY_UP_FLAG: isize = 1;
 const CONSUMED_FLAG: isize = 1 << 1;
 const DEFINITION_SHIFT: usize = 2;
 const SCAN_CODE_COUNT: usize = 512;
+
+static TEXT_INPUT_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+pub fn set_text_input_active(active: bool) {
+    TEXT_INPUT_ACTIVE.store(active, Ordering::Release);
+}
 
 struct CallbackState {
     hwnd: HWND,
@@ -204,6 +211,15 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
         let modifiers = current_modifiers();
         let definition_index =
             matching_annotation_definition(&state.definitions, event.vkCode, modifiers)?;
+        if TEXT_INPUT_ACTIVE.load(Ordering::Acquire)
+            && !matches!(
+                state.definitions[definition_index].command,
+                ShortcutCommand::StepBack | ShortcutCommand::ShowHelp
+            )
+        {
+            // 도움말 EDIT가 IME/문자 입력을 받을 때 닫기·도움말 토글 외 키는 전경 창으로 보낸다.
+            return None;
+        }
         let consumed = should_consume(
             &state.definitions[definition_index].command,
             &state.settings,
@@ -265,7 +281,7 @@ fn post_hook_event(
     }
 }
 
-fn current_modifiers() -> ShortcutModifiers {
+pub(crate) fn current_modifiers() -> ShortcutModifiers {
     let mut modifiers = ShortcutModifiers::empty();
     if key_is_down(VK_CONTROL.0) {
         modifiers.insert(ShortcutModifiers::CONTROL);

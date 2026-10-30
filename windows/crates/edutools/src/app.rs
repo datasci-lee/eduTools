@@ -1,6 +1,11 @@
+use crate::help::{
+    monotonic_millis, monotonic_seconds, HelpManager, HELP_RELEASE_TIMER_ID, WM_APP_HELP_ACTION,
+    WM_APP_HELP_CLOSE, WM_APP_HELP_REFRESH,
+};
 use crate::hotkey::HotkeyCenter;
 use crate::ink_view::InkInputConfig;
 use crate::kbhook::{HookKeyEvent, KeyboardHook, WM_APP_KEY};
+use crate::keymap;
 use crate::log::Logger;
 use crate::overlay::{OverlayManager, SYNC_MESSAGE};
 use crate::palette::{
@@ -49,7 +54,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowLongPtrW, LoadImageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW,
     SetWindowLongPtrW, TranslateMessage, GDI_IMAGE_TYPE, GWLP_USERDATA, HICON, IMAGE_ICON,
     LR_DEFAULTCOLOR, MSG, WM_CONTEXTMENU, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_HOTKEY,
-    WM_RBUTTONUP, WM_SETTINGCHANGE, WNDCLASSW, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
+    WM_KEYDOWN, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW,
+    WS_OVERLAPPED,
 };
 
 const WINDOW_CLASS: PCWSTR = w!("EduToolsMain");
@@ -159,6 +165,7 @@ struct App {
     palette: Option<PaletteManager>,
     radial_palette: Option<RadialPaletteManager>,
     text_entry: Option<TextEntryWindow>,
+    help: Option<HelpManager>,
     logger: Logger,
     shutting_down: bool,
 }
@@ -198,6 +205,9 @@ impl App {
         )?;
         radial_palette.refresh(&self.state.borrow(), &self.settings, "초기화")?;
         self.radial_palette = Some(radial_palette);
+        let mut help = HelpManager::new(self.hwnd, self.hinstance, self.logger.clone())?;
+        help.show_first_run_if_needed(&self.state.borrow(), &self.settings);
+        self.help = Some(help);
         Ok(())
     }
 
@@ -210,7 +220,36 @@ impl App {
             self.logger.event(&format!("알 수 없는 WM_HOTKEY id={id}"));
             return;
         };
-        if definition.command == ShortcutCommand::ToggleAnnotationMode {
+        if definition.command == ShortcutCommand::ShowHelp {
+            let Some(binding) = definition.binding(ShortcutScope::Global) else {
+                self.logger.event("전역 도움말 정의에 global binding 없음");
+                return;
+            };
+            let Some(vk) = keymap::token_to_vk(&binding.key) else {
+                self.logger.event(&format!(
+                    "전역 도움말 키 폴링용 VK 변환 실패: {}",
+                    binding.key
+                ));
+                return;
+            };
+            let now_ms = monotonic_millis();
+            if let Some(help) = self.help.as_mut() {
+                help.shortcut_did_press(
+                    now_ms as f64 / 1_000.0,
+                    &self.state.borrow(),
+                    &self.settings,
+                    "전역 도움말 키 눌림",
+                );
+                if !help.start_global_release_poll(vk, now_ms) {
+                    help.shortcut_did_release(
+                        now_ms as f64 / 1_000.0,
+                        &self.state.borrow(),
+                        &self.settings,
+                        "전역 키 폴링 시작 실패 강제 해제",
+                    );
+                }
+            }
+        } else if definition.command == ShortcutCommand::ToggleAnnotationMode {
             self.logger.event("전역 키 annotation.toggle 눌림");
             self.toggle_annotation("전역 키");
         } else {
@@ -287,6 +326,7 @@ impl App {
                     .selected_stroke_ids(display_id)
                     .is_empty()
             }),
+            help_visible: self.help.as_ref().is_some_and(HelpManager::is_visible),
             ..DispatchContext::default()
         };
         let dispatch = if event.is_key_up {
@@ -493,12 +533,42 @@ impl App {
                     .event(&format!("효과 ({source}): 한 단계 나가기 {result:?}")),
                 Effect::PaletteVisibilityChanged(visible) => self
                     .logger
-                    .event(&format!("효과 ({source}): 팔레트 표시 상태 {visible}")),
+                    .event(&format!("효과 ({source}): 선형 팔레트 표시 상태 {visible}")),
                 Effect::CollapseRadialPalette => {
                     if let Some(radial) = self.radial_palette.as_mut() {
                         if let Err(error) = radial.collapse("stepBack") {
                             self.report_radial_palette_error("stepBack 접기", &error);
                         }
+                    }
+                }
+                Effect::HelpShortcutPressed(_) => {
+                    if let Some(help) = self.help.as_mut() {
+                        help.shortcut_did_press(
+                            monotonic_seconds(),
+                            &self.state.borrow(),
+                            &self.settings,
+                            source,
+                        );
+                    }
+                }
+                Effect::HelpShortcutReleased => {
+                    if let Some(help) = self.help.as_mut() {
+                        help.shortcut_did_release(
+                            monotonic_seconds(),
+                            &self.state.borrow(),
+                            &self.settings,
+                            source,
+                        );
+                    }
+                }
+                Effect::ShowHelp => {
+                    if let Some(help) = self.help.as_mut() {
+                        help.show_pinned(&self.state.borrow(), &self.settings, source);
+                    }
+                }
+                Effect::CloseHelp => {
+                    if let Some(help) = self.help.as_mut() {
+                        help.close(&self.state.borrow(), source);
                     }
                 }
                 other => self
@@ -515,6 +585,7 @@ impl App {
         }
         self.refresh_palette("core effect");
         self.refresh_radial_palette("core effect");
+        self.refresh_help("core effect");
     }
 
     fn synchronize_overlays(&mut self, reason: &str) {
@@ -537,6 +608,9 @@ impl App {
             {
                 self.report_radial_palette_error("모니터 재구성", &error);
             }
+        }
+        if let Some(help) = self.help.as_mut() {
+            help.display_configuration_changed(&self.state.borrow(), &self.settings);
         }
     }
 
@@ -591,6 +665,99 @@ impl App {
                 self.report_palette_error(reason, &error);
             }
         }
+    }
+
+    fn refresh_help(&mut self, reason: &str) {
+        if let Some(help) = self.help.as_mut() {
+            help.refresh(&self.state.borrow(), &self.settings, reason);
+        }
+    }
+
+    fn handle_help_action(&mut self, value: usize) {
+        let action = self
+            .help
+            .as_ref()
+            .and_then(|help| help.action(value, &self.state.borrow()));
+        let Some((definition, scope)) = action else {
+            self.logger
+                .event(&format!("도움말 항목 메시지 범위 밖: {value}"));
+            return;
+        };
+        self.logger.event(&format!(
+            "도움말 항목 실행: id={} scope={}",
+            definition.id,
+            scope.as_str()
+        ));
+        let display_id = self
+            .overlays
+            .as_ref()
+            .and_then(|overlays| overlays.monitor_key_at_cursor().ok())
+            .flatten();
+        let context = DispatchContext {
+            scope,
+            display_id: display_id.as_deref(),
+            board_display_id: display_id.as_deref(),
+            help_visible: true,
+            ..DispatchContext::default()
+        };
+        let dispatched = dispatch(
+            &definition.command,
+            &mut self.state.borrow_mut(),
+            &self.settings,
+            context,
+        );
+        match dispatched {
+            Ok(effects) => self.apply_effects(effects, &format!("도움말 항목 {}", definition.id)),
+            Err(error) => self.logger.event(&format!(
+                "도움말 항목 core dispatch 실패: id={} scope={}: {error}",
+                definition.id,
+                scope.as_str()
+            )),
+        }
+        if let Some(help) = self.help.as_mut() {
+            help.close(&self.state.borrow(), "항목 실행");
+        }
+    }
+
+    fn poll_help_release(&mut self) {
+        if let Some(help) = self.help.as_mut() {
+            let _ =
+                help.poll_global_release(monotonic_millis(), &self.state.borrow(), &self.settings);
+        }
+    }
+
+    fn close_help(&mut self, reason: &str) {
+        if let Some(help) = self.help.as_mut() {
+            help.close(&self.state.borrow(), reason);
+        }
+    }
+
+    fn pretranslate_help_message(&mut self, message: &MSG) -> bool {
+        let Some(help) = self.help.as_ref() else {
+            return false;
+        };
+        let matches_step_back = (message.message == WM_KEYDOWN)
+            .then(|| keymap::vk_to_token(message.wParam.0 as u32))
+            .flatten()
+            .and_then(|key| {
+                ShortcutCatalog::resolved_definitions(&self.settings.shortcuts)
+                    .into_iter()
+                    .find(|definition| definition.command == ShortcutCommand::StepBack)
+                    .and_then(|definition| {
+                        definition
+                            .binding(ShortcutScope::Annotation)
+                            .is_some_and(|binding| {
+                                binding.matches(key, crate::kbhook::current_modifiers())
+                            })
+                            .then_some(())
+                    })
+            })
+            .is_some();
+        if help.is_pinned() && help.owns_hwnd(message.hwnd) && matches_step_back {
+            self.close_help("한 단계 나가기 키");
+            return true;
+        }
+        false
     }
 
     fn redraw_palette(&mut self) {
@@ -951,6 +1118,7 @@ impl App {
         // Overlay HWNDs and graphics resources must be released on the UI thread before the tray
         // and hidden owner window go away.
         self.radial_palette = None;
+        self.help = None;
         self.palette = None;
         self.overlays = None;
         if let Some(hotkeys) = self.hotkeys.as_mut() {
@@ -1014,6 +1182,7 @@ fn run_message_loop(logger: Logger) -> Result<i32> {
         palette: None,
         radial_palette: None,
         text_entry: None,
+        help: None,
         logger,
         shutting_down: false,
     });
@@ -1041,6 +1210,9 @@ fn run_message_loop(logger: Logger) -> Result<i32> {
             break Ok(i32::try_from(message.wParam.0).unwrap_or(1));
         }
         if app.collapse_radial_for_external_pointer_down(message.hwnd, message.message) {
+            continue;
+        }
+        if app.pretranslate_help_message(&message) {
             continue;
         }
         // SAFETY: message was populated by GetMessageW.
@@ -1097,6 +1269,26 @@ unsafe extern "system" fn window_proc(
                 app.cancel_text_entry(cancel_reason(wparam.0));
                 return LRESULT(0);
             }
+            WM_APP_HELP_ACTION => {
+                app.handle_help_action(wparam.0);
+                return LRESULT(0);
+            }
+            WM_APP_HELP_REFRESH => {
+                app.refresh_help("검색/테마 변경");
+                return LRESULT(0);
+            }
+            WM_APP_HELP_CLOSE => {
+                app.close_help(if wparam.0 == 1 {
+                    "패널 밖 클릭"
+                } else {
+                    "창 요청"
+                });
+                return LRESULT(0);
+            }
+            WM_TIMER if wparam.0 == HELP_RELEASE_TIMER_ID => {
+                app.poll_help_release();
+                return LRESULT(0);
+            }
             CALLBACK_MESSAGE => {
                 app.handle_tray_callback((lparam.0 as u32) & 0xffff);
                 return LRESULT(0);
@@ -1145,6 +1337,7 @@ unsafe extern "system" fn window_proc(
                 if let Some(tray) = app.tray.as_mut() {
                     tray.refresh_theme();
                 }
+                app.refresh_help("WM_SETTINGCHANGE");
                 return LRESULT(0);
             }
             WM_DPICHANGED => {
@@ -1245,6 +1438,10 @@ fn run_selftest(logger: &Logger) -> bool {
         ) {
             Ok(mut palette) => failures.extend(palette.selftest_failures(&state, &settings)),
             Err(error) => failures.push(format!("radial palette: 생성 실패: {error}")),
+        }
+        match HelpManager::new(HWND::default(), hinstance, logger.clone()) {
+            Ok(mut help) => failures.extend(help.selftest_failures(&state, &settings)),
+            Err(error) => failures.push(format!("help: 생성 실패: {error}")),
         }
     }
 
