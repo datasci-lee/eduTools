@@ -46,24 +46,30 @@ impl PointerDevice {
 #[derive(Clone, Debug)]
 pub struct InkInputConfig {
     pub current_tool: InkTool,
-    pub pen_color_index: i64,
-    pub pen_color: Option<[f64; 4]>,
-    pub pen_width: f64,
+    pub current_color_index: Option<i64>,
+    pub current_color: Option<[f64; 4]>,
+    pub current_width: Option<f64>,
+    pub highlighter_opacity: f64,
     pub pressure_minimum_width_ratio: f64,
 }
 
 impl InkInputConfig {
     pub fn from_core(state: &AppState, settings: &AppSettings) -> Self {
-        let memory = &settings.tools.per_tool_memory.pen;
-        let pen_color = usize::try_from(memory.color_index)
-            .ok()
+        let memory = state
+            .current_tool()
+            .memory_slot()
+            .map(|slot| slot.setting(&settings.tools.per_tool_memory));
+        let current_color_index = memory.map(|memory| memory.color_index);
+        let current_color = current_color_index
+            .and_then(|index| usize::try_from(index).ok())
             .and_then(|index| settings.tools.colors.get(index))
             .map(|color| [color.red, color.green, color.blue, 1.0]);
         Self {
             current_tool: state.current_tool(),
-            pen_color_index: memory.color_index,
-            pen_color,
-            pen_width: memory.size,
+            current_color_index,
+            current_color,
+            current_width: memory.map(|memory| memory.size),
+            highlighter_opacity: settings.tools.highlighter_opacity,
             pressure_minimum_width_ratio: settings.tools.pressure_minimum_width_ratio,
         }
     }
@@ -118,6 +124,10 @@ impl InkInputController {
         self.config.pressure_minimum_width_ratio
     }
 
+    pub fn highlighter_opacity(&self) -> f64 {
+        self.config.highlighter_opacity
+    }
+
     pub fn active_stroke(&self) -> Option<&InkStroke> {
         self.active.as_ref().map(|active| &active.stroke)
     }
@@ -170,18 +180,24 @@ impl InkInputController {
             }
         }
 
-        if self.config.current_tool != InkTool::Pen {
+        let (stroke_tool, uses_pressure) = match self.config.current_tool {
+            InkTool::Pen => (InkStrokeTool::Pen, true),
+            InkTool::Highlighter => (InkStrokeTool::Highlighter, false),
+            other => {
+                self.logger
+                    .event(&format!("무시한 입력: 미구현 도구: {other:?}"));
+                return Ok(outcome);
+            }
+        };
+        let Some(color) = self.config.current_color else {
             self.logger.event(&format!(
-                "무시한 입력: 미구현 도구: {:?}",
-                self.config.current_tool
+                "무시한 입력: 도구 색 인덱스 범위 밖 ({:?})",
+                self.config.current_color_index
             ));
             return Ok(outcome);
-        }
-        let Some(color) = self.config.pen_color else {
-            self.logger.event(&format!(
-                "무시한 입력: 펜 색 인덱스 범위 밖 ({})",
-                self.config.pen_color_index
-            ));
+        };
+        let Some(width) = self.config.current_width else {
+            self.logger.event("무시한 입력: 도구 굵기 설정 없음");
             return Ok(outcome);
         };
 
@@ -193,7 +209,7 @@ impl InkInputController {
             ));
             return Ok(outcome);
         }
-        let uses_pressure = device == PointerDevice::Pen;
+        let uses_pressure = uses_pressure && device == PointerDevice::Pen;
         let identifier = format!(
             "win-{}-{pointer_id}-{}",
             history.points[0].timestamp,
@@ -201,9 +217,9 @@ impl InkInputController {
         );
         let stroke = InkStroke::new(
             identifier,
-            InkStrokeTool::Pen,
+            stroke_tool,
             color,
-            self.config.pen_width,
+            width,
             uses_pressure,
             history.points,
             InkStrokeContent::Freehand,
@@ -212,8 +228,8 @@ impl InkInputController {
             "획 시작: monitor={} pointerId={pointer_id} device={device:?} tool={:?} colorIndex={} width={}",
             self.monitor_key,
             self.config.current_tool,
-            self.config.pen_color_index,
-            self.config.pen_width
+            self.config.current_color_index.unwrap_or(-1),
+            width
         ));
         self.active = Some(ActiveStroke {
             pointer_id,
@@ -285,6 +301,15 @@ impl InkInputController {
             active.stroke.points.len(),
             active.stroke.uses_pressure
         ));
+        if active.stroke.tool == InkStrokeTool::Highlighter {
+            self.logger.event(&format!(
+                "형광펜 획 확정: monitor={} points={} width={} opacity={}",
+                self.monitor_key,
+                active.stroke.points.len(),
+                active.stroke.width,
+                self.config.highlighter_opacity
+            ));
+        }
         Some(active.stroke)
     }
 }

@@ -5,6 +5,8 @@ mod hotkey;
 #[cfg(windows)]
 mod ink_view;
 #[cfg(windows)]
+mod kbhook;
+#[cfg(windows)]
 mod keymap;
 #[cfg(windows)]
 mod log;

@@ -1,9 +1,10 @@
 use crate::hotkey::HotkeyCenter;
 use crate::ink_view::InkInputConfig;
+use crate::kbhook::{HookKeyEvent, KeyboardHook, WM_APP_KEY};
 use crate::log::Logger;
 use crate::overlay::{OverlayManager, SYNC_MESSAGE};
 use crate::tray::{self, Tray, CALLBACK_MESSAGE, MENU_EXIT, MENU_TOGGLE_ANNOTATION};
-use edutools_core::dispatch::{dispatch, DispatchContext, Effect};
+use edutools_core::dispatch::{dispatch, DispatchContext, Effect, PressedShortcuts};
 use edutools_core::ink::{
     InkGeometry, InkPoint, InkStroke, InkStrokeContent, InkStrokeTool, PathCommand, Point, Size,
 };
@@ -117,6 +118,8 @@ struct App {
     settings: AppSettings,
     tray: Option<Tray>,
     hotkeys: Option<HotkeyCenter>,
+    keyboard_hook: Option<KeyboardHook>,
+    pressed_shortcuts: PressedShortcuts,
     overlays: Option<OverlayManager>,
     logger: Logger,
     shutting_down: bool,
@@ -180,6 +183,118 @@ impl App {
         }
     }
 
+    fn handle_annotation_key(&mut self, event: HookKeyEvent) {
+        let definition = self
+            .keyboard_hook
+            .as_ref()
+            .and_then(|hook| hook.definition(event.definition_index))
+            .cloned();
+        let Some(definition) = definition else {
+            self.logger.event(&format!(
+                "키보드 훅 정의 인덱스 범위 밖: physicalKey={:#x} index={}",
+                event.key_code, event.definition_index
+            ));
+            return;
+        };
+        self.logger.event(&format!(
+            "판서 키 {}: physicalKey={:#x} 정의={} 소비={}",
+            if event.is_key_up { "up" } else { "down" },
+            event.key_code,
+            definition.id,
+            event.consumed
+        ));
+        if !event.consumed {
+            return;
+        }
+
+        let display_id = match self
+            .overlays
+            .as_ref()
+            .map(OverlayManager::monitor_key_at_cursor)
+        {
+            Some(Ok(display_id)) => display_id,
+            Some(Err(error)) => {
+                self.logger
+                    .event(&format!("커서 모니터 판정 실패: {error}"));
+                None
+            }
+            None => None,
+        };
+        let context = DispatchContext {
+            scope: ShortcutScope::Annotation,
+            display_id: display_id.as_deref(),
+            ..DispatchContext::default()
+        };
+        let dispatch = if event.is_key_up {
+            Ok(self
+                .pressed_shortcuts
+                .key_up(event.key_code, &mut self.state))
+        } else {
+            self.pressed_shortcuts.key_down(
+                event.key_code,
+                &definition,
+                &mut self.state,
+                &self.settings,
+                context,
+            )
+        };
+        match dispatch {
+            Ok(result) => {
+                if result.consumed != event.consumed {
+                    self.logger.event(&format!(
+                        "키 소비 판정 불일치: 정의={} hook={} core={}",
+                        definition.id, event.consumed, result.consumed
+                    ));
+                }
+                self.apply_effects(result.effects, &format!("판서 키 {}", definition.id));
+            }
+            Err(error) => self.logger.event(&format!(
+                "판서 키 core dispatch 실패: 정의={} error={error}",
+                definition.id
+            )),
+        }
+    }
+
+    fn set_keyboard_hook(&mut self, enabled: bool) {
+        if enabled {
+            if self.keyboard_hook.is_some() {
+                return;
+            }
+            match KeyboardHook::install(self.hwnd, &self.settings) {
+                Ok(hook) => {
+                    self.keyboard_hook = Some(hook);
+                    self.logger.event("판서 키보드 훅 설치 성공");
+                }
+                Err(error) => {
+                    let message = format!("판서 키보드 훅 설치 실패: {error}");
+                    self.logger.event(&message);
+                    if let Some(tray) = self.tray.as_ref() {
+                        tray.show_warning("키보드 훅 오류", &message);
+                    }
+                }
+            }
+            return;
+        }
+
+        let Some(mut hook) = self.keyboard_hook.take() else {
+            return;
+        };
+        match hook.uninstall() {
+            Ok(()) => {
+                self.pressed_shortcuts = PressedShortcuts::new();
+                self.logger.event("판서 키보드 훅 해제 성공");
+            }
+            Err(error) => {
+                let message = format!("판서 키보드 훅 해제 실패: {error}");
+                self.logger.event(&message);
+                if let Some(tray) = self.tray.as_ref() {
+                    tray.show_warning("키보드 훅 오류", &message);
+                }
+                self.keyboard_hook = Some(hook);
+            }
+        }
+    }
+
     fn apply_effects(&mut self, effects: Vec<Effect>, source: &str) {
         for effect in effects {
             match effect {
@@ -192,6 +307,7 @@ impl App {
                     }
                 }
                 Effect::AnnotationModeChanged(enabled) => {
+                    self.set_keyboard_hook(enabled);
                     if let Some(tray) = self.tray.as_mut() {
                         tray.set_annotation_enabled(enabled);
                     }
@@ -206,9 +322,68 @@ impl App {
                         if enabled { "켜짐" } else { "꺼짐" }
                     ));
                 }
+                Effect::PassThroughModeChanged(enabled) => {
+                    if let Some(overlays) = self.overlays.as_mut() {
+                        if let Err(error) = overlays.set_pass_through(enabled) {
+                            self.report_overlay_error("통과 모드 반영", &error);
+                        }
+                    }
+                    self.logger.event(&format!(
+                        "효과 ({source}): 통과 모드 {}",
+                        if enabled { "켜짐" } else { "꺼짐" }
+                    ));
+                }
+                Effect::ToolChanged(tool) => {
+                    self.logger
+                        .event(&format!("효과 ({source}): 도구 선택 {tool:?}"));
+                }
+                Effect::SettingsMutation(mutation) => {
+                    mutation.apply(&mut self.settings);
+                    self.logger
+                        .event(&format!("효과 ({source}): 설정 변경 {mutation:?}"));
+                }
+                Effect::Undo(display_id) => {
+                    let result = self
+                        .overlays
+                        .as_mut()
+                        .map(|overlays| overlays.undo(&display_id));
+                    match result {
+                        Some(Ok(changed)) => self.logger.event(&format!(
+                            "효과 ({source}): undo monitor={display_id} changed={changed}"
+                        )),
+                        Some(Err(error)) => self.report_overlay_error("undo", &error),
+                        None => {}
+                    }
+                }
+                Effect::Redo(display_id) => {
+                    let result = self
+                        .overlays
+                        .as_mut()
+                        .map(|overlays| overlays.redo(&display_id));
+                    match result {
+                        Some(Ok(changed)) => self.logger.event(&format!(
+                            "효과 ({source}): redo monitor={display_id} changed={changed}"
+                        )),
+                        Some(Err(error)) => self.report_overlay_error("redo", &error),
+                        None => {}
+                    }
+                }
+                Effect::ClearAll => {
+                    let result = self.overlays.as_mut().map(OverlayManager::clear_all);
+                    match result {
+                        Some(Ok(changed_layers)) => self.logger.event(&format!(
+                            "효과 ({source}): 전체 지우기 layers={changed_layers}"
+                        )),
+                        Some(Err(error)) => self.report_overlay_error("전체 지우기", &error),
+                        None => {}
+                    }
+                }
+                Effect::StepBack(result) => self
+                    .logger
+                    .event(&format!("효과 ({source}): 한 단계 나가기 {result:?}")),
                 other => self
                     .logger
-                    .event(&format!("W1에서 해석하지 않는 core effect: {other:?}")),
+                    .event(&format!("이번 라운드에서 UI 미구현 core effect: {other:?}")),
             }
         }
         let input_config = InkInputConfig::from_core(&self.state, &self.settings);
@@ -262,6 +437,7 @@ impl App {
             return;
         }
         self.shutting_down = true;
+        self.set_keyboard_hook(false);
         // Overlay HWNDs and graphics resources must be released on the UI thread before the tray
         // and hidden owner window go away.
         self.overlays = None;
@@ -320,6 +496,8 @@ fn run_message_loop(logger: Logger) -> Result<i32> {
         settings: AppSettings::default(),
         tray: None,
         hotkeys: None,
+        keyboard_hook: None,
+        pressed_shortcuts: PressedShortcuts::new(),
         overlays: None,
         logger,
         shutting_down: false,
@@ -377,6 +555,10 @@ unsafe extern "system" fn window_proc(
         match message {
             WM_HOTKEY => {
                 app.handle_hotkey(wparam.0 as i32);
+                return LRESULT(0);
+            }
+            WM_APP_KEY => {
+                app.handle_annotation_key(HookKeyEvent::decode(wparam, lparam));
                 return LRESULT(0);
             }
             CALLBACK_MESSAGE => {
@@ -550,6 +732,27 @@ fn run_selftest(logger: &Logger) -> bool {
                 binding.key
             )),
         }
+    }
+
+    for binding in crate::kbhook::unmappable_annotation_bindings(&AppSettings::default()) {
+        failures.push(format!(
+            "keymap: 판서 바인딩을 VK로 바꿀 수 없음: {binding}"
+        ));
+    }
+
+    match KeyboardHook::install(HWND::default(), &AppSettings::default()) {
+        Ok(mut hook) => match hook.uninstall() {
+            Ok(()) => logger.event("--selftest: 키보드 훅 설치/해제 왕복 통과"),
+            Err(error) => failures.push(format!("keyboard hook: 해제 실패: {error}")),
+        },
+        Err(error) => failures.push(format!("keyboard hook: 설치 실패: {error}")),
+    }
+
+    let three_dip_at_144 = 3.0 * crate::render::px_per_dip(144);
+    if (three_dip_at_144 - 4.5).abs() > f64::EPSILON {
+        failures.push(format!(
+            "DIP: 144 DPI에서 3 DIP가 4.5px가 아님 ({three_dip_at_144})"
+        ));
     }
 
     let annotation = ShortcutCatalog::definitions()
