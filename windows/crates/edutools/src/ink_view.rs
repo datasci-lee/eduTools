@@ -1608,6 +1608,15 @@ fn merge_points(existing: &mut Vec<InkPoint>, incoming: Vec<InkPoint>) -> bool {
                 && candidate.location == point.location
                 && candidate.pressure == point.pressure
         }) {
+            // Swift appendActivePoint: a point at the previous location is not a new point
+            // (keeps the pen-up at a resting position from discarding the recognition candidate).
+            if deduplicated.len() >= 2
+                && deduplicated
+                    .last()
+                    .is_some_and(|last: &InkPoint| last.location == point.location)
+            {
+                continue;
+            }
             deduplicated.push(point);
         }
     }
