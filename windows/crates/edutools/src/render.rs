@@ -115,6 +115,21 @@ impl GraphicsDevice {
                 .CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)
         }
     }
+
+    pub fn attach_composition_swap_chain(
+        &self,
+        hwnd: HWND,
+        swap_chain: &IDXGISwapChain1,
+    ) -> Result<(IDCompositionTarget, IDCompositionVisual)> {
+        let target = unsafe { self.dcomp_device.CreateTargetForHwnd(hwnd, true) }?;
+        let visual = unsafe { self.dcomp_device.CreateVisual() }?;
+        unsafe {
+            visual.SetContent(swap_chain)?;
+            target.SetRoot(&visual)?;
+            self.dcomp_device.Commit()?;
+        }
+        Ok((target, visual))
+    }
 }
 
 pub struct OverlayRenderer {
@@ -1283,7 +1298,7 @@ pub fn px_per_dip(dpi: u32) -> f64 {
     }
 }
 
-fn create_swap_chain(
+pub(crate) fn create_swap_chain(
     graphics: &GraphicsDevice,
     width: u32,
     height: u32,
@@ -1312,7 +1327,7 @@ fn create_swap_chain(
     }
 }
 
-fn create_swap_target(
+pub(crate) fn create_swap_target(
     context: &ID2D1DeviceContext,
     swap_chain: &IDXGISwapChain1,
 ) -> Result<ID2D1Bitmap1> {
@@ -1357,7 +1372,7 @@ fn create_cpu_read_bitmap(
     unsafe { context.CreateBitmap(D2D_SIZE_U { width, height }, None, 0, &properties) }
 }
 
-fn pixel_format() -> D2D1_PIXEL_FORMAT {
+pub(crate) fn pixel_format() -> D2D1_PIXEL_FORMAT {
     D2D1_PIXEL_FORMAT {
         format: DXGI_FORMAT_B8G8R8A8_UNORM,
         alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,

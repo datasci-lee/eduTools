@@ -18,10 +18,14 @@ mod log;
 mod monitor;
 #[cfg(windows)]
 mod overlay;
+#[cfg(any(windows, test))]
+mod palette;
 #[cfg(windows)]
 mod render;
 #[cfg(windows)]
 mod tray;
+#[cfg(windows)]
+mod z_bands;
 
 #[cfg(windows)]
 fn main() {

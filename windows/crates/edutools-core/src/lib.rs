@@ -11,6 +11,7 @@ pub mod keystroke;
 pub mod laser;
 pub mod music;
 pub mod radial;
+pub mod screen_position;
 pub mod settings;
 pub mod settings_store;
 pub mod settings_transfer;
