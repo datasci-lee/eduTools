@@ -282,8 +282,8 @@ mod windows_impl {
     use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_UNKNOWN;
     use windows::Win32::Graphics::Dxgi::IDXGISwapChain1;
     use windows::Win32::Graphics::Gdi::{
-        GetStockObject, GetSysColor, COLOR_GRAYTEXT, COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT,
-        COLOR_WINDOW, COLOR_WINDOWTEXT, DEFAULT_GUI_FONT,
+        ClientToScreen, GetStockObject, GetSysColor, COLOR_GRAYTEXT, COLOR_HIGHLIGHT,
+        COLOR_HIGHLIGHTTEXT, COLOR_WINDOW, COLOR_WINDOWTEXT, DEFAULT_GUI_FONT,
     };
     use windows::Win32::System::SystemInformation::GetTickCount64;
     use windows::Win32::UI::HiDpi::GetDpiForWindow;
@@ -298,10 +298,10 @@ mod windows_impl {
         EN_KILLFOCUS, EN_SETFOCUS, ES_AUTOHSCROLL, GWLP_USERDATA, GWL_EXSTYLE, HTCLIENT,
         HTTRANSPARENT, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
         SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, WINDOW_STYLE, WM_COMMAND, WM_DPICHANGED,
-        WM_ERASEBKGND, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY,
-        WM_NCHITTEST, WM_SETFONT, WM_SETTINGCHANGE, WM_SYSCOLORCHANGE, WM_THEMECHANGED, WNDCLASSW,
-        WS_BORDER, WS_CHILD, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
-        WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP, WS_TABSTOP,
+        WM_ERASEBKGND, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_MOVE, WM_NCCREATE,
+        WM_NCDESTROY, WM_NCHITTEST, WM_SETFONT, WM_SETTINGCHANGE, WM_SIZE, WM_SYSCOLORCHANGE,
+        WM_THEMECHANGED, WNDCLASSW, WS_BORDER, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
+        WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP, WS_TABSTOP,
     };
 
     pub const WM_APP_HELP_ACTION: u32 = 0x8000 + 60;
@@ -359,6 +359,7 @@ mod windows_impl {
     impl Drop for HelpWindow {
         fn drop(&mut self) {
             set_text_input_active(false);
+            let _ = unsafe { DestroyWindow(self.state.search) };
             let _ = unsafe { DestroyWindow(self.hwnd) };
         }
     }
@@ -417,10 +418,10 @@ mod windows_impl {
             }?;
             let search = match unsafe {
                 CreateWindowExW(
-                    Default::default(),
+                    WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
                     w!("EDIT"),
                     w!(""),
-                    WS_CHILD | WS_TABSTOP | WS_BORDER | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
+                    WS_POPUP | WS_TABSTOP | WS_BORDER | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
                     0,
                     0,
                     1,
@@ -764,6 +765,7 @@ mod windows_impl {
             set_activation_style(self.window.hwnd, pinned)?;
             if pinned {
                 let _ = unsafe { ShowWindow(self.window.hwnd, SW_SHOW) };
+                let _ = unsafe { ShowWindow(self.window.state.search, SW_SHOW) };
                 if !unsafe { SetForegroundWindow(self.window.hwnd) }.as_bool() {
                     self.logger.event("도움말 pinned 창 전경 전환 실패");
                 }
@@ -901,7 +903,7 @@ mod windows_impl {
                 .state
                 .scroll
                 .min(self.window.state.layout.maximum_scroll);
-            position_search(&self.window.state)?;
+            position_search(self.window.hwnd, &self.window.state)?;
             render_window_state(&mut self.window.state)?;
             self.logger.event(&format!(
                 "도움말 검색: queryLength={}",
@@ -1186,6 +1188,11 @@ mod windows_impl {
                         .clamp(0.0, state.layout.maximum_scroll);
                     if state.scroll != previous {
                         state.hover_action = None;
+                        if let Err(error) = position_search(hwnd, state) {
+                            state
+                                .logger
+                                .event(&format!("도움말 검색창 스크롤 배치 실패: {error}"));
+                        }
                         if let Err(error) = render_window_state(state) {
                             state
                                 .logger
@@ -1209,7 +1216,20 @@ mod windows_impl {
                 }
                 WM_DPICHANGED => {
                     state.dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
+                    if let Err(error) = position_search(hwnd, state) {
+                        state
+                            .logger
+                            .event(&format!("도움말 검색창 DPI 배치 실패: {error}"));
+                    }
                     post_owner(state, WM_APP_HELP_REFRESH, 0);
+                    return LRESULT(0);
+                }
+                WM_MOVE | WM_SIZE => {
+                    if let Err(error) = position_search(hwnd, state) {
+                        state
+                            .logger
+                            .event(&format!("도움말 검색창 창 배치 실패: {error}"));
+                    }
                     return LRESULT(0);
                 }
                 WM_SETTINGCHANGE | WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
@@ -1252,18 +1272,25 @@ mod windows_impl {
         None
     }
 
-    fn position_search(state: &HelpWindowState) -> Result<()> {
+    fn position_search(hwnd: HWND, state: &HelpWindowState) -> Result<()> {
+        if state.search == HWND::default() {
+            return Ok(());
+        }
         let Some(rect) = state.layout.search else {
             let _ = unsafe { ShowWindow(state.search, SW_HIDE) };
             return Ok(());
         };
         let scale = px_per_dip(state.dpi);
-        let left = (rect.left * scale).round() as i32;
-        let top = (rect.top * scale).round() as i32;
+        let mut origin = POINT {
+            x: (rect.left * scale).round() as i32,
+            y: (rect.top * scale).round() as i32,
+        };
+        if !unsafe { ClientToScreen(hwnd, &mut origin) }.as_bool() {
+            return Err(Error::from_thread());
+        }
         let width = (rect.width() * scale).round().max(1.0) as i32;
         let height = (rect.height() * scale).round().max(1.0) as i32;
-        unsafe { MoveWindow(state.search, left, top, width, height, true) }?;
-        let _ = unsafe { ShowWindow(state.search, SW_SHOW) };
+        unsafe { MoveWindow(state.search, origin.x, origin.y, width, height, true) }?;
         Ok(())
     }
 
