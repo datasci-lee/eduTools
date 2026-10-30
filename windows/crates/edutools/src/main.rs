@@ -42,6 +42,8 @@ mod render;
 mod selection;
 #[cfg(windows)]
 mod settings_file;
+#[cfg(any(windows, test))]
+mod settings_ui;
 #[cfg(windows)]
 mod text_entry;
 #[cfg(windows)]

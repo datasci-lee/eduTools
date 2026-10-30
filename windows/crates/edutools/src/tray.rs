@@ -22,6 +22,7 @@ pub const CALLBACK_MESSAGE: u32 = 0x8000 + 1;
 pub const MENU_TOGGLE_ANNOTATION: u16 = 1;
 pub const MENU_EXIT: u16 = 2;
 pub const MENU_DISPLAY_PRESET_BASE: u16 = 100;
+pub const MENU_SETTINGS: u16 = 3;
 pub const ALL_ICON_RESOURCE_IDS: [u16; 5] = [1, 101, 102, 103, 104];
 
 const TRAY_ID: u32 = 1;
@@ -138,6 +139,7 @@ impl Tray {
                 w!("판서 모드"),
             )
             .and_then(|_| AppendMenuW(menu, MF_POPUP, display_menu.0 as usize, w!("화면 구성")))
+            .and_then(|_| AppendMenuW(menu, MF_STRING, usize::from(MENU_SETTINGS), w!("설정…")))
             .and_then(|_| AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null()))
             .and_then(|_| AppendMenuW(menu, MF_STRING, usize::from(MENU_EXIT), w!("EduTools 종료")))
         };
