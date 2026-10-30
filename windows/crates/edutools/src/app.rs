@@ -7,17 +7,23 @@ use crate::palette::{
     command_for_item, item_enabled, PaletteItemId, PaletteManager, WM_APP_PALETTE_ACTION,
     WM_APP_PALETTE_REDRAW, WM_APP_PALETTE_SAVE_POSITION, WM_APP_PALETTE_TOGGLE_ORIENTATION,
 };
+use crate::radial_palette::{
+    RadialPaletteManager, WM_APP_RADIAL_ACTION, WM_APP_RADIAL_COLLAPSE, WM_APP_RADIAL_REDRAW,
+    WM_APP_RADIAL_SAVE_POSITION,
+};
 use crate::tray::{self, Tray, CALLBACK_MESSAGE, MENU_EXIT, MENU_TOGGLE_ANNOTATION};
 use edutools_core::dispatch::{dispatch, DispatchContext, Effect, PressedShortcuts};
+use edutools_core::eraser::EraserMode;
 use edutools_core::ink::{
     InkGeometry, InkPoint, InkStroke, InkStrokeContent, InkStrokeTool, InkTool, PathCommand, Point,
     Size,
 };
+use edutools_core::radial::RadialPaletteIntent;
 use edutools_core::settings::AppSettings;
 use edutools_core::shortcut::{
     ShortcutCatalog, ShortcutCommand, ShortcutDefinition, ShortcutScope,
 };
-use edutools_core::state::AppState;
+use edutools_core::state::{AppState, SettingsMutation};
 use std::cell::RefCell;
 use std::mem::size_of;
 use std::path::PathBuf;
@@ -147,6 +153,7 @@ struct App {
     pressed_shortcuts: PressedShortcuts,
     overlays: Option<OverlayManager>,
     palette: Option<PaletteManager>,
+    radial_palette: Option<RadialPaletteManager>,
     logger: Logger,
     shutting_down: bool,
 }
@@ -177,6 +184,15 @@ impl App {
         let mut palette = PaletteManager::new(self.hwnd, self.hinstance, self.logger.clone())?;
         palette.refresh(&self.state.borrow(), &self.settings)?;
         self.palette = Some(palette);
+        let mut radial_palette = RadialPaletteManager::new(
+            self.hwnd,
+            self.hinstance,
+            &self.state.borrow(),
+            &self.settings,
+            self.logger.clone(),
+        )?;
+        radial_palette.refresh(&self.state.borrow(), &self.settings, "초기화")?;
+        self.radial_palette = Some(radial_palette);
         Ok(())
     }
 
@@ -466,7 +482,14 @@ impl App {
                     .event(&format!("효과 ({source}): 한 단계 나가기 {result:?}")),
                 Effect::PaletteVisibilityChanged(visible) => self
                     .logger
-                    .event(&format!("효과 ({source}): 선형 팔레트 표시 상태 {visible}")),
+                    .event(&format!("효과 ({source}): 팔레트 표시 상태 {visible}")),
+                Effect::CollapseRadialPalette => {
+                    if let Some(radial) = self.radial_palette.as_mut() {
+                        if let Err(error) = radial.collapse("stepBack") {
+                            self.report_radial_palette_error("stepBack 접기", &error);
+                        }
+                    }
+                }
                 other => self
                     .logger
                     .event(&format!("이번 라운드에서 UI 미구현 core effect: {other:?}")),
@@ -480,6 +503,7 @@ impl App {
             }
         }
         self.refresh_palette("core effect");
+        self.refresh_radial_palette("core effect");
     }
 
     fn synchronize_overlays(&mut self, reason: &str) {
@@ -493,6 +517,13 @@ impl App {
                 palette.display_configuration_changed(&self.state.borrow(), &self.settings);
             if let Err(error) = result {
                 self.report_palette_error("모니터 재구성", &error);
+            }
+        }
+        if let Some(radial) = self.radial_palette.as_mut() {
+            if let Err(error) =
+                radial.display_configuration_changed(&self.state.borrow(), &self.settings)
+            {
+                self.report_radial_palette_error("모니터 재구성", &error);
             }
         }
     }
@@ -576,6 +607,210 @@ impl App {
         }
     }
 
+    fn handle_radial_action(&mut self) {
+        let pending = self
+            .radial_palette
+            .as_mut()
+            .and_then(RadialPaletteManager::take_pending_action);
+        let Some((target, intent, secondary)) = pending else {
+            self.logger
+                .event("원형 팔레트 동작 메시지에 pending intent 없음");
+            return;
+        };
+        self.logger.event(&format!(
+            "원형 팔레트 칸 클릭: {target} -> {intent:?} secondary={secondary}"
+        ));
+        self.execute_radial_intent(intent, &target);
+    }
+
+    fn execute_radial_intent(&mut self, intent: RadialPaletteIntent, target: &str) {
+        match intent {
+            RadialPaletteIntent::ToggleExpansion => {
+                if let Some(radial) = self.radial_palette.as_mut() {
+                    if let Err(error) = radial.toggle_expansion("중심 클릭") {
+                        self.report_radial_palette_error("중심 클릭", &error);
+                    }
+                }
+            }
+            RadialPaletteIntent::SelectGroup(group) => {
+                if let Some(radial) = self.radial_palette.as_mut() {
+                    if let Err(error) = radial.select_group(group) {
+                        self.report_radial_palette_error("그룹 선택", &error);
+                    }
+                }
+            }
+            RadialPaletteIntent::Execute(command) => {
+                self.dispatch_radial_command(command, target);
+            }
+            RadialPaletteIntent::SelectEraserMode(mode) => {
+                if self.state.borrow().current_tool() != InkTool::Eraser {
+                    self.dispatch_radial_command(ShortcutCommand::SelectOrCycleEraser, target);
+                }
+                if self.settings.eraser.mode != eraser_mode_name(mode) {
+                    self.apply_effects(
+                        vec![Effect::SettingsMutation(SettingsMutation::SetEraserMode(
+                            mode,
+                        ))],
+                        &format!("원형 팔레트 {target}"),
+                    );
+                }
+            }
+            RadialPaletteIntent::ToggleEraserAreaShape => {
+                self.dispatch_radial_command(ShortcutCommand::ToggleEraserAreaShape, target);
+            }
+            RadialPaletteIntent::SelectColor(index) => {
+                let selected_mutation = self.state.borrow_mut().select_color(index, &self.settings);
+                if let Some(mutation) = selected_mutation {
+                    self.apply_effects(
+                        vec![Effect::SettingsMutation(mutation)],
+                        &format!("원형 팔레트 {target}"),
+                    );
+                }
+            }
+            RadialPaletteIntent::SetWidth { tool, value } => {
+                let selected_mutation = self.state.borrow_mut().set_width(tool, value);
+                if let Some(mutation) = selected_mutation {
+                    self.apply_effects(
+                        vec![Effect::SettingsMutation(mutation)],
+                        &format!("원형 팔레트 {target}"),
+                    );
+                }
+            }
+            RadialPaletteIntent::SetEraserDiameter(value) => self.apply_effects(
+                vec![Effect::SettingsMutation(
+                    SettingsMutation::SetEraserDiameter(value),
+                )],
+                &format!("원형 팔레트 {target}"),
+            ),
+            RadialPaletteIntent::SetLaserColor { index, .. } => {
+                let selected_mutation = self.state.borrow_mut().select_color(index, &self.settings);
+                if let Some(mutation) = selected_mutation {
+                    self.apply_effects(
+                        vec![Effect::SettingsMutation(mutation)],
+                        &format!("원형 팔레트 {target}"),
+                    );
+                } else {
+                    self.logger.event(&format!(
+                        "원형 팔레트 레이저 색 경로 거부: target={target} index={index}"
+                    ));
+                }
+            }
+            RadialPaletteIntent::OpenSettings => {
+                self.logger
+                    .event("원형 팔레트 미구현 intent: 설정 창 미구현");
+            }
+            RadialPaletteIntent::SaveFavorite => self
+                .logger
+                .event("원형 팔레트 미구현 intent: SaveFavorite (116b)"),
+            RadialPaletteIntent::ApplyFavorite { index, .. } => self.logger.event(&format!(
+                "원형 팔레트 미구현 intent: ApplyFavorite index={index} (116b)"
+            )),
+            RadialPaletteIntent::RemoveFavorite { index, .. } => self.logger.event(&format!(
+                "원형 팔레트 미구현 intent: RemoveFavorite index={index} (116b)"
+            )),
+        }
+    }
+
+    fn dispatch_radial_command(&mut self, command: ShortcutCommand, target: &str) {
+        let display_id = match self
+            .radial_palette
+            .as_ref()
+            .map(RadialPaletteManager::monitor_key)
+        {
+            Some(Ok(display_id)) => display_id,
+            Some(Err(error)) => {
+                self.report_radial_palette_error("대상 모니터 판정", &error);
+                None
+            }
+            None => None,
+        };
+        let context = DispatchContext {
+            scope: ShortcutScope::Annotation,
+            display_id: display_id.as_deref(),
+            board_display_id: display_id.as_deref(),
+            radial_palette_expanded: self
+                .radial_palette
+                .as_ref()
+                .is_some_and(RadialPaletteManager::is_expanded),
+            ..DispatchContext::default()
+        };
+        let dispatched = dispatch(
+            &command,
+            &mut self.state.borrow_mut(),
+            &self.settings,
+            context,
+        );
+        match dispatched {
+            Ok(effects) => {
+                self.apply_effects(effects, &format!("원형 팔레트 {target}"));
+                if matches!(
+                    command,
+                    ShortcutCommand::SelectTool(_)
+                        | ShortcutCommand::UseLaser
+                        | ShortcutCommand::SelectOrCycleEraser
+                ) {
+                    self.logger
+                        .event("원형 팔레트 펼침 유지: 도구 선택 (Swift 동작 대칭)");
+                }
+            }
+            Err(error) => self.logger.event(&format!(
+                "원형 팔레트 core dispatch 실패: target={target} command={command:?}: {error}"
+            )),
+        }
+    }
+
+    fn refresh_radial_palette(&mut self, reason: &str) {
+        if let Some(radial) = self.radial_palette.as_mut() {
+            if let Err(error) = radial.refresh(&self.state.borrow(), &self.settings, reason) {
+                self.report_radial_palette_error(reason, &error);
+            }
+        }
+    }
+
+    fn redraw_radial_palette(&mut self) {
+        if let Some(radial) = self.radial_palette.as_mut() {
+            if let Err(error) = radial.redraw() {
+                self.report_radial_palette_error("다시 그리기", &error);
+            }
+        }
+    }
+
+    fn save_radial_palette_position(&mut self) {
+        if let Some(radial) = self.radial_palette.as_mut() {
+            if let Err(error) = radial.save_position() {
+                self.report_radial_palette_error("위치 저장", &error);
+            }
+        }
+    }
+
+    fn collapse_radial_for_external_pointer_down(&mut self, hwnd: HWND, message: u32) -> bool {
+        let should_collapse = message == windows::Win32::UI::WindowsAndMessaging::WM_POINTERDOWN
+            && self
+                .radial_palette
+                .as_ref()
+                .is_some_and(|radial| radial.is_expanded() && radial.hwnd() != hwnd);
+        if !should_collapse {
+            return false;
+        }
+        if let Some(radial) = self.radial_palette.as_mut() {
+            if let Err(error) = radial.collapse("바깥 클릭") {
+                self.report_radial_palette_error("바깥 클릭 접기", &error);
+            }
+        }
+        self.logger.event(
+            "원형 팔레트 바깥 클릭 메시지 폐기: Swift local monitor return nil 및 plan §2.3 대칭",
+        );
+        true
+    }
+
+    fn report_radial_palette_error(&self, context: &str, error: &Error) {
+        let message = format!("원형 팔레트 {context} 실패: {error}");
+        self.logger.event(&message);
+        if let Some(tray) = self.tray.as_ref() {
+            tray.show_warning("원형 팔레트 오류", &message);
+        }
+    }
+
     fn report_palette_error(&self, context: &str, error: &Error) {
         let message = format!("팔레트 {context} 실패: {error}");
         self.logger.event(&message);
@@ -624,6 +859,7 @@ impl App {
         self.set_keyboard_hook(false);
         // Overlay HWNDs and graphics resources must be released on the UI thread before the tray
         // and hidden owner window go away.
+        self.radial_palette = None;
         self.palette = None;
         self.overlays = None;
         if let Some(hotkeys) = self.hotkeys.as_mut() {
@@ -685,6 +921,7 @@ fn run_message_loop(logger: Logger) -> Result<i32> {
         pressed_shortcuts: PressedShortcuts::new(),
         overlays: None,
         palette: None,
+        radial_palette: None,
         logger,
         shutting_down: false,
     });
@@ -710,6 +947,9 @@ fn run_message_loop(logger: Logger) -> Result<i32> {
         }
         if status.0 == 0 {
             break Ok(i32::try_from(message.wParam.0).unwrap_or(1));
+        }
+        if app.collapse_radial_for_external_pointer_down(message.hwnd, message.message) {
+            continue;
         }
         // SAFETY: message was populated by GetMessageW.
         unsafe {
@@ -769,6 +1009,26 @@ unsafe extern "system" fn window_proc(
             }
             WM_APP_PALETTE_TOGGLE_ORIENTATION => {
                 app.toggle_palette_orientation();
+                return LRESULT(0);
+            }
+            WM_APP_RADIAL_ACTION => {
+                app.handle_radial_action();
+                return LRESULT(0);
+            }
+            WM_APP_RADIAL_REDRAW => {
+                app.redraw_radial_palette();
+                return LRESULT(0);
+            }
+            WM_APP_RADIAL_SAVE_POSITION => {
+                app.save_radial_palette_position();
+                return LRESULT(0);
+            }
+            WM_APP_RADIAL_COLLAPSE => {
+                if let Some(radial) = app.radial_palette.as_mut() {
+                    if let Err(error) = radial.collapse("바깥 클릭") {
+                        app.report_radial_palette_error("바깥 클릭 접기", &error);
+                    }
+                }
                 return LRESULT(0);
             }
             WM_SETTINGCHANGE => {
@@ -862,6 +1122,19 @@ fn run_selftest(logger: &Logger) -> bool {
         match PaletteManager::new(HWND::default(), hinstance, logger.clone()) {
             Ok(mut palette) => failures.extend(palette.selftest_failures(&state, &settings)),
             Err(error) => failures.push(format!("palette: 생성 실패: {error}")),
+        }
+
+        let state = AppState::new();
+        let settings = AppSettings::default();
+        match RadialPaletteManager::new(
+            HWND::default(),
+            hinstance,
+            &state,
+            &settings,
+            logger.clone(),
+        ) {
+            Ok(mut palette) => failures.extend(palette.selftest_failures(&state, &settings)),
+            Err(error) => failures.push(format!("radial palette: 생성 실패: {error}")),
         }
     }
 
@@ -990,3 +1263,11 @@ fn run_selftest(logger: &Logger) -> bool {
 const _: () = {
     assert!(size_of::<usize>() >= size_of::<u32>());
 };
+
+fn eraser_mode_name(mode: EraserMode) -> &'static str {
+    match mode {
+        EraserMode::Partial => "partial",
+        EraserMode::Stroke => "stroke",
+        EraserMode::Area => "area",
+    }
+}

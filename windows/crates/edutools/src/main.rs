@@ -21,6 +21,8 @@ mod overlay;
 #[cfg(any(windows, test))]
 mod palette;
 #[cfg(windows)]
+mod radial_palette;
+#[cfg(windows)]
 mod render;
 #[cfg(windows)]
 mod selection;
