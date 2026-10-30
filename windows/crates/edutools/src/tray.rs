@@ -23,6 +23,7 @@ pub const MENU_TOGGLE_ANNOTATION: u16 = 1;
 pub const MENU_EXIT: u16 = 2;
 pub const MENU_DISPLAY_PRESET_BASE: u16 = 100;
 pub const MENU_SETTINGS: u16 = 3;
+pub const MENU_DISPLAY_SETTINGS: u16 = 4;
 pub const ALL_ICON_RESOURCE_IDS: [u16; 5] = [1, 101, 102, 103, 104];
 
 const TRAY_ID: u32 = 1;
@@ -353,42 +354,51 @@ fn populate_display_menu(
     entries: &[DisplayPresetMenuEntry],
 ) -> Result<()> {
     if entries.is_empty() {
-        return unsafe {
+        unsafe {
             AppendMenuW(
                 menu,
                 MENU_ITEM_FLAGS(MF_STRING.0 | MF_GRAYED.0),
                 0,
                 w!("프리셋 없음 — 설정에서 추가"),
             )
-        };
-    }
-    for entry in entries {
-        let mut flags = MF_STRING.0;
-        if entry.is_current {
-            flags |= MF_CHECKED.0;
-        }
-        if !entry.is_enabled {
-            flags |= MF_GRAYED.0;
-        }
-        let title = entry
-            .disabled_reason
-            .as_ref()
-            .map(|reason| format!("{} — {reason}", entry.title))
-            .unwrap_or_else(|| entry.title.clone());
-        let title = wide(&title);
-        let command = usize::from(MENU_DISPLAY_PRESET_BASE)
-            .checked_add(entry.index)
-            .expect("display preset command fits usize");
-        unsafe {
-            AppendMenuW(
-                menu,
-                MENU_ITEM_FLAGS(flags),
-                command,
-                PCWSTR(title.as_ptr()),
-            )
         }?;
+    } else {
+        for entry in entries {
+            let mut flags = MF_STRING.0;
+            if entry.is_current {
+                flags |= MF_CHECKED.0;
+            }
+            if !entry.is_enabled {
+                flags |= MF_GRAYED.0;
+            }
+            let title = entry
+                .disabled_reason
+                .as_ref()
+                .map(|reason| format!("{} — {reason}", entry.title))
+                .unwrap_or_else(|| entry.title.clone());
+            let title = wide(&title);
+            let command = usize::from(MENU_DISPLAY_PRESET_BASE)
+                .checked_add(entry.index)
+                .expect("display preset command fits usize");
+            unsafe {
+                AppendMenuW(
+                    menu,
+                    MENU_ITEM_FLAGS(flags),
+                    command,
+                    PCWSTR(title.as_ptr()),
+                )
+            }?;
+        }
     }
-    Ok(())
+    unsafe {
+        AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null())?;
+        AppendMenuW(
+            menu,
+            MF_STRING,
+            usize::from(MENU_DISPLAY_SETTINGS),
+            w!("프리셋 편집…"),
+        )
+    }
 }
 
 pub fn load_resource_icon(hinstance: HINSTANCE, id: u16, size: i32) -> Result<HICON> {

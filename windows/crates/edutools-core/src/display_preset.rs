@@ -14,6 +14,42 @@ impl DisplayPresetDefaults {
     pub const MANUAL_CONFIRMATION_INTERVAL: f64 = 15.0;
 }
 
+// Swift: DisplayPresetsSettingsView.limitedName(_:)
+pub fn limited_name(name: &str) -> String {
+    name.chars()
+        .take(DisplayPresetDefaults::MAXIMUM_NAME_LENGTH)
+        .collect()
+}
+
+// Swift: DisplayPresetsSettingsView.isValidName(_:)
+pub fn is_valid_name(name: &str) -> bool {
+    !name.trim().is_empty() && name.chars().count() <= DisplayPresetDefaults::MAXIMUM_NAME_LENGTH
+}
+
+// Swift: DisplayPresetsSettingsView.uniqueName(startingWith:)
+pub fn unique_name<'a>(
+    requested_name: &str,
+    existing: impl IntoIterator<Item = &'a str>,
+) -> String {
+    let existing = existing.into_iter().collect::<HashSet<_>>();
+    let initial = limited_name(requested_name);
+    if !existing.contains(initial.as_str()) {
+        return initial;
+    }
+    for suffix in 2_usize.. {
+        let suffix_text = format!(" {suffix}");
+        let base_limit = DisplayPresetDefaults::MAXIMUM_NAME_LENGTH
+            .saturating_sub(suffix_text.chars().count())
+            .max(1);
+        let base = requested_name.chars().take(base_limit).collect::<String>();
+        let candidate = format!("{base}{suffix_text}");
+        if !existing.contains(candidate.as_str()) {
+            return candidate;
+        }
+    }
+    unreachable!("the numeric suffix space is unbounded")
+}
+
 // Swift: DisplayKind
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
