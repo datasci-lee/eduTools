@@ -19,6 +19,8 @@ pub const COLLAPSED_DIAMETER: f64 = 44.0;
 pub const EXPANDED_DIAMETER: f64 = 302.0;
 pub const CENTER_RADIUS: f64 = COLLAPSED_DIAMETER / 2.0;
 pub const DRAG_THRESHOLD: f64 = 4.0;
+pub const KEY_CAP_HOLD_DURATION_MS: u32 = 500;
+pub const TOOLTIP_GAP: f64 = 8.0;
 pub const GROUP_INNER_RADIUS: f64 = 28.0;
 pub const GROUP_OUTER_RADIUS: f64 = 58.0;
 pub const ENTRY_INNER_RADIUS: f64 = 64.0;
@@ -31,6 +33,200 @@ pub const OPTION_MAXIMUM_SLICE: f64 = PI / 6.0;
 pub const WRITING_WIDTHS: [f64; 5] = [1.0, 3.0, 5.0, 8.0, 12.0];
 pub const HIGHLIGHTER_WIDTHS: [f64; 5] = [6.0, 12.0, 18.0, 24.0, 30.0];
 pub const TEXT_SIZES: [f64; 5] = [16.0, 24.0, 36.0, 48.0, 72.0];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RadialPaletteKeyboardKey {
+    Up,
+    Down,
+    Left,
+    Right,
+    Enter,
+    Space,
+    Other,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RadialPaletteKeyboardInput {
+    Navigate(RadialPaletteNavigationKey),
+    Activate,
+}
+
+pub const fn radial_palette_keyboard_input(
+    key: RadialPaletteKeyboardKey,
+) -> Option<RadialPaletteKeyboardInput> {
+    match key {
+        RadialPaletteKeyboardKey::Up => Some(RadialPaletteKeyboardInput::Navigate(
+            RadialPaletteNavigationKey::Deeper,
+        )),
+        RadialPaletteKeyboardKey::Down => Some(RadialPaletteKeyboardInput::Navigate(
+            RadialPaletteNavigationKey::Shallower,
+        )),
+        RadialPaletteKeyboardKey::Left => Some(RadialPaletteKeyboardInput::Navigate(
+            RadialPaletteNavigationKey::Previous,
+        )),
+        RadialPaletteKeyboardKey::Right => Some(RadialPaletteKeyboardInput::Navigate(
+            RadialPaletteNavigationKey::Next,
+        )),
+        RadialPaletteKeyboardKey::Enter | RadialPaletteKeyboardKey::Space => {
+            Some(RadialPaletteKeyboardInput::Activate)
+        }
+        RadialPaletteKeyboardKey::Other => None,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RadialPaletteKeyPassReason {
+    Hidden,
+    Collapsed,
+    TextInput,
+    Modifiers,
+    Unsupported,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RadialPaletteKeyDecision {
+    Consume(RadialPaletteKeyboardInput),
+    Pass(RadialPaletteKeyPassReason),
+}
+
+pub const fn radial_palette_key_decision(
+    expanded: bool,
+    visible: bool,
+    text_input: bool,
+    has_modifiers: bool,
+    key: RadialPaletteKeyboardKey,
+) -> RadialPaletteKeyDecision {
+    let Some(input) = radial_palette_keyboard_input(key) else {
+        return RadialPaletteKeyDecision::Pass(RadialPaletteKeyPassReason::Unsupported);
+    };
+    if !visible {
+        return RadialPaletteKeyDecision::Pass(RadialPaletteKeyPassReason::Hidden);
+    }
+    if !expanded {
+        return RadialPaletteKeyDecision::Pass(RadialPaletteKeyPassReason::Collapsed);
+    }
+    if text_input {
+        return RadialPaletteKeyDecision::Pass(RadialPaletteKeyPassReason::TextInput);
+    }
+    if has_modifiers {
+        return RadialPaletteKeyDecision::Pass(RadialPaletteKeyPassReason::Modifiers);
+    }
+    RadialPaletteKeyDecision::Consume(input)
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RadialKeyCapState {
+    #[default]
+    Idle,
+    Waiting,
+    Visible,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RadialKeyCapEvent {
+    ControlAloneDown,
+    OtherKeyDown,
+    ModifierAdded,
+    ControlReleased,
+    TimerElapsed { control_only: bool },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RadialKeyCapAction {
+    None,
+    Schedule,
+    Cancel,
+    Show,
+}
+
+pub const fn next_radial_key_cap_state(
+    state: RadialKeyCapState,
+    event: RadialKeyCapEvent,
+) -> (RadialKeyCapState, RadialKeyCapAction) {
+    match (state, event) {
+        (RadialKeyCapState::Idle, RadialKeyCapEvent::ControlAloneDown) => {
+            (RadialKeyCapState::Waiting, RadialKeyCapAction::Schedule)
+        }
+        (
+            RadialKeyCapState::Waiting | RadialKeyCapState::Visible,
+            RadialKeyCapEvent::ControlAloneDown,
+        ) => (state, RadialKeyCapAction::None),
+        (
+            RadialKeyCapState::Idle,
+            RadialKeyCapEvent::OtherKeyDown
+            | RadialKeyCapEvent::ModifierAdded
+            | RadialKeyCapEvent::ControlReleased,
+        ) => (RadialKeyCapState::Idle, RadialKeyCapAction::None),
+        (
+            _,
+            RadialKeyCapEvent::OtherKeyDown
+            | RadialKeyCapEvent::ModifierAdded
+            | RadialKeyCapEvent::ControlReleased,
+        ) => (RadialKeyCapState::Idle, RadialKeyCapAction::Cancel),
+        (RadialKeyCapState::Waiting, RadialKeyCapEvent::TimerElapsed { control_only: true }) => {
+            (RadialKeyCapState::Visible, RadialKeyCapAction::Show)
+        }
+        (
+            RadialKeyCapState::Waiting,
+            RadialKeyCapEvent::TimerElapsed {
+                control_only: false,
+            },
+        ) => (RadialKeyCapState::Idle, RadialKeyCapAction::Cancel),
+        (state, RadialKeyCapEvent::TimerElapsed { .. }) => (state, RadialKeyCapAction::None),
+    }
+}
+
+/// Swift `tooltipFrame` + `clamped`, with y increasing downwards on Windows.
+pub fn radial_tooltip_frame(
+    size: [f64; 2],
+    palette_center: Point,
+    preferred_direction: [f64; 2],
+    palette_radius: f64,
+    work_area: Rect,
+) -> Rect {
+    let magnitude = preferred_direction[0].hypot(preferred_direction[1]);
+    let direction = if magnitude > 0.0 {
+        [
+            preferred_direction[0] / magnitude,
+            preferred_direction[1] / magnitude,
+        ]
+    } else {
+        [1.0, 0.0]
+    };
+    let projected_half_extent =
+        direction[0].abs() * size[0] / 2.0 + direction[1].abs() * size[1] / 2.0;
+    let distance = palette_radius + TOOLTIP_GAP + projected_half_extent;
+    let candidate = |direction: [f64; 2]| Rect {
+        x: palette_center.x + direction[0] * distance - size[0] / 2.0,
+        y: palette_center.y + direction[1] * distance - size[1] / 2.0,
+        width: size[0],
+        height: size[1],
+    };
+    let preferred = candidate(direction);
+    let contains = |frame: Rect| {
+        frame.x >= work_area.x
+            && frame.y >= work_area.y
+            && frame.x + frame.width <= work_area.x + work_area.width
+            && frame.y + frame.height <= work_area.y + work_area.height
+    };
+    let chosen = if contains(preferred) {
+        preferred
+    } else {
+        candidate([-direction[0], -direction[1]])
+    };
+    let clamp_axis = |origin: f64, length: f64, work_origin: f64, work_length: f64| {
+        if work_length >= length {
+            origin.clamp(work_origin, work_origin + work_length - length)
+        } else {
+            work_origin
+        }
+    };
+    Rect {
+        x: clamp_axis(chosen.x, chosen.width, work_area.x, work_area.width),
+        y: clamp_axis(chosen.y, chosen.height, work_area.y, work_area.height),
+        ..chosen
+    }
+}
 
 /// Swift: RadialPaletteArcStyle
 pub struct RadialPaletteArcStyle;
@@ -1564,9 +1760,13 @@ fn format_number(value: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        radial_drag_threshold_reached, radial_palette_should_show, RadialPaletteSectorGeometry,
-        RadialPaletteSectorPath,
+        next_radial_key_cap_state, radial_drag_threshold_reached, radial_palette_key_decision,
+        radial_palette_keyboard_input, radial_palette_should_show, radial_tooltip_frame,
+        RadialKeyCapAction, RadialKeyCapEvent, RadialKeyCapState, RadialPaletteKeyDecision,
+        RadialPaletteKeyPassReason, RadialPaletteKeyboardInput, RadialPaletteKeyboardKey,
+        RadialPaletteNavigationKey, RadialPaletteSectorGeometry, RadialPaletteSectorPath,
     };
+    use crate::ink::{Point, Rect};
     use crate::settings::PaletteStyle;
     use std::f64::consts::FRAC_PI_2;
 
@@ -1658,6 +1858,229 @@ mod tests {
         for (annotation, visible, style, expected) in cases {
             assert_eq!(
                 radial_palette_should_show(annotation, visible, style),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn radial_keyboard_interception_table_covers_state_modifiers_text_and_key_kind() {
+        let cases = [
+            (
+                true,
+                true,
+                false,
+                false,
+                RadialPaletteKeyboardKey::Up,
+                RadialPaletteKeyDecision::Consume(RadialPaletteKeyboardInput::Navigate(
+                    RadialPaletteNavigationKey::Deeper,
+                )),
+            ),
+            (
+                false,
+                true,
+                false,
+                false,
+                RadialPaletteKeyboardKey::Left,
+                RadialPaletteKeyDecision::Pass(RadialPaletteKeyPassReason::Collapsed),
+            ),
+            (
+                false,
+                true,
+                true,
+                true,
+                RadialPaletteKeyboardKey::Enter,
+                RadialPaletteKeyDecision::Pass(RadialPaletteKeyPassReason::Collapsed),
+            ),
+            (
+                true,
+                false,
+                false,
+                false,
+                RadialPaletteKeyboardKey::Right,
+                RadialPaletteKeyDecision::Pass(RadialPaletteKeyPassReason::Hidden),
+            ),
+            (
+                true,
+                true,
+                false,
+                true,
+                RadialPaletteKeyboardKey::Enter,
+                RadialPaletteKeyDecision::Pass(RadialPaletteKeyPassReason::Modifiers),
+            ),
+            (
+                true,
+                true,
+                false,
+                true,
+                RadialPaletteKeyboardKey::Right,
+                RadialPaletteKeyDecision::Pass(RadialPaletteKeyPassReason::Modifiers),
+            ),
+            (
+                true,
+                true,
+                true,
+                false,
+                RadialPaletteKeyboardKey::Space,
+                RadialPaletteKeyDecision::Pass(RadialPaletteKeyPassReason::TextInput),
+            ),
+            (
+                true,
+                true,
+                true,
+                true,
+                RadialPaletteKeyboardKey::Down,
+                RadialPaletteKeyDecision::Pass(RadialPaletteKeyPassReason::TextInput),
+            ),
+            (
+                true,
+                true,
+                false,
+                false,
+                RadialPaletteKeyboardKey::Other,
+                RadialPaletteKeyDecision::Pass(RadialPaletteKeyPassReason::Unsupported),
+            ),
+        ];
+        for (expanded, visible, text_input, modifiers, key, expected) in cases {
+            assert_eq!(
+                radial_palette_key_decision(expanded, visible, text_input, modifiers, key),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn radial_keyboard_mapping_table_matches_swift_navigation_and_activation() {
+        let cases = [
+            (
+                RadialPaletteKeyboardKey::Up,
+                Some(RadialPaletteKeyboardInput::Navigate(
+                    RadialPaletteNavigationKey::Deeper,
+                )),
+            ),
+            (
+                RadialPaletteKeyboardKey::Down,
+                Some(RadialPaletteKeyboardInput::Navigate(
+                    RadialPaletteNavigationKey::Shallower,
+                )),
+            ),
+            (
+                RadialPaletteKeyboardKey::Left,
+                Some(RadialPaletteKeyboardInput::Navigate(
+                    RadialPaletteNavigationKey::Previous,
+                )),
+            ),
+            (
+                RadialPaletteKeyboardKey::Right,
+                Some(RadialPaletteKeyboardInput::Navigate(
+                    RadialPaletteNavigationKey::Next,
+                )),
+            ),
+            (
+                RadialPaletteKeyboardKey::Enter,
+                Some(RadialPaletteKeyboardInput::Activate),
+            ),
+            (
+                RadialPaletteKeyboardKey::Space,
+                Some(RadialPaletteKeyboardInput::Activate),
+            ),
+            (RadialPaletteKeyboardKey::Other, None),
+        ];
+        for (key, expected) in cases {
+            assert_eq!(radial_palette_keyboard_input(key), expected);
+        }
+    }
+
+    #[test]
+    fn radial_key_cap_timer_state_machine_table_covers_hold_cancel_modifier_and_release() {
+        let cases = [
+            (
+                RadialKeyCapState::Idle,
+                RadialKeyCapEvent::ControlAloneDown,
+                (RadialKeyCapState::Waiting, RadialKeyCapAction::Schedule),
+            ),
+            (
+                RadialKeyCapState::Waiting,
+                RadialKeyCapEvent::TimerElapsed { control_only: true },
+                (RadialKeyCapState::Visible, RadialKeyCapAction::Show),
+            ),
+            (
+                RadialKeyCapState::Waiting,
+                RadialKeyCapEvent::OtherKeyDown,
+                (RadialKeyCapState::Idle, RadialKeyCapAction::Cancel),
+            ),
+            (
+                RadialKeyCapState::Waiting,
+                RadialKeyCapEvent::ModifierAdded,
+                (RadialKeyCapState::Idle, RadialKeyCapAction::Cancel),
+            ),
+            (
+                RadialKeyCapState::Waiting,
+                RadialKeyCapEvent::TimerElapsed {
+                    control_only: false,
+                },
+                (RadialKeyCapState::Idle, RadialKeyCapAction::Cancel),
+            ),
+            (
+                RadialKeyCapState::Visible,
+                RadialKeyCapEvent::ControlReleased,
+                (RadialKeyCapState::Idle, RadialKeyCapAction::Cancel),
+            ),
+        ];
+        for (state, event, expected) in cases {
+            assert_eq!(next_radial_key_cap_state(state, event), expected);
+        }
+    }
+
+    #[test]
+    fn radial_tooltip_position_table_uses_direction_opposite_then_work_area_clamp() {
+        let work = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 500.0,
+            height: 400.0,
+        };
+        let cases = [
+            (
+                [100.0, 40.0],
+                Point { x: 250.0, y: 200.0 },
+                [0.0, -1.0],
+                22.0,
+                Rect {
+                    x: 200.0,
+                    y: 130.0,
+                    width: 100.0,
+                    height: 40.0,
+                },
+            ),
+            (
+                [100.0, 40.0],
+                Point { x: 440.0, y: 200.0 },
+                [1.0, 0.0],
+                22.0,
+                Rect {
+                    x: 310.0,
+                    y: 180.0,
+                    width: 100.0,
+                    height: 40.0,
+                },
+            ),
+            (
+                [100.0, 40.0],
+                Point { x: 250.0, y: 200.0 },
+                [1.0, 0.0],
+                151.0,
+                Rect {
+                    x: 0.0,
+                    y: 180.0,
+                    width: 100.0,
+                    height: 40.0,
+                },
+            ),
+        ];
+        for (size, center, direction, radius, expected) in cases {
+            assert_eq!(
+                radial_tooltip_frame(size, center, direction, radius, work),
                 expected
             );
         }

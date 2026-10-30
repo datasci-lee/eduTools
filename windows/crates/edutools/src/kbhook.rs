@@ -1,6 +1,10 @@
 use crate::keymap;
 use crate::text_entry;
 use edutools_core::dispatch::should_consume;
+use edutools_core::radial::{
+    radial_palette_key_decision, radial_palette_keyboard_input, RadialPaletteKeyDecision,
+    RadialPaletteKeyPassReason, RadialPaletteKeyboardInput, RadialPaletteKeyboardKey,
+};
 use edutools_core::settings::AppSettings;
 use edutools_core::shortcut::{
     ShortcutCatalog, ShortcutCommand, ShortcutDefinition, ShortcutModifiers, ShortcutScope,
@@ -11,7 +15,9 @@ use windows::core::{Error, Result};
 use windows::Win32::Foundation::{E_FAIL, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
+    GetAsyncKeyState, VK_CONTROL, VK_DOWN, VK_LCONTROL, VK_LEFT, VK_LMENU, VK_LSHIFT, VK_LWIN,
+    VK_MENU, VK_RCONTROL, VK_RETURN, VK_RIGHT, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_SPACE,
+    VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, PostMessageW, SetWindowsHookExW, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT,
@@ -19,16 +25,28 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 pub const WM_APP_KEY: u32 = 0x8000 + 3;
+pub const WM_APP_RADIAL_KEY: u32 = 0x8000 + 70;
+pub const WM_APP_RADIAL_KEY_CAP: u32 = 0x8000 + 71;
 const KEY_UP_FLAG: isize = 1;
 const CONSUMED_FLAG: isize = 1 << 1;
 const ZOOM_SCOPE_FLAG: isize = 1 << 2;
+const REPEAT_FLAG: isize = 1 << 2;
+const RADIAL_REASON_SHIFT: usize = 3;
 const DEFINITION_SHIFT: usize = 3;
 const SCAN_CODE_COUNT: usize = 512;
+const VK_COUNT: usize = 256;
 
 static TEXT_INPUT_ACTIVE: AtomicBool = AtomicBool::new(false);
+static PALETTE_EXPANDED: AtomicBool = AtomicBool::new(false);
+static PALETTE_VISIBLE: AtomicBool = AtomicBool::new(false);
 
 pub fn set_text_input_active(active: bool) {
     TEXT_INPUT_ACTIVE.store(active, Ordering::Release);
+}
+
+pub fn set_radial_palette_hook_state(expanded: bool, visible: bool) {
+    PALETTE_EXPANDED.store(expanded, Ordering::Release);
+    PALETTE_VISIBLE.store(visible, Ordering::Release);
 }
 
 struct CallbackState {
@@ -36,6 +54,7 @@ struct CallbackState {
     definitions: Vec<ShortcutDefinition>,
     settings: AppSettings,
     pressed: [Option<(usize, HookScope)>; SCAN_CODE_COUNT],
+    radial_pressed: [bool; VK_COUNT],
     annotation_active: bool,
     zoom_active: bool,
 }
@@ -66,6 +85,52 @@ pub struct HookKeyEvent {
     pub is_key_up: bool,
     pub consumed: bool,
     pub scope: HookScope,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RadialPaletteKeyEvent {
+    pub key_code: u32,
+    pub is_key_up: bool,
+    pub consumed: bool,
+    pub is_repeat: bool,
+    pub pass_reason: Option<RadialPaletteKeyPassReason>,
+}
+
+impl RadialPaletteKeyEvent {
+    pub fn decode(wparam: WPARAM, lparam: LPARAM) -> Self {
+        let payload = lparam.0;
+        Self {
+            key_code: wparam.0 as u32,
+            is_key_up: payload & KEY_UP_FLAG != 0,
+            consumed: payload & CONSUMED_FLAG != 0,
+            is_repeat: payload & REPEAT_FLAG != 0,
+            pass_reason: decode_pass_reason((payload as usize) >> RADIAL_REASON_SHIFT),
+        }
+    }
+
+    pub fn input(self) -> Option<RadialPaletteKeyboardInput> {
+        radial_palette_keyboard_input(radial_key(self.key_code))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RadialKeyCapHookEvent {
+    ControlAloneDown,
+    OtherKeyDown,
+    ModifierAdded,
+    ControlReleased,
+}
+
+impl RadialKeyCapHookEvent {
+    pub fn decode(wparam: WPARAM) -> Option<Self> {
+        match wparam.0 {
+            1 => Some(Self::ControlAloneDown),
+            2 => Some(Self::OtherKeyDown),
+            3 => Some(Self::ModifierAdded),
+            4 => Some(Self::ControlReleased),
+            _ => None,
+        }
+    }
 }
 
 impl HookKeyEvent {
@@ -111,6 +176,7 @@ impl KeyboardHook {
                 definitions: definitions.clone(),
                 settings: settings.clone(),
                 pressed: [None; SCAN_CODE_COUNT],
+                radial_pressed: [false; VK_COUNT],
                 annotation_active,
                 zoom_active,
             });
@@ -149,6 +215,15 @@ impl KeyboardHook {
                 state.zoom_active = zoom_active;
             }
         });
+    }
+
+    pub fn has_pressed_keys(&self) -> bool {
+        CALLBACK_STATE.with(|slot| {
+            slot.borrow().as_ref().is_some_and(|state| {
+                state.pressed.iter().any(Option::is_some)
+                    || state.radial_pressed.iter().any(|pressed| *pressed)
+            })
+        })
     }
 
     pub fn uninstall(&mut self) -> Result<()> {
@@ -259,6 +334,118 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
     // SAFETY: WH_KEYBOARD_LL supplies a live KBDLLHOOKSTRUCT pointer for HC_ACTION callbacks.
     let event = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
     // EduTools never injects keyboard input, so injected events cannot form a self-triggering loop.
+
+    let key_cap_event = if is_control_key(event.vkCode) {
+        if is_key_up {
+            Some(RadialKeyCapHookEvent::ControlReleased)
+        } else {
+            let modifiers = current_modifiers();
+            let other_modifiers = modifiers.bits() & !ShortcutModifiers::CONTROL.bits();
+            if PALETTE_VISIBLE.load(Ordering::Acquire) && other_modifiers == 0 {
+                Some(RadialKeyCapHookEvent::ControlAloneDown)
+            } else {
+                Some(RadialKeyCapHookEvent::ModifierAdded)
+            }
+        }
+    } else if is_key_down {
+        Some(if is_modifier_key(event.vkCode) {
+            RadialKeyCapHookEvent::ModifierAdded
+        } else {
+            RadialKeyCapHookEvent::OtherKeyDown
+        })
+    } else {
+        None
+    };
+    if let Some(key_cap_event) = key_cap_event {
+        CALLBACK_STATE.with(|slot| {
+            if let Some(state) = slot.borrow().as_ref() {
+                post_key_cap_event(state.hwnd, key_cap_event);
+            }
+        });
+    }
+
+    let radial_key_index = usize::try_from(event.vkCode)
+        .ok()
+        .filter(|index| *index < VK_COUNT);
+    if is_key_up {
+        let consumed = CALLBACK_STATE.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let state = slot.as_mut()?;
+            let index = radial_key_index?;
+            if !state.radial_pressed[index] {
+                return None;
+            }
+            state.radial_pressed[index] = false;
+            let _ = post_radial_key_event(state.hwnd, event.vkCode, true, true, false, None);
+            Some(true)
+        });
+        if consumed == Some(true) {
+            return LRESULT(1);
+        }
+    }
+
+    let text_input = text_entry::text_input_active() || TEXT_INPUT_ACTIVE.load(Ordering::Acquire);
+    if is_key_down && radial_palette_keyboard_input(radial_key(event.vkCode)).is_some() {
+        let modifiers = current_modifiers();
+        let decision = radial_palette_key_decision(
+            PALETTE_EXPANDED.load(Ordering::Acquire),
+            PALETTE_VISIBLE.load(Ordering::Acquire),
+            text_input,
+            modifiers.bits() != 0,
+            radial_key(event.vkCode),
+        );
+        let consumed = CALLBACK_STATE.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let state = slot.as_mut()?;
+            if !state.annotation_active {
+                return None;
+            }
+            let zoom_has_priority = matching_mode_definition(
+                &state.definitions,
+                event.vkCode,
+                modifiers,
+                false,
+                state.zoom_active,
+            )
+            .is_some_and(|(_, scope)| scope == HookScope::Zoom);
+            if zoom_has_priority {
+                return None;
+            }
+            let index = radial_key_index?;
+            if state.radial_pressed[index] {
+                let input = radial_palette_keyboard_input(radial_key(event.vkCode))?;
+                if matches!(input, RadialPaletteKeyboardInput::Navigate(_)) {
+                    let _ =
+                        post_radial_key_event(state.hwnd, event.vkCode, false, true, true, None);
+                }
+                return Some(true);
+            }
+            match decision {
+                RadialPaletteKeyDecision::Consume(_) => {
+                    let posted =
+                        post_radial_key_event(state.hwnd, event.vkCode, false, true, false, None);
+                    if posted {
+                        state.radial_pressed[index] = true;
+                    }
+                    Some(posted)
+                }
+                RadialPaletteKeyDecision::Pass(reason) => {
+                    let _ = post_radial_key_event(
+                        state.hwnd,
+                        event.vkCode,
+                        false,
+                        false,
+                        false,
+                        Some(reason),
+                    );
+                    None
+                }
+            }
+        });
+        if consumed == Some(true) {
+            return LRESULT(1);
+        }
+    }
 
     if text_entry::text_input_active() {
         if is_key_up {
@@ -378,6 +565,99 @@ fn post_hook_event(
         )
         .is_ok()
     }
+}
+
+fn radial_key(key_code: u32) -> RadialPaletteKeyboardKey {
+    match key_code {
+        value if value == u32::from(VK_UP.0) => RadialPaletteKeyboardKey::Up,
+        value if value == u32::from(VK_DOWN.0) => RadialPaletteKeyboardKey::Down,
+        value if value == u32::from(VK_LEFT.0) => RadialPaletteKeyboardKey::Left,
+        value if value == u32::from(VK_RIGHT.0) => RadialPaletteKeyboardKey::Right,
+        value if value == u32::from(VK_RETURN.0) => RadialPaletteKeyboardKey::Enter,
+        value if value == u32::from(VK_SPACE.0) => RadialPaletteKeyboardKey::Space,
+        _ => RadialPaletteKeyboardKey::Other,
+    }
+}
+
+fn pass_reason_code(reason: RadialPaletteKeyPassReason) -> usize {
+    match reason {
+        RadialPaletteKeyPassReason::Hidden => 1,
+        RadialPaletteKeyPassReason::Collapsed => 2,
+        RadialPaletteKeyPassReason::TextInput => 3,
+        RadialPaletteKeyPassReason::Modifiers => 4,
+        RadialPaletteKeyPassReason::Unsupported => 5,
+    }
+}
+
+fn decode_pass_reason(code: usize) -> Option<RadialPaletteKeyPassReason> {
+    match code {
+        1 => Some(RadialPaletteKeyPassReason::Hidden),
+        2 => Some(RadialPaletteKeyPassReason::Collapsed),
+        3 => Some(RadialPaletteKeyPassReason::TextInput),
+        4 => Some(RadialPaletteKeyPassReason::Modifiers),
+        5 => Some(RadialPaletteKeyPassReason::Unsupported),
+        _ => None,
+    }
+}
+
+fn post_radial_key_event(
+    hwnd: HWND,
+    key_code: u32,
+    is_key_up: bool,
+    consumed: bool,
+    is_repeat: bool,
+    pass_reason: Option<RadialPaletteKeyPassReason>,
+) -> bool {
+    let mut payload = 0_isize;
+    if is_key_up {
+        payload |= KEY_UP_FLAG;
+    }
+    if consumed {
+        payload |= CONSUMED_FLAG;
+    }
+    if is_repeat {
+        payload |= REPEAT_FLAG;
+    }
+    if let Some(reason) = pass_reason {
+        payload |= (pass_reason_code(reason) << RADIAL_REASON_SHIFT) as isize;
+    }
+    unsafe {
+        PostMessageW(
+            Some(hwnd),
+            WM_APP_RADIAL_KEY,
+            WPARAM(key_code as usize),
+            LPARAM(payload),
+        )
+        .is_ok()
+    }
+}
+
+fn post_key_cap_event(hwnd: HWND, event: RadialKeyCapHookEvent) {
+    let value = match event {
+        RadialKeyCapHookEvent::ControlAloneDown => 1,
+        RadialKeyCapHookEvent::OtherKeyDown => 2,
+        RadialKeyCapHookEvent::ModifierAdded => 3,
+        RadialKeyCapHookEvent::ControlReleased => 4,
+    };
+    let _ = unsafe { PostMessageW(Some(hwnd), WM_APP_RADIAL_KEY_CAP, WPARAM(value), LPARAM(0)) };
+}
+
+fn is_control_key(key_code: u32) -> bool {
+    key_code == u32::from(VK_CONTROL.0)
+        || key_code == u32::from(VK_LCONTROL.0)
+        || key_code == u32::from(VK_RCONTROL.0)
+}
+
+fn is_modifier_key(key_code: u32) -> bool {
+    is_control_key(key_code)
+        || key_code == u32::from(VK_MENU.0)
+        || key_code == u32::from(VK_LMENU.0)
+        || key_code == u32::from(VK_RMENU.0)
+        || key_code == u32::from(VK_SHIFT.0)
+        || key_code == u32::from(VK_LSHIFT.0)
+        || key_code == u32::from(VK_RSHIFT.0)
+        || key_code == u32::from(VK_LWIN.0)
+        || key_code == u32::from(VK_RWIN.0)
 }
 
 pub(crate) fn current_modifiers() -> ShortcutModifiers {
