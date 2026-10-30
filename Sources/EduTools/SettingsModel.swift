@@ -65,7 +65,7 @@ enum RadialPaletteGlassStyle {
     static let defaultOpacity = 0.86
     // 옛 설정·골든의 낮은 값은 허용하며, 설정 스키마 버전을 올려 이행할 때 제거한다.
     static let storedMinimumOpacity = 0.55
-    static let minimumOpacity = 0.70
+    static let minimumOpacity = 0.75
     static let maximumOpacity = 0.90
 
     static let disabledContentOpacity = 0.55
@@ -129,7 +129,7 @@ enum RadialPaletteArcStyle {
         )
     }
 
-    /// 근사 — 실제 면은 뒤 배경과 0.55...0.90 알파로 혼합된다.
+    /// 근사 — 실제 면은 뒤 배경과 minimumOpacity...maximumOpacity 알파로 혼합된다.
     static func estimatedBackdropColor(selected: Bool) -> NSColor {
         selected
             ? .controlAccentColor
