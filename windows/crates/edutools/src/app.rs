@@ -21,6 +21,7 @@ use crate::kbhook::{
     RadialPaletteKeyEvent, WM_APP_KEY, WM_APP_RADIAL_KEY, WM_APP_RADIAL_KEY_CAP,
 };
 use crate::keymap;
+use crate::launch_at_login::{self, SyncOutcome, WindowsRunRegistry};
 use crate::lesson_badge::{
     play_completion_sound, LessonBadgeManager, SettingsMutation as LessonSettingsMutation,
     WM_APP_LESSON_ACTION, WM_APP_LESSON_COMPLETED,
@@ -50,6 +51,7 @@ use crate::settings_ui::{
     SettingsChangeRequest, SettingsTab, SettingsWindow, WM_APP_SETTINGS_ACTION,
     WM_APP_SETTINGS_CHANGE,
 };
+use crate::startup::{self, file_name_from_path, LaunchRequest, COPYDATA_TAG, MAX_COPYDATA_BYTES};
 use crate::text_entry::{
     cancel_reason, TextEntryRequest, TextEntryWindow, WM_APP_TEXT_ENTRY_CANCEL,
     WM_APP_TEXT_ENTRY_COMMIT, WM_APP_TEXT_ENTRY_OPEN,
@@ -98,8 +100,10 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::mem::size_of;
-use std::path::PathBuf;
+use std::os::windows::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::Duration;
 use windows::core::{w, Error, Result, PCWSTR};
 use windows::Graphics::SizeInt32;
 use windows::Win32::Devices::Display::GUID_DEVINTERFACE_MONITOR;
@@ -107,6 +111,7 @@ use windows::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, E_FAIL, HANDLE, HINSTANCE, HWND, LPARAM,
     LRESULT, POINT, WPARAM,
 };
+use windows::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::HiDpi::{
@@ -115,17 +120,17 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::Input::Pointer::EnableMouseInPointer;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow, DispatchMessageW, GetCursorPos,
-    GetForegroundWindow, GetMessageW, GetWindowLongPtrW, IsWindow, KillTimer, LoadImageW,
-    MessageBoxW, PostQuitMessage, RegisterClassW, RegisterDeviceNotificationW,
-    RegisterWindowMessageW, SetCursorPos, SetForegroundWindow, SetTimer, SetWindowLongPtrW,
-    TranslateMessage, UnregisterDeviceNotification, DBT_DEVICEARRIVAL, DBT_DEVICEREMOVECOMPLETE,
-    DBT_DEVTYP_DEVICEINTERFACE, DEVICE_NOTIFY_WINDOW_HANDLE, DEV_BROADCAST_DEVICEINTERFACE_W,
-    GDI_IMAGE_TYPE, GWLP_USERDATA, HDEVNOTIFY, HICON, IDYES, IMAGE_ICON, LR_DEFAULTCOLOR,
-    MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_YESNO, MSG, WM_CONTEXTMENU,
-    WM_DESTROY, WM_DEVICECHANGE, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_HOTKEY, WM_KEYDOWN,
-    WM_POWERBROADCAST, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMECHANGE, WM_TIMER, WNDCLASSW,
-    WS_EX_TOOLWINDOW, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow, DispatchMessageW, FindWindowW,
+    GetCursorPos, GetForegroundWindow, GetMessageW, GetWindowLongPtrW, IsWindow, KillTimer,
+    LoadImageW, MessageBoxW, PostQuitMessage, RegisterClassW, RegisterDeviceNotificationW,
+    RegisterWindowMessageW, SendMessageTimeoutW, SetCursorPos, SetForegroundWindow, SetTimer,
+    SetWindowLongPtrW, TranslateMessage, UnregisterDeviceNotification, DBT_DEVICEARRIVAL,
+    DBT_DEVICEREMOVECOMPLETE, DBT_DEVTYP_DEVICEINTERFACE, DEVICE_NOTIFY_WINDOW_HANDLE,
+    DEV_BROADCAST_DEVICEINTERFACE_W, GDI_IMAGE_TYPE, GWLP_USERDATA, HDEVNOTIFY, HICON, IDYES,
+    IMAGE_ICON, LR_DEFAULTCOLOR, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_YESNO,
+    MSG, SMTO_ABORTIFHUNG, WM_CONTEXTMENU, WM_COPYDATA, WM_DESTROY, WM_DEVICECHANGE,
+    WM_DISPLAYCHANGE, WM_DPICHANGED, WM_HOTKEY, WM_KEYDOWN, WM_POWERBROADCAST, WM_RBUTTONUP,
+    WM_SETTINGCHANGE, WM_TIMECHANGE, WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
 const WINDOW_CLASS: PCWSTR = w!("EduToolsMain");
@@ -140,16 +145,14 @@ pub fn run() -> i32 {
     logger.event("EduTools 시작");
 
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
-    if arguments
-        .first()
-        .is_some_and(|value| value == "--selftest-icons")
-    {
-        if arguments.len() != 2 {
-            eprintln!("사용법: edutools --selftest-icons <출력 폴더>");
-            return 2;
-        }
-        let output = PathBuf::from(&arguments[1]);
-        return match crate::app_icon::run_selftest_icons(&output, &logger) {
+    let request = startup::parse_arguments(&arguments);
+    if let LaunchRequest::UsageError(message) = &request {
+        eprintln!("{message}");
+        logger.event(message);
+        return 2;
+    }
+    if let LaunchRequest::SelftestIcons(output) = &request {
+        return match crate::app_icon::run_selftest_icons(output, &logger) {
             Ok(()) => 0,
             Err(error) => {
                 logger.event(&format!("--selftest-icons 실패: {error}"));
@@ -160,10 +163,7 @@ pub fn run() -> i32 {
     }
 
     // Development-only CCD dump; never used as a product feature.
-    if arguments
-        .first()
-        .is_some_and(|value| value == "--print-displays")
-    {
+    if request == LaunchRequest::PrintDisplays {
         return match current_display_configuration() {
             Ok(configuration) => {
                 let line = configuration.diagnostic_line();
@@ -179,25 +179,44 @@ pub fn run() -> i32 {
         };
     }
 
-    if arguments
-        .first()
-        .is_some_and(|value| value == "--display-apply-dry-run")
-    {
-        if arguments.len() != 2 {
-            eprintln!("사용법: edutools --display-apply-dry-run <1-based-index>");
-            return 2;
-        }
-        let index = arguments[1]
-            .to_string_lossy()
-            .parse::<usize>()
-            .ok()
-            .filter(|index| *index > 0);
-        let Some(index) = index else {
-            eprintln!("--display-apply-dry-run index는 1 이상의 정수여야 합니다");
-            return 2;
-        };
-        return run_display_apply_dry_run(index - 1, &logger);
+    if let LaunchRequest::DisplayApplyDryRun(index) = &request {
+        return run_display_apply_dry_run(*index, &logger);
     }
+
+    let selftest = request == LaunchRequest::Selftest;
+    let import_path = match &request {
+        LaunchRequest::App {
+            import_path,
+            warning,
+        } => {
+            if let Some(warning) = warning {
+                logger.event(&format!(
+                    "실행 인자 무시: file={} reason={}",
+                    warning.file_name, warning.reason
+                ));
+            }
+            import_path
+                .as_deref()
+                .and_then(|path| match startup::validate_import_path(path) {
+                    Ok(path) => {
+                        logger.event(&format!(
+                            "실행 인자 승인: file={}",
+                            file_name_from_path(&path)
+                        ));
+                        Some(path)
+                    }
+                    Err(reason) => {
+                        logger.event(&format!(
+                            "실행 인자 거부: file={} reason={reason}",
+                            file_name_from_path(&path)
+                        ));
+                        None
+                    }
+                })
+        }
+        LaunchRequest::Selftest => None,
+        _ => unreachable!("development requests returned before app startup"),
+    };
 
     // SAFETY: this process-wide opt-in is called exactly once, before any app windows are created.
     if let Err(error) = unsafe { EnableMouseInPointer(true) } {
@@ -206,7 +225,7 @@ pub fn run() -> i32 {
         return 1;
     }
 
-    if arguments.iter().any(|argument| argument == "--selftest") {
+    if selftest {
         let passed = run_selftest(&logger);
         logger.event(if passed {
             "--selftest 통과"
@@ -219,6 +238,13 @@ pub fn run() -> i32 {
     let instance = match SingleInstance::acquire() {
         Ok(Some(instance)) => instance,
         Ok(None) => {
+            if let Some(path) = import_path.as_deref() {
+                return if forward_import_path(path, &logger) {
+                    0
+                } else {
+                    1
+                };
+            }
             logger.event("단일 인스턴스: 두 번째 실행 종료");
             return 0;
         }
@@ -229,7 +255,7 @@ pub fn run() -> i32 {
         }
     };
 
-    let result = run_message_loop(logger.clone());
+    let result = run_message_loop(logger.clone(), import_path);
     drop(instance);
     match result {
         Ok(code) => code,
@@ -238,6 +264,63 @@ pub fn run() -> i32 {
             eprintln!("EduTools: 앱을 시작할 수 없습니다: {error}");
             1
         }
+    }
+}
+
+fn forward_import_path(path: &Path, logger: &Logger) -> bool {
+    let mut payload = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let byte_count = payload.len() * 2;
+    let file_name = file_name_from_path(path);
+    if byte_count > MAX_COPYDATA_BYTES {
+        logger.event(&format!(
+            "COPYDATA 전송 거부: file={file_name} reason=경로가 너무 깁니다"
+        ));
+        return false;
+    }
+
+    let hwnd = (0..100).find_map(|_| {
+        let found = unsafe { FindWindowW(WINDOW_CLASS, PCWSTR::null()) }.ok();
+        if found.is_none() {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        found
+    });
+    let Some(hwnd) = hwnd else {
+        logger.event(&format!(
+            "COPYDATA 전송 실패: file={file_name} reason=기존 창을 찾지 못함"
+        ));
+        return false;
+    };
+
+    let copy_data = COPYDATASTRUCT {
+        dwData: COPYDATA_TAG,
+        cbData: u32::try_from(byte_count).expect("COPYDATA length was capped"),
+        lpData: payload.as_mut_ptr().cast(),
+    };
+    let mut receiver_result = 0usize;
+    let sent = unsafe {
+        SendMessageTimeoutW(
+            hwnd,
+            WM_COPYDATA,
+            WPARAM(0),
+            LPARAM((&copy_data as *const COPYDATASTRUCT) as isize),
+            SMTO_ABORTIFHUNG,
+            5_000,
+            Some(&mut receiver_result),
+        )
+    };
+    if sent.0 == 0 || receiver_result == 0 {
+        logger.event(&format!(
+            "COPYDATA 전송 실패: file={file_name} reason=수신 거부 또는 시간 초과"
+        ));
+        false
+    } else {
+        logger.event(&format!("COPYDATA 전송 성공: file={file_name}"));
+        true
     }
 }
 
@@ -330,6 +413,7 @@ impl App {
     fn initialize(&mut self) -> Result<()> {
         self.music = Some(BreakMusicManager::new(self.hwnd, self.logger.clone())?);
         self.tray = Some(Tray::add(self.hwnd, self.hinstance, self.logger.clone())?);
+        self.synchronize_launch_at_login("시작");
         if let Err(error) = recover_pending_display_configuration(&self.logger) {
             self.logger
                 .event(&format!("시작 시 미확정 화면 구성 복구 실패: {error}"));
@@ -490,6 +574,11 @@ impl App {
     ) {
         let mut targets = Vec::new();
 
+        if previous.general.launch_at_login != current.general.launch_at_login {
+            self.synchronize_launch_at_login("설정 변경");
+            targets.push("launch-at-login-registry");
+        }
+
         if previous.shortcuts != current.shortcuts {
             if self.shortcut_recording {
                 targets.push("shortcut-registration-deferred");
@@ -605,6 +694,48 @@ impl App {
                 targets.join(",")
             }
         ));
+    }
+
+    fn synchronize_launch_at_login(&mut self, source: &str) {
+        let executable = match std::env::current_exe() {
+            Ok(path) => path,
+            Err(error) => {
+                let detail = format!("현재 실행 파일 경로 조회 실패: {error}");
+                self.report_launch_at_login_failure(source, &detail);
+                return;
+            }
+        };
+        let mut registry = WindowsRunRegistry;
+        match launch_at_login::synchronize(
+            &mut registry,
+            self.settings.general.launch_at_login,
+            &executable,
+        ) {
+            Ok(outcome) => self.logger.event(&format!(
+                "자동 실행 동기화 성공: source={source} desired={} result={}",
+                self.settings.general.launch_at_login,
+                match outcome {
+                    SyncOutcome::Unchanged => "unchanged",
+                    SyncOutcome::Enabled => "enabled",
+                    SyncOutcome::Disabled => "disabled",
+                    SyncOutcome::UpdatedPath => "updated-path",
+                }
+            )),
+            Err(error) => self.report_launch_at_login_failure(source, &error),
+        }
+    }
+
+    fn report_launch_at_login_failure(&self, source: &str, detail: &str) {
+        self.logger.event(&format!(
+            "자동 실행 동기화 실패: source={source} desired={} error={detail}",
+            self.settings.general.launch_at_login
+        ));
+        if let Some(tray) = self.tray.as_ref() {
+            tray.show_warning(
+                "자동 실행 설정 실패",
+                &format!("로그인 시 자동 실행을 변경하지 못했습니다: {detail}"),
+            );
+        }
     }
 
     fn show_settings(&mut self, tab: SettingsTab, source: &str) {
@@ -1100,10 +1231,22 @@ impl App {
                 return;
             }
         };
-        let file_name = path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "설정 파일".to_owned());
+        self.open_import_preview(&path, "열기 대화상자");
+    }
+
+    fn open_import_preview(&mut self, path: &Path, source: &str) {
+        let file_name = file_name_from_path(path);
+        let path = match startup::validate_import_path(path) {
+            Ok(path) => path,
+            Err(reason) => {
+                self.logger.event(&format!(
+                    "설정 가져오기 경로 거부: source={source} file={file_name} reason={reason}"
+                ));
+                self.settings_message("설정 가져오기 실패", reason, MB_OK | MB_ICONERROR);
+                return;
+            }
+        };
+        self.show_settings(SettingsTab::General, source);
         let document = fs::read(&path)
             .map_err(|error| error.to_string())
             .and_then(|data| SettingsTransfer::decode(&data).map_err(|error| error.to_string()));
@@ -1134,6 +1277,64 @@ impl App {
                 );
             }
         }
+    }
+
+    fn handle_copydata(&mut self, lparam: LPARAM) -> bool {
+        let copy_data = lparam.0 as *const COPYDATASTRUCT;
+        if copy_data.is_null() {
+            self.logger
+                .event("COPYDATA 수신 거부: reason=구조체 포인터가 null임");
+            return false;
+        }
+        let copy_data = unsafe { &*copy_data };
+        if copy_data.dwData != COPYDATA_TAG {
+            self.logger
+                .event("COPYDATA 수신 거부: reason=알 수 없는 dwData");
+            return false;
+        }
+        let byte_count = copy_data.cbData as usize;
+        if copy_data.lpData.is_null()
+            || byte_count < 2
+            || byte_count > MAX_COPYDATA_BYTES
+            || byte_count % 2 != 0
+        {
+            self.logger
+                .event("COPYDATA 수신 거부: reason=페이로드 포인터 또는 길이 오류");
+            return false;
+        }
+        let units =
+            unsafe { std::slice::from_raw_parts(copy_data.lpData.cast::<u16>(), byte_count / 2) };
+        let path = match startup::validate_copydata_utf16(units, byte_count) {
+            Ok(path) => path,
+            Err(reason) => {
+                self.logger
+                    .event(&format!("COPYDATA 수신 거부: reason={reason}"));
+                return false;
+            }
+        };
+        if !path.is_absolute() {
+            self.logger.event(&format!(
+                "COPYDATA 수신 거부: file={} reason=절대 경로가 아님",
+                file_name_from_path(&path)
+            ));
+            return false;
+        }
+        let path = match startup::validate_import_path(&path) {
+            Ok(path) => path,
+            Err(reason) => {
+                self.logger.event(&format!(
+                    "COPYDATA 수신 거부: file={} reason={reason}",
+                    file_name_from_path(&path)
+                ));
+                return false;
+            }
+        };
+        self.logger.event(&format!(
+            "COPYDATA 수신 승인: file={}",
+            file_name_from_path(&path)
+        ));
+        self.open_import_preview(&path, "파일 연결");
+        true
     }
 
     fn apply_imported_settings(
@@ -3983,13 +4184,31 @@ fn active_display_uuids(configuration: &DisplayConfiguration) -> HashSet<String>
         .collect()
 }
 
-fn run_message_loop(logger: Logger) -> Result<i32> {
+fn run_message_loop(logger: Logger, initial_import_path: Option<PathBuf>) -> Result<i32> {
     // SAFETY: None requests the current executable module handle.
     let module = unsafe { GetModuleHandleW(None) }?;
     let hinstance = HINSTANCE(module.0);
+    let class_icon =
+        match tray::load_shared_resource_icon(hinstance, tray::APP_ICON_RESOURCE_ID, 32) {
+            Ok(icon) => {
+                logger.event(&format!(
+                    "앱 아이콘 리소스 로드 성공: id={}",
+                    tray::APP_ICON_RESOURCE_ID
+                ));
+                icon
+            }
+            Err(error) => {
+                logger.event(&format!(
+                    "앱 아이콘 리소스 로드 실패: id={} error={error}",
+                    tray::APP_ICON_RESOURCE_ID
+                ));
+                HICON::default()
+            }
+        };
     let class = WNDCLASSW {
         lpfnWndProc: Some(window_proc),
         hInstance: hinstance,
+        hIcon: class_icon,
         lpszClassName: WINDOW_CLASS,
         ..Default::default()
     };
@@ -4088,6 +4307,9 @@ fn run_message_loop(logger: Logger) -> Result<i32> {
         let _ = unsafe { DestroyWindow(hwnd) };
         return Err(error);
     }
+    if let Some(path) = initial_import_path.as_deref() {
+        app.open_import_preview(path, "실행 인자");
+    }
 
     let mut message = MSG::default();
     let exit_code = loop {
@@ -4135,6 +4357,13 @@ unsafe extern "system" fn window_proc(
     if !app_ptr.is_null() {
         // SAFETY: App is boxed for the duration of the message loop and accessed only on this thread.
         let app = unsafe { &mut *app_ptr };
+        if message == WM_COPYDATA {
+            return if app.handle_copydata(lparam) {
+                LRESULT(1)
+            } else {
+                LRESULT(0)
+            };
+        }
         if app.taskbar_created != 0 && message == app.taskbar_created {
             if let Some(tray) = app.tray.as_mut() {
                 tray.readd_after_taskbar_created();
@@ -4470,6 +4699,7 @@ fn run_selftest(logger: &Logger) -> bool {
         failures.push(format!("attr icon: D2D selftest 실패: {error}"));
     }
     failures.extend(crate::display_apply::selftest_failures());
+    failures.extend(crate::launch_at_login::selftest_failures());
     failures.extend(crate::monitor::online_display_selftest_failures());
     failures.extend(crate::music::selftest_failures());
     failures.extend(crate::settings_file::selftest_failures());

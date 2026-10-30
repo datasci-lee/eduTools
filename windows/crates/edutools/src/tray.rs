@@ -13,9 +13,9 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, DestroyIcon, DestroyMenu, GetCursorPos, LoadImageW, MessageBoxW,
     PostMessageW, SetForegroundWindow, TrackPopupMenu, GDI_IMAGE_TYPE, HICON, IMAGE_ICON,
-    LR_DEFAULTCOLOR, MB_ICONWARNING, MB_OK, MENU_ITEM_FLAGS, MF_CHECKED, MF_GRAYED, MF_POPUP,
-    MF_SEPARATOR, MF_STRING, SM_CXSMICON, TPM_RETURNCMD, TPM_RIGHTBUTTON, TRACK_POPUP_MENU_FLAGS,
-    WM_NULL,
+    LR_DEFAULTCOLOR, LR_SHARED, MB_ICONWARNING, MB_OK, MENU_ITEM_FLAGS, MF_CHECKED, MF_GRAYED,
+    MF_POPUP, MF_SEPARATOR, MF_STRING, SM_CXSMICON, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+    TRACK_POPUP_MENU_FLAGS, WM_NULL,
 };
 
 pub const CALLBACK_MESSAGE: u32 = 0x8000 + 1;
@@ -24,7 +24,8 @@ pub const MENU_EXIT: u16 = 2;
 pub const MENU_DISPLAY_PRESET_BASE: u16 = 100;
 pub const MENU_SETTINGS: u16 = 3;
 pub const MENU_DISPLAY_SETTINGS: u16 = 4;
-pub const ALL_ICON_RESOURCE_IDS: [u16; 5] = [1, 101, 102, 103, 104];
+pub const APP_ICON_RESOURCE_ID: u16 = 1;
+pub const ALL_ICON_RESOURCE_IDS: [u16; 5] = [APP_ICON_RESOURCE_ID, 101, 102, 103, 104];
 
 const TRAY_ID: u32 = 1;
 const ICON_OFF_LIGHT: u16 = 101;
@@ -412,6 +413,23 @@ pub fn load_resource_icon(hinstance: HINSTANCE, id: u16, size: i32) -> Result<HI
             size,
             size,
             LR_DEFAULTCOLOR,
+        )
+    }?;
+    Ok(HICON(handle.0))
+}
+
+pub fn load_shared_resource_icon(hinstance: HINSTANCE, id: u16, size: i32) -> Result<HICON> {
+    let resource = PCWSTR(usize::from(id) as *const u16);
+    // SAFETY: integer resources use a MAKEINTRESOURCE-style pointer. LR_SHARED keeps ownership
+    // with the system for the lifetime of registered window classes.
+    let handle = unsafe {
+        LoadImageW(
+            Some(hinstance),
+            resource,
+            GDI_IMAGE_TYPE(IMAGE_ICON.0),
+            size,
+            size,
+            LR_DEFAULTCOLOR | LR_SHARED,
         )
     }?;
     Ok(HICON(handle.0))

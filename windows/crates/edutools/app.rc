@@ -7,3 +7,30 @@
 102 ICON {{EDUTOOLS_TRAY_ON_LIGHT}}
 103 ICON {{EDUTOOLS_TRAY_OFF_DARK}}
 104 ICON {{EDUTOOLS_TRAY_ON_DARK}}
+
+1 VERSIONINFO
+FILEVERSION {{EDUTOOLS_FILE_VERSION}}
+PRODUCTVERSION {{EDUTOOLS_FILE_VERSION}}
+FILEFLAGSMASK 0x3fL
+FILEFLAGS 0x0L
+FILEOS 0x40004L
+FILETYPE 0x1L
+FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "041204B0"
+        BEGIN
+            VALUE "FileDescription", "EduTools\0"
+            VALUE "FileVersion", "{{EDUTOOLS_PRODUCT_VERSION}}\0"
+            VALUE "InternalName", "edutools\0"
+            VALUE "OriginalFilename", "edutools.exe\0"
+            VALUE "ProductName", "EduTools\0"
+            VALUE "ProductVersion", "{{EDUTOOLS_PRODUCT_VERSION}}\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0412, 1200
+    END
+END

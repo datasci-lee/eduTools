@@ -368,10 +368,6 @@ pub struct ExcludedField {
 
 pub const EXCLUDED_FIELDS: &[ExcludedField] = &[
     ExcludedField {
-        id: "general.launchAtLogin",
-        reason: "Windows 자동 실행은 122 작업 범위",
-    },
-    ExcludedField {
         id: "general.displayDisconnectPolicy",
         reason: "현재 Swift 일반 탭에 없고 화면 구성/복원 작업에서 노출",
     },
@@ -660,6 +656,12 @@ macro_rules! color_slot_accessors {
     };
 }
 
+bool_accessors!(
+    get_launch_at_login,
+    set_launch_at_login,
+    general.launch_at_login
+);
+
 color_slot_accessors!(get_color_0, set_color_0, 0);
 color_slot_accessors!(get_color_1, set_color_1, 1);
 color_slot_accessors!(get_color_2, set_color_2, 2);
@@ -751,6 +753,14 @@ preset_accessors!(get_eraser_preset_1, set_eraser_preset_1, 1);
 preset_accessors!(get_eraser_preset_2, set_eraser_preset_2, 2);
 
 const GENERAL_FIELDS: &[Field] = &[
+    Field {
+        id: "general.launchAtLogin",
+        label: "로그인 시 자동 실행",
+        help: Some("현재 사용자에게만 적용됩니다."),
+        kind: FieldKind::Check,
+        get: get_launch_at_login,
+        set: set_launch_at_login,
+    },
     Field {
         id: "general.clearsInkWhenAnnotationModeEnds",
         label: "판서 모드를 끌 때 내용 삭제",
@@ -4676,6 +4686,8 @@ unsafe extern "system" fn shortcut_recorder_subclass_proc(
 fn register_classes(hinstance: HINSTANCE) -> Result<()> {
     let cursor = unsafe { LoadCursorW(None, IDC_ARROW) }?;
     let background = unsafe { GetSysColorBrush(COLOR_WINDOW) };
+    let app_icon =
+        crate::tray::load_shared_resource_icon(hinstance, crate::tray::APP_ICON_RESOURCE_ID, 32)?;
     for (name, procedure) in [
         (
             WINDOW_CLASS,
@@ -4697,6 +4709,7 @@ fn register_classes(hinstance: HINSTANCE) -> Result<()> {
         let class = WNDCLASSW {
             lpfnWndProc: Some(procedure),
             hInstance: hinstance,
+            hIcon: app_icon,
             lpszClassName: name,
             hCursor: cursor,
             hbrBackground: background,

@@ -23,6 +23,7 @@ fn main() {
         .expect("edutools must remain under windows/crates/edutools")
         .to_path_buf();
     let tray_dir = repository_root.join("assets/symbols/windows/tray");
+    let app_icon = repository_root.join("assets/app-icon/edutools.ico");
 
     generate_icon_table(&repository_root, &manifest_dir);
 
@@ -37,6 +38,7 @@ fn main() {
     for file in TRAY_FILES {
         println!("cargo:rerun-if-changed={}", tray_dir.join(file).display());
     }
+    println!("cargo:rerun-if-changed={}", app_icon.display());
     println!("cargo:rerun-if-env-changed=RC");
 
     let host = env::var("HOST").expect("HOST is required");
@@ -55,7 +57,6 @@ fn main() {
     let generated_rc = out_dir.join("app.generated.rc");
     let template_path = manifest_dir.join("app.rc");
     let manifest = manifest_dir.join("app.manifest");
-    let app_icon = tray_dir.join("menubar.on.dark-taskbar.ico");
     let tray_paths = TRAY_FILES.map(|file| tray_dir.join(file));
     let resources = [
         ("{{EDUTOOLS_MANIFEST}}", manifest.as_path()),
@@ -70,6 +71,11 @@ fn main() {
     for (placeholder, path) in resources {
         resource_script = resource_script.replace(placeholder, &resource_path_literal(path));
     }
+    let package_version = env!("CARGO_PKG_VERSION");
+    let file_version = numeric_file_version(package_version);
+    resource_script = resource_script
+        .replace("{{EDUTOOLS_FILE_VERSION}}", &file_version)
+        .replace("{{EDUTOOLS_PRODUCT_VERSION}}", package_version);
     fs::write(&generated_rc, resource_script)
         .unwrap_or_else(|error| panic!("{} 생성에 실패했습니다: {error}", generated_rc.display()));
 
@@ -95,6 +101,22 @@ fn main() {
     }
 
     println!("cargo:rustc-link-arg-bins={}", output.display());
+}
+
+fn numeric_file_version(version: &str) -> String {
+    let numeric = version.split(['-', '+']).next().unwrap_or(version);
+    let mut parts = numeric.split('.').map(|part| {
+        part.parse::<u16>()
+            .unwrap_or_else(|_| panic!("Cargo 패키지 버전 숫자 구성요소가 아닙니다: {version}"))
+    });
+    let major = parts.next().unwrap_or(0);
+    let minor = parts.next().unwrap_or(0);
+    let patch = parts.next().unwrap_or(0);
+    assert!(
+        parts.next().is_none(),
+        "Cargo 패키지 버전 구성요소가 너무 많습니다: {version}"
+    );
+    format!("{major},{minor},{patch},0")
 }
 
 fn generate_icon_table(repository_root: &Path, manifest_dir: &Path) {
