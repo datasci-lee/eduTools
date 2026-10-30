@@ -25,6 +25,8 @@ mod kbhook;
 #[cfg(any(windows, test))]
 mod keymap;
 #[cfg(any(windows, test))]
+mod launch_at_login;
+#[cfg(any(windows, test))]
 mod lesson_badge;
 #[cfg(windows)]
 mod log;
@@ -46,6 +48,8 @@ mod selection;
 mod settings_file;
 #[cfg(any(windows, test))]
 mod settings_ui;
+#[cfg(any(windows, test))]
+mod startup;
 #[cfg(windows)]
 mod text_entry;
 #[cfg(windows)]
