@@ -118,6 +118,74 @@ fn pressure_minimum_width_ratio_adjusts_effective_width() {
 }
 
 #[test]
+fn variable_width_path_matches_swift_edges_and_endpoint_circles() {
+    let stroke = stroke("pressure", InkStrokeTool::Pen, 10.0, true, Vec::new());
+    let samples = [
+        (point(10.0, 20.0), 0.0),
+        (point(20.0, 20.0), 0.5),
+        (point(30.0, 20.0), 1.0),
+    ];
+    let path = InkGeometry::variable_width_path(&stroke, &samples, 0.2);
+
+    let outline = path[..6]
+        .iter()
+        .filter_map(|command| match command {
+            PathCommand::MoveTo(point) | PathCommand::LineTo(point) => Some(*point),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(outline.len(), 6);
+    assert_eq!(
+        outline[..3],
+        [point(10.0, 21.0), point(20.0, 23.0), point(30.0, 25.0)]
+    );
+    assert_eq!(
+        outline[3..],
+        [point(30.0, 15.0), point(20.0, 17.0), point(10.0, 19.0)]
+    );
+    for index in 0..3 {
+        let left = outline[index];
+        let right = outline[5 - index];
+        assert!(approximately_equal(
+            (left.y + right.y) / 2.0,
+            samples[index].0.y
+        ));
+        assert!(approximately_equal(left.x, right.x));
+    }
+    assert_eq!(path[6], PathCommand::LineTo(point(10.0, 21.0)));
+    assert_eq!(
+        path[7..12],
+        [
+            PathCommand::MoveTo(point(11.0, 20.0)),
+            PathCommand::QuadTo {
+                control: point(11.0, 21.0),
+                to: point(10.0, 21.0),
+            },
+            PathCommand::QuadTo {
+                control: point(9.0, 21.0),
+                to: point(9.0, 20.0),
+            },
+            PathCommand::QuadTo {
+                control: point(9.0, 19.0),
+                to: point(10.0, 19.0),
+            },
+            PathCommand::QuadTo {
+                control: point(11.0, 19.0),
+                to: point(11.0, 20.0),
+            },
+        ]
+    );
+    assert_eq!(path[12], PathCommand::MoveTo(point(35.0, 20.0)));
+    assert_eq!(
+        path.last(),
+        Some(&PathCommand::QuadTo {
+            control: point(35.0, 15.0),
+            to: point(35.0, 20.0),
+        })
+    );
+}
+
+#[test]
 fn laser_trail_path_uses_curves_and_handles_short_inputs() {
     let points = [
         point(10.0, 20.0),

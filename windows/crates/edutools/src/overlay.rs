@@ -1,34 +1,18 @@
+use crate::ink_view::{pointer_id_from_wparam, InkInputConfig, InkInputController, InputOutcome};
 use crate::log::Logger;
 use crate::monitor::{enumerate_monitors, monitor_by_key, plan_monitor_sync, Monitor};
+use crate::render::{GraphicsDevice, OverlayRenderer};
+use edutools_core::ink::{
+    InkCommand, InkLayerState, InkPoint, InkStroke, InkStrokeContent, InkStrokeTool, Point,
+};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::{c_void, OsString};
-use windows::core::{w, Error, Interface, Result};
+use std::rc::Rc;
+use windows::core::{w, Error, Result};
 use windows::Win32::Foundation::{
-    COLORREF, ERROR_CLASS_ALREADY_EXISTS, ERROR_SUCCESS, HINSTANCE, HMODULE, HWND, LPARAM, LRESULT,
-    RECT, WIN32_ERROR, WPARAM,
-};
-use windows::Win32::Graphics::Direct2D::Common::{
-    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_RECT_F,
-};
-use windows::Win32::Graphics::Direct2D::{
-    D2D1CreateDevice, ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext, ID2D1Image, ID2D1StrokeStyle,
-    D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
-    D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
-};
-use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
-use windows::Win32::Graphics::Direct3D11::{
-    D3D11CreateDevice, ID3D11Device, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION,
-};
-use windows::Win32::Graphics::DirectComposition::{
-    DCompositionCreateDevice, IDCompositionDevice, IDCompositionTarget, IDCompositionVisual,
-};
-use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN,
-    DXGI_SAMPLE_DESC,
-};
-use windows::Win32::Graphics::Dxgi::{
-    IDXGIDevice, IDXGIFactory2, IDXGIOutput, IDXGISurface, IDXGISwapChain1, DXGI_SCALING_STRETCH,
-    DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_RENDER_TARGET_OUTPUT,
+    COLORREF, ERROR_CLASS_ALREADY_EXISTS, ERROR_SUCCESS, HINSTANCE, HWND, LPARAM, LRESULT, RECT,
+    WIN32_ERROR, WPARAM,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, GetWindowRect,
@@ -36,26 +20,35 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, GWLP_USERDATA, GWL_EXSTYLE, HWND_TOPMOST, LWA_ALPHA, MA_NOACTIVATE,
     PA_NOACTIVATE, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE,
     WM_DISPLAYCHANGE, WM_DPICHANGED, WM_MOUSEACTIVATE, WM_NCCREATE, WM_NCDESTROY,
-    WM_POINTERACTIVATE, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
+    WM_POINTERACTIVATE, WM_POINTERCAPTURECHANGED, WM_POINTERDOWN, WM_POINTERLEAVE, WM_POINTERUP,
+    WM_POINTERUPDATE, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 pub const SYNC_MESSAGE: u32 = 0x8000 + 2;
 const OVERLAY_CLASS: windows::core::PCWSTR = w!("EduToolsOverlay");
-const TARGET_DPI: f32 = 96.0;
+
+type LayerStore = Rc<RefCell<HashMap<String, InkLayerState>>>;
 
 pub struct OverlayManager {
     overlays: HashMap<String, OverlayWindow>,
+    layers: LayerStore,
     graphics: GraphicsDevice,
     owner: HWND,
     hinstance: HINSTANCE,
     annotation_enabled: bool,
+    input_config: InkInputConfig,
     debug_overlay: bool,
     logger: Logger,
 }
 
 impl OverlayManager {
-    pub fn new(owner: HWND, hinstance: HINSTANCE, logger: Logger) -> Result<Self> {
+    pub fn new(
+        owner: HWND,
+        hinstance: HINSTANCE,
+        input_config: InkInputConfig,
+        logger: Logger,
+    ) -> Result<Self> {
         register_window_class(hinstance)?;
         let graphics = GraphicsDevice::new()?;
         let debug_overlay = std::env::var_os("EDUTOOLS_DEBUG_OVERLAY") == Some(OsString::from("1"));
@@ -65,10 +58,12 @@ impl OverlayManager {
         }
         let mut manager = Self {
             overlays: HashMap::new(),
+            layers: Rc::new(RefCell::new(HashMap::new())),
             graphics,
             owner,
             hinstance,
             annotation_enabled: false,
+            input_config,
             debug_overlay,
             logger,
         };
@@ -89,7 +84,9 @@ impl OverlayManager {
         let plan = plan_monitor_sync(&current, &discovered);
 
         for key in &plan.removed {
-            self.overlays.remove(key);
+            if let Some(mut overlay) = self.overlays.remove(key) {
+                overlay.finish_active("모니터 제거")?;
+            }
         }
 
         for monitor in &monitors {
@@ -104,12 +101,18 @@ impl OverlayManager {
                 }
                 continue;
             }
+            self.layers
+                .borrow_mut()
+                .entry(monitor.session_key.clone())
+                .or_default();
             let overlay = OverlayWindow::new(
                 self.owner,
                 self.hinstance,
                 monitor.clone(),
                 &self.graphics,
+                self.layers.clone(),
                 self.annotation_enabled,
+                self.input_config.clone(),
                 self.debug_overlay,
                 self.logger.clone(),
             )?;
@@ -117,24 +120,43 @@ impl OverlayManager {
         }
 
         self.logger.event(&format!(
-            "오버레이 모니터 동기화 ({reason}): 추가={} 제거={} 이동={} 유지={} 총={}",
+            "오버레이 모니터 동기화 ({reason}): 추가={} 제거={} 이동={} 유지={} 총={}, 보관 레이어={}",
             plan.added.len(),
             plan.removed.len(),
             plan.moved.len(),
             plan.unchanged.len(),
-            self.overlays.len()
+            self.overlays.len(),
+            self.layers.borrow().len()
         ));
         Ok(())
     }
 
-    pub fn set_annotation_mode(&mut self, enabled: bool) -> Result<()> {
+    pub fn set_annotation_mode(
+        &mut self,
+        enabled: bool,
+        input_config: InkInputConfig,
+    ) -> Result<()> {
         self.annotation_enabled = enabled;
+        self.input_config = input_config.clone();
         for overlay in self.overlays.values_mut() {
+            overlay.update_input_context(enabled, input_config.clone());
             overlay.set_click_through(!enabled)?;
             overlay.draw(enabled && self.debug_overlay)?;
-            // The transparent overlays stay created and visible in both modes. This avoids losing
-            // per-monitor rendering state; only the shared click-through property changes.
             let _ = unsafe { ShowWindow(overlay.hwnd(), SW_SHOWNOACTIVATE) };
+        }
+        Ok(())
+    }
+
+    pub fn update_input_context(&mut self, input_config: InkInputConfig) {
+        self.input_config = input_config.clone();
+        for overlay in self.overlays.values_mut() {
+            overlay.update_input_context(self.annotation_enabled, input_config.clone());
+        }
+    }
+
+    pub fn finish_all_active(&mut self, reason: &str) -> Result<()> {
+        for overlay in self.overlays.values_mut() {
+            overlay.finish_active(reason)?;
         }
         Ok(())
     }
@@ -150,14 +172,12 @@ impl OverlayManager {
                 as isize;
         for overlay in self.overlays.values_mut() {
             let key = overlay.monitor().session_key.clone();
-            // SAFETY: every overlay stores a live HWND until it is dropped.
             let style = unsafe { GetWindowLongPtrW(overlay.hwnd(), GWL_EXSTYLE) };
             if style & required != required {
                 failures.push(format!("overlay {key}: 필수 확장 스타일 누락 ({style:#x})"));
             }
 
             let mut actual = RECT::default();
-            // SAFETY: actual is writable and the overlay HWND is live.
             let window_size = match unsafe { GetWindowRect(overlay.hwnd(), &mut actual) } {
                 Ok(()) => {
                     if actual != overlay.monitor().win32_rect() {
@@ -188,9 +208,11 @@ impl OverlayManager {
                 }
             }
 
+            if let Err(error) = overlay.selftest_render_path() {
+                failures.push(format!("overlay {key}: 가짜 획 렌더 실패: {error}"));
+            }
             match overlay.set_click_through(true) {
                 Ok(()) => {
-                    // SAFETY: the HWND remains live across the style query.
                     let enabled = unsafe { GetWindowLongPtrW(overlay.hwnd(), GWL_EXSTYLE) };
                     if enabled & WS_EX_TRANSPARENT.0 as isize == 0 {
                         failures.push(format!("overlay {key}: click-through 켜기 실패"));
@@ -202,7 +224,6 @@ impl OverlayManager {
             }
             match overlay.set_click_through(false) {
                 Ok(()) => {
-                    // SAFETY: the HWND remains live across the style query.
                     let disabled = unsafe { GetWindowLongPtrW(overlay.hwnd(), GWL_EXSTYLE) };
                     if disabled & WS_EX_TRANSPARENT.0 as isize != 0 {
                         failures.push(format!("overlay {key}: click-through 끄기 실패"));
@@ -227,9 +248,7 @@ fn register_window_class(hinstance: HINSTANCE) -> Result<()> {
         lpszClassName: OVERLAY_CLASS,
         ..Default::default()
     };
-    // SAFETY: the class data and static class name remain valid for process lifetime.
     if unsafe { RegisterClassW(&class) } == 0 {
-        // SAFETY: read immediately after RegisterClassW reports failure.
         let error = unsafe { windows::Win32::Foundation::GetLastError() };
         if error != ERROR_CLASS_ALREADY_EXISTS {
             return Err(Error::from_thread());
@@ -242,12 +261,52 @@ struct OverlayWindowState {
     owner: HWND,
     monitor: Monitor,
     logger: Logger,
+    layers: LayerStore,
+    input: InkInputController,
+    renderer: Option<OverlayRenderer>,
+    debug_visible: bool,
+}
+
+impl OverlayWindowState {
+    fn apply_input_outcome(&mut self, outcome: InputOutcome) -> Result<()> {
+        let minimum_ratio = self.input.pressure_minimum_width_ratio();
+        for stroke in outcome.finished {
+            self.layers
+                .borrow_mut()
+                .entry(self.monitor.session_key.clone())
+                .or_default()
+                .execute(InkCommand::AddStroke(stroke.clone()));
+            self.renderer
+                .as_ref()
+                .expect("renderer initialized after window creation")
+                .append_completed(&stroke, minimum_ratio)?;
+        }
+        if outcome.redraw {
+            self.draw()?;
+        }
+        Ok(())
+    }
+
+    fn draw(&self) -> Result<()> {
+        self.renderer
+            .as_ref()
+            .expect("renderer initialized after window creation")
+            .draw_frame(
+                self.input.active_stroke(),
+                self.input.pressure_minimum_width_ratio(),
+                self.debug_visible,
+            )
+    }
+
+    fn finish_active(&mut self, reason: &str) -> Result<()> {
+        let outcome = self.input.finish_active(reason);
+        self.apply_input_outcome(outcome)
+    }
 }
 
 struct OverlayWindow {
     hwnd: HWND,
     state: Box<OverlayWindowState>,
-    renderer: Option<OverlayRenderer>,
 }
 
 impl OverlayWindow {
@@ -257,20 +316,30 @@ impl OverlayWindow {
         hinstance: HINSTANCE,
         monitor: Monitor,
         graphics: &GraphicsDevice,
+        layers: LayerStore,
         annotation_enabled: bool,
+        input_config: InkInputConfig,
         debug_overlay: bool,
         logger: Logger,
     ) -> Result<Self> {
         let rect = monitor.rect;
         let mut state = Box::new(OverlayWindowState {
             owner,
+            input: InkInputController::new(
+                monitor.session_key.clone(),
+                annotation_enabled,
+                input_config,
+                logger.clone(),
+            ),
             monitor,
             logger,
+            layers,
+            renderer: None,
+            debug_visible: annotation_enabled && debug_overlay,
         });
         let state_ptr = state.as_mut() as *mut OverlayWindowState;
         let ex_style =
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_NOREDIRECTIONBITMAP;
-        // SAFETY: the class is registered and state_ptr stays stable in its Box until WM_NCDESTROY.
         let hwnd = unsafe {
             CreateWindowExW(
                 ex_style,
@@ -287,8 +356,6 @@ impl OverlayWindow {
                 Some(state_ptr.cast::<c_void>()),
             )
         }?;
-        // This is the required creation-time placement, not a standalone z-band re-raise. Later
-        // moves use SWP_NOZORDER; the full five-band ordering belongs to z_bands.rs.
         if let Err(error) = unsafe {
             SetWindowPos(
                 hwnd,
@@ -318,16 +385,11 @@ impl OverlayWindow {
                 return Err(error);
             }
         };
-        let mut window = Self {
-            hwnd,
-            state,
-            renderer: Some(renderer),
-        };
-        if let Err(error) = window.set_click_through(!annotation_enabled) {
-            return Err(error);
-        }
+        state.renderer = Some(renderer);
+        let mut window = Self { hwnd, state };
+        window.rebuild_completed()?;
+        window.set_click_through(!annotation_enabled)?;
         window.draw(annotation_enabled && debug_overlay)?;
-        // SAFETY: hwnd is a valid NOACTIVATE top-level window.
         let _ = unsafe { ShowWindow(hwnd, SW_SHOWNOACTIVATE) };
         Ok(window)
     }
@@ -348,9 +410,11 @@ impl OverlayWindow {
     ) -> Result<()> {
         let old = self.state.monitor.clone();
         self.state.monitor = monitor;
+        self.state
+            .input
+            .update_monitor_key(self.state.monitor.session_key.clone());
+        self.state.debug_visible = annotation_enabled && debug_overlay;
         let rect = self.state.monitor.rect;
-        // Do not pass HWND_TOPMOST here: overlay-only z-order re-raising would violate the
-        // five-band model. SWP_NOZORDER changes geometry only.
         unsafe {
             SetWindowPos(
                 self.hwnd,
@@ -363,16 +427,32 @@ impl OverlayWindow {
             )
         }?;
         if old.rect != rect {
-            self.renderer
+            let strokes = self.strokes();
+            self.state
+                .renderer
                 .as_mut()
                 .expect("renderer lives until OverlayWindow::drop")
-                .resize(rect.width(), rect.height())?;
+                .resize(
+                    rect.width(),
+                    rect.height(),
+                    &strokes,
+                    self.state.input.pressure_minimum_width_ratio(),
+                )?;
         }
-        self.draw(annotation_enabled && debug_overlay)
+        self.state.draw()
     }
 
-    pub fn set_click_through(&mut self, enabled: bool) -> Result<()> {
-        // SAFETY: hwnd is live and GWL_EXSTYLE contains a pointer-sized style bitset.
+    fn update_input_context(&mut self, annotation_enabled: bool, input_config: InkInputConfig) {
+        self.state
+            .input
+            .update_context(annotation_enabled, input_config);
+    }
+
+    fn finish_active(&mut self, reason: &str) -> Result<()> {
+        self.state.finish_active(reason)
+    }
+
+    fn set_click_through(&mut self, enabled: bool) -> Result<()> {
         let current = unsafe { GetWindowLongPtrW(self.hwnd, GWL_EXSTYLE) };
         let toggle = (WS_EX_TRANSPARENT | WS_EX_LAYERED).0 as isize;
         let updated = if enabled {
@@ -381,7 +461,6 @@ impl OverlayWindow {
             current & !toggle
         };
         if updated != current {
-            // A zero return can be a valid previous value, so clear and inspect last-error.
             unsafe { windows::Win32::Foundation::SetLastError(WIN32_ERROR(0)) };
             let previous = unsafe { SetWindowLongPtrW(self.hwnd, GWL_EXSTYLE, updated) };
             let error = unsafe { windows::Win32::Foundation::GetLastError() };
@@ -390,32 +469,83 @@ impl OverlayWindow {
             }
         }
         if enabled {
-            // Layered alpha stays fully opaque; DirectComposition supplies per-pixel transparency.
             unsafe { SetLayeredWindowAttributes(self.hwnd, COLORREF(0), 255, LWA_ALPHA) }?;
         }
         Ok(())
     }
 
     fn draw(&mut self, debug_visible: bool) -> Result<()> {
-        self.renderer
-            .as_mut()
-            .expect("renderer lives until OverlayWindow::drop")
-            .draw(debug_visible)
+        self.state.debug_visible = debug_visible;
+        self.state.draw()
     }
 
     fn swap_chain_size(&self) -> Result<(u32, u32)> {
-        self.renderer
+        self.state
+            .renderer
             .as_ref()
             .expect("renderer lives until OverlayWindow::drop")
             .swap_chain_size()
+    }
+
+    fn strokes(&self) -> Vec<InkStroke> {
+        self.state
+            .layers
+            .borrow()
+            .get(&self.state.monitor.session_key)
+            .map(|layer| layer.strokes().to_vec())
+            .unwrap_or_default()
+    }
+
+    fn rebuild_completed(&self) -> Result<()> {
+        self.state
+            .renderer
+            .as_ref()
+            .expect("renderer lives until OverlayWindow::drop")
+            .rebuild_completed(
+                &self.strokes(),
+                self.state.input.pressure_minimum_width_ratio(),
+            )
+    }
+
+    fn selftest_render_path(&mut self) -> Result<()> {
+        let mut fake_layer = InkLayerState::new();
+        let fake = InkStroke::new(
+            "selftest-five-point-stroke",
+            InkStrokeTool::Pen,
+            [0.2, 0.6, 1.0, 1.0],
+            8.0,
+            true,
+            (0..5)
+                .map(|index| {
+                    InkPoint::new(
+                        Point {
+                            x: 0.1 + f64::from(index) * 0.08,
+                            y: 0.2 + f64::from(index % 2) * 0.08,
+                        },
+                        0.2 + f64::from(index) * 0.2,
+                        f64::from(index),
+                    )
+                })
+                .collect(),
+            InkStrokeContent::Freehand,
+        );
+        fake_layer.execute(InkCommand::AddStroke(fake));
+        let ratio = self.state.input.pressure_minimum_width_ratio();
+        let renderer = self
+            .state
+            .renderer
+            .as_ref()
+            .expect("renderer lives until OverlayWindow::drop");
+        renderer.rebuild_completed(fake_layer.strokes(), ratio)?;
+        renderer.draw_frame(None, ratio, false)?;
+        renderer.rebuild_completed(&self.strokes(), ratio)?;
+        self.state.draw()
     }
 }
 
 impl Drop for OverlayWindow {
     fn drop(&mut self) {
-        // Release D2D/DComp resources before destroying their target HWND. State remains alive so
-        // the window procedure can safely process WM_NCDESTROY.
-        self.renderer.take();
+        self.state.renderer.take();
         if let Err(error) = unsafe { DestroyWindow(self.hwnd) } {
             self.state
                 .logger
@@ -431,16 +561,12 @@ unsafe extern "system" fn overlay_window_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     if message == WM_NCCREATE {
-        // SAFETY: WM_NCCREATE lParam is a valid CREATESTRUCTW for this call.
         let create = unsafe { &*(lparam.0 as *const CREATESTRUCTW) };
         let state = create.lpCreateParams as *mut OverlayWindowState;
-        // SAFETY: the pointer refers to a Box that outlives the HWND.
         unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, state as isize) };
     }
-    // SAFETY: GWLP_USERDATA is either zero or the stable Box pointer installed above.
     let state = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut OverlayWindowState };
     if !state.is_null() {
-        // SAFETY: all overlay window handling occurs on the UI thread before the Box is dropped.
         let state = unsafe { &mut *state };
         match message {
             WM_DPICHANGED => {
@@ -473,16 +599,33 @@ unsafe extern "system" fn overlay_window_proc(
                 post_sync(state, "WM_DISPLAYCHANGE");
                 return LRESULT(0);
             }
+            WM_POINTERDOWN
+            | WM_POINTERUPDATE
+            | WM_POINTERUP
+            | WM_POINTERCAPTURECHANGED
+            | WM_POINTERLEAVE => {
+                let pointer_id = pointer_id_from_wparam(wparam.0);
+                match state
+                    .input
+                    .handle_message(message, pointer_id, &state.monitor)
+                    .and_then(|outcome| state.apply_input_outcome(outcome))
+                {
+                    Ok(()) => {}
+                    Err(error) => state.logger.event(&format!(
+                        "포인터 입력/렌더 실패: monitor={} pointerId={pointer_id} message={message:#x}: {error}",
+                        state.monitor.session_key
+                    )),
+                }
+                return LRESULT(0);
+            }
             WM_POINTERACTIVATE => return LRESULT(PA_NOACTIVATE as isize),
             WM_MOUSEACTIVATE => return LRESULT(MA_NOACTIVATE as isize),
             WM_NCDESTROY => {
-                // SAFETY: clearing prevents later messages from observing state during teardown.
                 unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) };
             }
             _ => {}
         }
     }
-    // SAFETY: all unhandled messages retain default Win32 behavior.
     unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
 }
 
@@ -490,7 +633,6 @@ fn post_sync(state: &OverlayWindowState, reason: &str) {
     if state.owner.is_invalid() {
         return;
     }
-    // SAFETY: owner is the UI thread's hidden main window and the message has no pointer payload.
     if let Err(error) = unsafe {
         windows::Win32::UI::WindowsAndMessaging::PostMessageW(
             Some(state.owner),
@@ -503,269 +645,4 @@ fn post_sync(state: &OverlayWindowState, reason: &str) {
             .logger
             .event(&format!("오버레이 {reason} 동기화 요청 실패: {error}"));
     }
-}
-
-struct GraphicsDevice {
-    _d3d_device: ID3D11Device,
-    d2d_device: ID2D1Device,
-    dxgi_factory: IDXGIFactory2,
-    dcomp_device: IDCompositionDevice,
-}
-
-impl GraphicsDevice {
-    fn new() -> Result<Self> {
-        let mut d3d_device = None;
-        // SAFETY: outputs point to initialized Options and the hardware driver needs no adapter.
-        unsafe {
-            D3D11CreateDevice(
-                None,
-                D3D_DRIVER_TYPE_HARDWARE,
-                HMODULE::default(),
-                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                None,
-                D3D11_SDK_VERSION,
-                Some(&mut d3d_device),
-                None,
-                None,
-            )
-        }?;
-        let d3d_device = d3d_device.ok_or_else(Error::from_thread)?;
-        let dxgi_device: IDXGIDevice = d3d_device.cast()?;
-        // SAFETY: dxgi_device is the D3D11 device's DXGI interface.
-        let adapter = unsafe { dxgi_device.GetAdapter() }?;
-        let dxgi_factory: IDXGIFactory2 = unsafe { adapter.GetParent() }?;
-        // SAFETY: the DXGI device supports BGRA and remains alive in this object.
-        let d2d_device = unsafe { D2D1CreateDevice(&dxgi_device, None) }?;
-        let dcomp_device: IDCompositionDevice = unsafe { DCompositionCreateDevice(&dxgi_device) }?;
-        Ok(Self {
-            _d3d_device: d3d_device,
-            d2d_device,
-            dxgi_factory,
-            dcomp_device,
-        })
-    }
-}
-
-struct OverlayRenderer {
-    hwnd: HWND,
-    swap_chain: IDXGISwapChain1,
-    context: ID2D1DeviceContext,
-    target_bitmap: Option<ID2D1Bitmap1>,
-    _dcomp_target: IDCompositionTarget,
-    _visual: IDCompositionVisual,
-    width: u32,
-    height: u32,
-    monitor_key: String,
-    logger: Logger,
-}
-
-impl OverlayRenderer {
-    fn new(
-        graphics: &GraphicsDevice,
-        hwnd: HWND,
-        width: i32,
-        height: i32,
-        monitor_key: String,
-        logger: Logger,
-    ) -> Result<Self> {
-        let width = valid_dimension(width)?;
-        let height = valid_dimension(height)?;
-        let description = DXGI_SWAP_CHAIN_DESC1 {
-            Width: width,
-            Height: height,
-            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            SampleDesc: DXGI_SAMPLE_DESC {
-                Count: 1,
-                Quality: 0,
-            },
-            BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
-            BufferCount: 2,
-            Scaling: DXGI_SCALING_STRETCH,
-            SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
-            AlphaMode: DXGI_ALPHA_MODE_PREMULTIPLIED,
-            ..Default::default()
-        };
-        // SAFETY: the shared D3D device and immutable description are valid for this call.
-        let swap_chain = unsafe {
-            graphics.dxgi_factory.CreateSwapChainForComposition(
-                &graphics._d3d_device,
-                &description,
-                None::<&IDXGIOutput>,
-            )
-        }?;
-        // SAFETY: the D2D device is live and no multithreaded access occurs.
-        let context = unsafe {
-            graphics
-                .d2d_device
-                .CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)
-        }?;
-        unsafe { context.SetDpi(TARGET_DPI, TARGET_DPI) };
-        let target_bitmap = Some(create_target_bitmap(&context, &swap_chain)?);
-        let target_image: ID2D1Image = target_bitmap
-            .as_ref()
-            .expect("target bitmap was just created")
-            .cast()?;
-        unsafe { context.SetTarget(&target_image) };
-
-        // DirectComposition initialization order is deliberate: D3D/D2D shared device, composition
-        // swap chain, D2D target, then HWND target + visual content + root + commit.
-        let dcomp_target = unsafe { graphics.dcomp_device.CreateTargetForHwnd(hwnd, true) }?;
-        let visual = unsafe { graphics.dcomp_device.CreateVisual() }?;
-        unsafe {
-            visual.SetContent(&swap_chain)?;
-            dcomp_target.SetRoot(&visual)?;
-            graphics.dcomp_device.Commit()?;
-        }
-        let renderer = Self {
-            hwnd,
-            swap_chain,
-            context,
-            target_bitmap,
-            _dcomp_target: dcomp_target,
-            _visual: visual,
-            width,
-            height,
-            monitor_key,
-            logger,
-        };
-        renderer.log_size()?;
-        Ok(renderer)
-    }
-
-    fn resize(&mut self, width: i32, height: i32) -> Result<()> {
-        let width = valid_dimension(width)?;
-        let height = valid_dimension(height)?;
-        // SAFETY: detaching the target releases the swap-chain buffer before ResizeBuffers.
-        unsafe { self.context.SetTarget(None::<&ID2D1Image>) };
-        self.target_bitmap = None;
-        if self.width != width || self.height != height {
-            unsafe {
-                self.swap_chain.ResizeBuffers(
-                    0,
-                    width,
-                    height,
-                    DXGI_FORMAT_UNKNOWN,
-                    Default::default(),
-                )
-            }?;
-        }
-        let bitmap = create_target_bitmap(&self.context, &self.swap_chain)?;
-        let image: ID2D1Image = bitmap.cast()?;
-        unsafe { self.context.SetTarget(&image) };
-        self.target_bitmap = Some(bitmap);
-        self.width = width;
-        self.height = height;
-        self.log_size()?;
-        Ok(())
-    }
-
-    fn swap_chain_size(&self) -> Result<(u32, u32)> {
-        let description = unsafe { self.swap_chain.GetDesc1() }?;
-        Ok((description.Width, description.Height))
-    }
-
-    fn log_size(&self) -> Result<()> {
-        let (swap_width, swap_height) = self.swap_chain_size()?;
-        let mut window_rect = RECT::default();
-        unsafe { GetWindowRect(self.hwnd, &mut window_rect) }?;
-        let target = self
-            .target_bitmap
-            .as_ref()
-            .expect("target bitmap is attached outside ResizeBuffers");
-        let mut target_dpi_x = 0.0;
-        let mut target_dpi_y = 0.0;
-        unsafe { target.GetDpi(&mut target_dpi_x, &mut target_dpi_y) };
-        let target_size = unsafe { target.GetSize() };
-        debug_assert_eq!(target_dpi_x, target_dpi_y);
-        self.logger.event(&format!(
-            "오버레이 크기: {}, window={}x{}(물리), swapchain={}x{}, target dpi={:.0}, D2D 그리기 사각형={:.0}x{:.0}",
-            self.monitor_key,
-            window_rect.right - window_rect.left,
-            window_rect.bottom - window_rect.top,
-            swap_width,
-            swap_height,
-            target_dpi_x,
-            target_size.width,
-            target_size.height
-        ));
-        Ok(())
-    }
-
-    fn draw(&mut self, debug_visible: bool) -> Result<()> {
-        let clear = if debug_visible {
-            D2D1_COLOR_F {
-                r: 0.12,
-                g: 0.35,
-                b: 0.95,
-                a: 0.06,
-            }
-        } else {
-            D2D1_COLOR_F::default()
-        };
-        let debug_brush = if debug_visible {
-            let orange = D2D1_COLOR_F {
-                r: 1.0,
-                g: 0.43,
-                b: 0.08,
-                a: 1.0,
-            };
-            Some(unsafe { self.context.CreateSolidColorBrush(&orange, None) }?)
-        } else {
-            None
-        };
-        unsafe {
-            self.context.BeginDraw();
-            self.context.Clear(Some(&clear));
-        }
-        if let Some(brush) = debug_brush {
-            // 창, 스왑 체인, D2D 타깃은 물리 픽셀이고 96 DPI에서 D2D 1단위는 1픽셀이다.
-            let stroke = 4.0;
-            let inset = stroke / 2.0;
-            let border = D2D_RECT_F {
-                left: inset,
-                top: inset,
-                right: self.width as f32 - inset,
-                bottom: self.height as f32 - inset,
-            };
-            unsafe {
-                self.context
-                    .DrawRectangle(&border, &brush, stroke, None::<&ID2D1StrokeStyle>);
-            }
-        }
-        unsafe {
-            self.context.EndDraw(None, None)?;
-            self.swap_chain.Present(1, Default::default()).ok()?;
-        }
-        Ok(())
-    }
-}
-
-fn create_target_bitmap(
-    context: &ID2D1DeviceContext,
-    swap_chain: &IDXGISwapChain1,
-) -> Result<ID2D1Bitmap1> {
-    let surface: IDXGISurface = unsafe { swap_chain.GetBuffer(0) }?;
-    let properties = D2D1_BITMAP_PROPERTIES1 {
-        pixelFormat: D2D1_PIXEL_FORMAT {
-            format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-        },
-        dpiX: TARGET_DPI,
-        dpiY: TARGET_DPI,
-        bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
-        ..Default::default()
-    };
-    unsafe { context.CreateBitmapFromDxgiSurface(&surface, Some(&properties)) }
-}
-
-fn valid_dimension(value: i32) -> Result<u32> {
-    u32::try_from(value)
-        .ok()
-        .filter(|value| *value > 0)
-        .ok_or_else(|| {
-            Error::new(
-                windows::Win32::Foundation::E_INVALIDARG,
-                "overlay dimension must be positive",
-            )
-        })
 }

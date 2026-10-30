@@ -1,8 +1,12 @@
 use crate::hotkey::HotkeyCenter;
+use crate::ink_view::InkInputConfig;
 use crate::log::Logger;
 use crate::overlay::{OverlayManager, SYNC_MESSAGE};
 use crate::tray::{self, Tray, CALLBACK_MESSAGE, MENU_EXIT, MENU_TOGGLE_ANNOTATION};
 use edutools_core::dispatch::{dispatch, DispatchContext, Effect};
+use edutools_core::ink::{
+    InkGeometry, InkPoint, InkStroke, InkStrokeContent, InkStrokeTool, PathCommand, Point, Size,
+};
 use edutools_core::settings::AppSettings;
 use edutools_core::shortcut::{
     ShortcutCatalog, ShortcutCommand, ShortcutDefinition, ShortcutScope,
@@ -20,6 +24,7 @@ use windows::Win32::UI::HiDpi::{
     GetAwarenessFromDpiAwarenessContext, GetThreadDpiAwarenessContext,
     DPI_AWARENESS_PER_MONITOR_AWARE,
 };
+use windows::Win32::UI::Input::Pointer::EnableMouseInPointer;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow, DispatchMessageW, GetMessageW,
     GetWindowLongPtrW, LoadImageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW,
@@ -33,6 +38,13 @@ const WINDOW_CLASS: PCWSTR = w!("EduToolsMain");
 pub fn run() -> i32 {
     let logger = Logger::open();
     logger.event("EduTools 시작");
+
+    // SAFETY: this process-wide opt-in is called exactly once, before any app windows are created.
+    if let Err(error) = unsafe { EnableMouseInPointer(true) } {
+        logger.event(&format!("EnableMouseInPointer(TRUE) 실패: {error}"));
+        eprintln!("EduTools: WM_POINTER 마우스 입력을 활성화할 수 없습니다: {error}");
+        return 1;
+    }
 
     if std::env::args_os()
         .skip(1)
@@ -119,7 +131,8 @@ impl App {
             self.logger.clone(),
         );
         self.hotkeys = Some(hotkeys);
-        match OverlayManager::new(self.hwnd, self.hinstance, self.logger.clone()) {
+        let input_config = InkInputConfig::from_core(&self.state, &self.settings);
+        match OverlayManager::new(self.hwnd, self.hinstance, input_config, self.logger.clone()) {
             Ok(overlays) => self.overlays = Some(overlays),
             Err(error) => {
                 self.report_overlay_error("초기화", &error);
@@ -171,15 +184,20 @@ impl App {
         for effect in effects {
             match effect {
                 Effect::FinishAllActiveInteractions => {
-                    self.logger
-                        .event("core Effect::FinishAllActiveInteractions (W1 활성 상호작용 없음)");
+                    if let Some(overlays) = self.overlays.as_mut() {
+                        if let Err(error) = overlays.finish_all_active("core finish effect") {
+                            self.logger
+                                .event(&format!("활성 획 확정 실패 (core finish effect): {error}"));
+                        }
+                    }
                 }
                 Effect::AnnotationModeChanged(enabled) => {
                     if let Some(tray) = self.tray.as_mut() {
                         tray.set_annotation_enabled(enabled);
                     }
+                    let input_config = InkInputConfig::from_core(&self.state, &self.settings);
                     if let Some(overlays) = self.overlays.as_mut() {
-                        if let Err(error) = overlays.set_annotation_mode(enabled) {
+                        if let Err(error) = overlays.set_annotation_mode(enabled, input_config) {
                             self.report_overlay_error("판서 모드 반영", &error);
                         }
                     }
@@ -192,6 +210,10 @@ impl App {
                     .logger
                     .event(&format!("W1에서 해석하지 않는 core effect: {other:?}")),
             }
+        }
+        let input_config = InkInputConfig::from_core(&self.state, &self.settings);
+        if let Some(overlays) = self.overlays.as_mut() {
+            overlays.update_input_context(input_config);
         }
     }
 
@@ -437,10 +459,59 @@ fn run_selftest(logger: &Logger) -> bool {
             }
         }
 
-        match OverlayManager::new(HWND::default(), hinstance, logger.clone()) {
+        let state = AppState::new();
+        let settings = AppSettings::default();
+        match OverlayManager::new(
+            HWND::default(),
+            hinstance,
+            InkInputConfig::from_core(&state, &settings),
+            logger.clone(),
+        ) {
             Ok(mut overlays) => failures.extend(overlays.selftest_failures()),
             Err(error) => failures.push(format!("overlay: 생성 실패: {error}")),
         }
+    }
+
+    let size = Size {
+        width: 1_920.0,
+        height: 1_080.0,
+    };
+    let pixel = Point { x: 413.0, y: 777.0 };
+    let round_trip = InkGeometry::screen_point(InkGeometry::normalized_point(pixel, size), size);
+    if (round_trip.x - pixel.x).abs() > 1.0 || (round_trip.y - pixel.y).abs() > 1.0 {
+        failures.push(format!(
+            "ink: 픽셀/정규화 왕복 오차가 1px 초과 ({round_trip:?} != {pixel:?})"
+        ));
+    }
+
+    let smoke_stroke = InkStroke::new(
+        "selftest-outline",
+        InkStrokeTool::Pen,
+        [1.0, 0.2, 0.1, 1.0],
+        6.0,
+        true,
+        vec![
+            InkPoint::new(Point { x: 0.1, y: 0.2 }, 0.25, 0.0),
+            InkPoint::new(Point { x: 0.5, y: 0.6 }, 0.75, 1.0),
+        ],
+        InkStrokeContent::Freehand,
+    );
+    let outline = InkGeometry::variable_width_path(
+        &smoke_stroke,
+        &[
+            (Point { x: 100.0, y: 100.0 }, 0.25),
+            (Point { x: 400.0, y: 600.0 }, 0.75),
+        ],
+        0.2,
+    );
+    if outline.is_empty()
+        || outline
+            .iter()
+            .filter(|command| matches!(command, PathCommand::MoveTo(_)))
+            .count()
+            != 3
+    {
+        failures.push("ink: 가변 굵기 외곽선 스모크 결과가 비었거나 끝 원이 없음".to_owned());
     }
 
     // SAFETY: these functions inspect the current thread's manifest-selected DPI context.
