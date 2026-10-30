@@ -11,6 +11,10 @@ use crate::radial_palette::{
     RadialPaletteManager, WM_APP_RADIAL_ACTION, WM_APP_RADIAL_COLLAPSE, WM_APP_RADIAL_REDRAW,
     WM_APP_RADIAL_SAVE_POSITION,
 };
+use crate::text_entry::{
+    cancel_reason, TextEntryRequest, TextEntryWindow, WM_APP_TEXT_ENTRY_CANCEL,
+    WM_APP_TEXT_ENTRY_COMMIT, WM_APP_TEXT_ENTRY_OPEN,
+};
 use crate::tray::{self, Tray, CALLBACK_MESSAGE, MENU_EXIT, MENU_TOGGLE_ANNOTATION};
 use edutools_core::dispatch::{dispatch, DispatchContext, Effect, PressedShortcuts};
 use edutools_core::eraser::EraserMode;
@@ -154,6 +158,7 @@ struct App {
     overlays: Option<OverlayManager>,
     palette: Option<PaletteManager>,
     radial_palette: Option<RadialPaletteManager>,
+    text_entry: Option<TextEntryWindow>,
     logger: Logger,
     shutting_down: bool,
 }
@@ -366,6 +371,9 @@ impl App {
                     }
                 }
                 Effect::AnnotationModeChanged(enabled) => {
+                    if !enabled {
+                        self.cancel_text_entry("판서 끔");
+                    }
                     self.set_keyboard_hook(enabled);
                     if let Some(tray) = self.tray.as_mut() {
                         tray.set_annotation_enabled(enabled);
@@ -394,6 +402,9 @@ impl App {
                     ));
                 }
                 Effect::ToolChanged(tool) => {
+                    if tool != InkTool::Text {
+                        self.cancel_text_entry("도구 변경");
+                    }
                     self.logger
                         .event(&format!("효과 ({source}): 도구 선택 {tool:?}"));
                     if tool == InkTool::Eraser {
@@ -507,6 +518,7 @@ impl App {
     }
 
     fn synchronize_overlays(&mut self, reason: &str) {
+        self.cancel_text_entry("모니터 변경");
         if let Some(overlays) = self.overlays.as_mut() {
             if let Err(error) = overlays.synchronize(reason) {
                 self.report_overlay_error("모니터 재구성", &error);
@@ -827,6 +839,84 @@ impl App {
         }
     }
 
+    fn begin_text_entry(&mut self, request: TextEntryRequest) {
+        self.cancel_text_entry("새 입력");
+        if !self
+            .overlays
+            .as_ref()
+            .is_some_and(|overlays| overlays.contains_monitor(&request.monitor_key))
+        {
+            self.logger.event(&format!(
+                "텍스트 편집 취소: reason=모니터 변경 monitor={}",
+                request.monitor_key
+            ));
+            return;
+        }
+        match TextEntryWindow::open(self.hwnd, self.hinstance, request, self.logger.clone()) {
+            Ok(entry) => self.text_entry = Some(entry),
+            Err(error) => {
+                let message = format!("텍스트 편집 창 열기 실패: {error}");
+                self.logger.event(&message);
+                if let Some(tray) = self.tray.as_ref() {
+                    tray.show_warning("텍스트 도구 오류", &message);
+                }
+            }
+        }
+    }
+
+    fn commit_text_entry(&mut self) {
+        let commit = match self.text_entry.as_ref().map(TextEntryWindow::commit) {
+            Some(Ok(commit)) => commit,
+            Some(Err(error)) => {
+                self.logger
+                    .event(&format!("텍스트 편집 측정 실패: {error}"));
+                self.cancel_text_entry("측정 오류");
+                return;
+            }
+            None => return,
+        };
+        if commit.string.trim().is_empty() {
+            self.cancel_text_entry("빈 문자열");
+            return;
+        }
+
+        let character_count = commit.string.chars().count();
+        let measured = commit.measured;
+        let monitor_key = commit.request.monitor_key.clone();
+        if let Some(mut entry) = self.text_entry.take() {
+            if let Err(error) = entry.close() {
+                self.logger
+                    .event(&format!("텍스트 편집 창 확정 종료 실패: {error}"));
+            }
+        }
+        let result = self
+            .overlays
+            .as_mut()
+            .map(|overlays| overlays.add_text_stroke(commit));
+        match result {
+            Some(Ok(text_size)) => self.logger.event(&format!(
+                "텍스트 확정: monitor={monitor_key} 글자수={character_count} 측정={:.2}x{:.2}DIP textSize={:.2}x{:.2}DIP Undo=1",
+                measured.width, measured.height, text_size.width, text_size.height
+            )),
+            Some(Err(error)) => self.report_overlay_error("텍스트 스트로크 추가", &error),
+            None => self
+                .logger
+                .event("텍스트 스트로크 추가 실패: 오버레이 관리자가 없음"),
+        }
+    }
+
+    fn cancel_text_entry(&mut self, reason: &str) {
+        let Some(mut entry) = self.text_entry.take() else {
+            return;
+        };
+        if let Err(error) = entry.close() {
+            self.logger
+                .event(&format!("텍스트 편집 창 취소 종료 실패: {error}"));
+        }
+        self.logger
+            .event(&format!("텍스트 편집 취소: reason={reason}"));
+    }
+
     fn handle_tray_callback(&mut self, event: u32) {
         if event != WM_CONTEXTMENU && event != WM_RBUTTONUP {
             return;
@@ -856,6 +946,7 @@ impl App {
             return;
         }
         self.shutting_down = true;
+        self.cancel_text_entry("앱 종료");
         self.set_keyboard_hook(false);
         // Overlay HWNDs and graphics resources must be released on the UI thread before the tray
         // and hidden owner window go away.
@@ -922,6 +1013,7 @@ fn run_message_loop(logger: Logger) -> Result<i32> {
         overlays: None,
         palette: None,
         radial_palette: None,
+        text_entry: None,
         logger,
         shutting_down: false,
     });
@@ -985,6 +1077,24 @@ unsafe extern "system" fn window_proc(
             }
             WM_APP_KEY => {
                 app.handle_annotation_key(HookKeyEvent::decode(wparam, lparam));
+                return LRESULT(0);
+            }
+            WM_APP_TEXT_ENTRY_OPEN => {
+                let request = lparam.0 as *mut TextEntryRequest;
+                if !request.is_null() {
+                    let request = unsafe { Box::from_raw(request) };
+                    app.begin_text_entry(*request);
+                } else {
+                    app.logger.event("텍스트 편집 열기 요청 포인터가 null임");
+                }
+                return LRESULT(0);
+            }
+            WM_APP_TEXT_ENTRY_COMMIT => {
+                app.commit_text_entry();
+                return LRESULT(0);
+            }
+            WM_APP_TEXT_ENTRY_CANCEL => {
+                app.cancel_text_entry(cancel_reason(wparam.0));
                 return LRESULT(0);
             }
             CALLBACK_MESSAGE => {

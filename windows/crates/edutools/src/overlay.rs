@@ -1,21 +1,24 @@
 use crate::ink_view::{
     pointer_id_from_wparam, stroke_shape_label, InkInputConfig, InkInputController, InputOutcome,
-    StrokeReplacementKind,
+    StrokeReplacementKind, TextEntrySeed,
 };
 use crate::log::Logger;
 use crate::monitor::{
     enumerate_monitors, monitor_at_point, monitor_by_key, plan_monitor_sync, Monitor,
 };
 use crate::render::{GraphicsDevice, OverlayRenderer};
+use crate::text_entry::{TextEntryCommit, TextEntryRequest, WM_APP_TEXT_ENTRY_OPEN};
 use crate::z_bands::{raise_band_order, Band, BandRegistration};
 use edutools_core::ink::{
-    InkCommand, InkLayerState, InkPoint, InkStroke, InkStrokeContent, InkStrokeTool, Point,
+    text_stroke_size, InkCommand, InkLayerState, InkPoint, InkStroke, InkStrokeContent,
+    InkStrokeTool, InkTextContent, Point, Size,
 };
 use edutools_core::state::AppState;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::{c_void, OsString};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use windows::core::{w, Error, Result};
 use windows::Win32::Foundation::{
     COLORREF, ERROR_CLASS_ALREADY_EXISTS, ERROR_SUCCESS, E_FAIL, HINSTANCE, HWND, LPARAM, LRESULT,
@@ -38,6 +41,7 @@ const LASER_TIMER_ID: usize = 0xED11;
 const LASER_TIMER_INTERVAL_MS: u32 = 16;
 const RECOGNITION_TIMER_ID: usize = 0xED12;
 const RECOGNITION_TIMER_INTERVAL_MS: u32 = 500;
+static TEXT_STROKE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 type LayerStore = Rc<RefCell<HashMap<String, InkLayerState>>>;
 type SharedAppState = Rc<RefCell<AppState>>;
@@ -182,6 +186,21 @@ impl OverlayManager {
             .map(|overlay| overlay.monitor().clone())
             .collect::<Vec<_>>();
         Ok(monitor_at_point(&monitors, point).map(|monitor| monitor.session_key.clone()))
+    }
+
+    pub fn contains_monitor(&self, monitor_key: &str) -> bool {
+        self.overlays.contains_key(monitor_key)
+    }
+
+    pub fn add_text_stroke(&mut self, commit: TextEntryCommit) -> Result<Size> {
+        let monitor_key = commit.request.monitor_key.clone();
+        let overlay = self.overlays.get_mut(&monitor_key).ok_or_else(|| {
+            Error::new(
+                E_FAIL,
+                format!("텍스트 대상 모니터가 사라짐: {monitor_key}"),
+            )
+        })?;
+        overlay.add_text_stroke(commit)
     }
 
     pub fn undo(&mut self, monitor_key: &str) -> Result<bool> {
@@ -406,6 +425,7 @@ struct OverlayWindowState {
 
 impl OverlayWindowState {
     fn apply_input_outcome(&mut self, outcome: InputOutcome) -> Result<()> {
+        let text_entry = outcome.text_entry;
         let minimum_ratio = self.input.pressure_minimum_width_ratio();
         let highlighter_opacity = self.input.highlighter_opacity();
         for stroke in outcome.finished {
@@ -482,7 +502,44 @@ impl OverlayWindowState {
         if outcome.redraw {
             self.draw()?;
         }
+        if let Some(seed) = text_entry {
+            self.post_text_entry_request(seed)?;
+        }
         Ok(())
+    }
+
+    fn post_text_entry_request(&self, seed: TextEntrySeed) -> Result<()> {
+        if self.owner.is_invalid() {
+            return Err(Error::new(E_FAIL, "텍스트 편집 요청을 받을 앱 창이 없음"));
+        }
+        let request = Box::new(TextEntryRequest {
+            monitor_key: self.monitor.session_key.clone(),
+            monitor_left: self.monitor.rect.left,
+            monitor_top: self.monitor.rect.top,
+            monitor_size: Size {
+                width: f64::from(self.monitor.rect.width()),
+                height: f64::from(self.monitor.rect.height()),
+            },
+            origin: seed.origin,
+            dpi: self.monitor.dpi.0,
+            color: seed.color,
+            font_size: seed.font_size,
+        });
+        let raw = Box::into_raw(request);
+        match unsafe {
+            windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                Some(self.owner),
+                WM_APP_TEXT_ENTRY_OPEN,
+                WPARAM(0),
+                LPARAM(raw as isize),
+            )
+        } {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let _ = unsafe { Box::from_raw(raw) };
+                Err(error)
+            }
+        }
     }
 
     fn draw(&self) -> Result<()> {
@@ -813,6 +870,54 @@ impl OverlayWindow {
                 self.state.input.pressure_minimum_width_ratio(),
                 self.state.input.highlighter_opacity(),
             )
+    }
+
+    fn add_text_stroke(&mut self, commit: TextEntryCommit) -> Result<Size> {
+        let text_size = text_stroke_size(commit.measured, commit.request.font_size);
+        let scale = crate::render::px_per_dip(commit.request.dpi);
+        let canvas = commit.request.monitor_size;
+        let start = commit.request.origin;
+        let end = Point {
+            x: start.x + text_size.width * scale,
+            y: start.y + text_size.height * scale,
+        };
+        let sequence = TEXT_STROKE_SEQUENCE.fetch_add(1, AtomicOrdering::Relaxed);
+        let stroke = InkStroke::new(
+            format!("win-text-{sequence}"),
+            InkStrokeTool::Text,
+            commit.request.color,
+            1.0,
+            false,
+            vec![
+                InkPoint::new(
+                    edutools_core::ink::InkGeometry::normalized_point(start, canvas),
+                    1.0,
+                    sequence as f64,
+                ),
+                InkPoint::new(
+                    edutools_core::ink::InkGeometry::normalized_point(end, canvas),
+                    1.0,
+                    sequence as f64,
+                ),
+            ],
+            InkStrokeContent::Text(InkTextContent {
+                string: commit.string,
+                font_size: commit.request.font_size,
+            }),
+        );
+        self.state
+            .execute_ink_command(InkCommand::AddStroke(stroke.clone()));
+        self.state
+            .renderer
+            .as_ref()
+            .expect("renderer initialized after window creation")
+            .append_completed(
+                &stroke,
+                self.state.input.pressure_minimum_width_ratio(),
+                self.state.input.highlighter_opacity(),
+            )?;
+        self.state.draw()?;
+        Ok(text_size)
     }
 
     fn selftest_render_path(&mut self) -> Result<Vec<String>> {

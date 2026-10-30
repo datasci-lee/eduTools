@@ -1,6 +1,7 @@
 use edutools_core::ink::{
-    effective_width, InkCommand, InkGeometry, InkLayerState, InkPoint, InkStroke, InkStrokeContent,
-    InkStrokeTool, PathCommand, Point, Size,
+    effective_width, text_entry_action, text_entry_width, text_stroke_size, InkCommand,
+    InkGeometry, InkLayerState, InkPoint, InkStroke, InkStrokeContent, InkStrokeTool, PathCommand,
+    Point, Size, TextEntryAction, TextEntryKey,
 };
 use edutools_core::laser::{LaserPoint, LaserTrail};
 
@@ -34,6 +35,92 @@ fn stroke(
 
 fn approximately_equal(first: f64, second: f64) -> bool {
     (first - second).abs() <= EPSILON
+}
+
+#[test]
+fn text_measurement_uses_swift_minimum_size_rule() {
+    let cases = [
+        (
+            Size {
+                width: 0.0,
+                height: 0.0,
+            },
+            24.0,
+            Size {
+                width: 24.0,
+                height: 28.8,
+            },
+        ),
+        (
+            Size {
+                width: 16.0,
+                height: 22.8,
+            },
+            24.0,
+            Size {
+                width: 24.0,
+                height: 28.8,
+            },
+        ),
+        (
+            Size {
+                width: 30.0,
+                height: 40.0,
+            },
+            24.0,
+            Size {
+                width: 38.0,
+                height: 46.0,
+            },
+        ),
+    ];
+
+    for (measured, font_size, expected) in cases {
+        let actual = text_stroke_size(measured, font_size);
+        assert!(approximately_equal(actual.width, expected.width));
+        assert!(approximately_equal(actual.height, expected.height));
+    }
+}
+
+#[test]
+fn text_entry_width_clamps_in_monitor_dips() {
+    let cases = [
+        ((1_920.0, 100.0), 320.0),
+        ((1_920.0, 1_800.0), 108.0),
+        ((1_920.0, 1_900.0), 80.0),
+    ];
+
+    for ((monitor_width, origin_x), expected) in cases {
+        assert_eq!(text_entry_width(monitor_width, origin_x), expected);
+    }
+}
+
+#[test]
+fn text_entry_key_decision_table_matches_swift_and_ime_rules() {
+    let cases = [
+        ((TextEntryKey::Enter, false, false), TextEntryAction::Commit),
+        ((TextEntryKey::Enter, false, true), TextEntryAction::Default),
+        (
+            (TextEntryKey::Enter, true, false),
+            TextEntryAction::LineBreak,
+        ),
+        (
+            (TextEntryKey::Enter, true, true),
+            TextEntryAction::LineBreak,
+        ),
+        (
+            (TextEntryKey::Escape, false, false),
+            TextEntryAction::Cancel,
+        ),
+        ((TextEntryKey::Escape, false, true), TextEntryAction::Cancel),
+    ];
+
+    for ((key, shift_pressed, ime_composing), expected) in cases {
+        assert_eq!(
+            text_entry_action(key, shift_pressed, ime_composing),
+            expected
+        );
+    }
 }
 
 #[test]

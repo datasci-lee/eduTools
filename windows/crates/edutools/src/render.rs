@@ -7,7 +7,7 @@ use edutools_core::eraser::{
 };
 use edutools_core::ink::{
     ArrowStyle, InkGeometry, InkPoint, InkShapeKind, InkStroke, InkStrokeContent, InkStrokeTool,
-    PathCommand, Point, Size,
+    InkTextContent, PathCommand, Point, Size,
 };
 use edutools_core::shape::InkItemGeometry;
 use windows::core::{Error, Interface, Result};
@@ -19,15 +19,16 @@ use windows::Win32::Graphics::Direct2D::Common::{
 };
 use windows::Win32::Graphics::Direct2D::{
     CLSID_D2D1Shadow, D2D1CreateDevice, ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext, ID2D1Effect,
-    ID2D1Factory, ID2D1GeometrySink, ID2D1Image, ID2D1Layer, ID2D1PathGeometry, ID2D1StrokeStyle,
-    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+    ID2D1Factory, ID2D1GeometrySink, ID2D1Image, ID2D1Layer, ID2D1PathGeometry, ID2D1RenderTarget,
+    ID2D1StrokeStyle, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
     D2D1_BITMAP_OPTIONS_CPU_READ, D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
     D2D1_CAP_STYLE_FLAT, D2D1_CAP_STYLE_ROUND, D2D1_DASH_STYLE_CUSTOM, D2D1_DASH_STYLE_SOLID,
-    D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_ELLIPSE, D2D1_INTERPOLATION_MODE_LINEAR,
-    D2D1_LAYER_OPTIONS1_NONE, D2D1_LAYER_PARAMETERS1, D2D1_LINE_JOIN_ROUND, D2D1_MAP_OPTIONS_READ,
-    D2D1_PRIMITIVE_BLEND_COPY, D2D1_PRIMITIVE_BLEND_SOURCE_OVER, D2D1_PROPERTY_TYPE_FLOAT,
-    D2D1_PROPERTY_TYPE_VECTOR4, D2D1_QUADRATIC_BEZIER_SEGMENT,
-    D2D1_SHADOW_PROP_BLUR_STANDARD_DEVIATION, D2D1_SHADOW_PROP_COLOR, D2D1_STROKE_STYLE_PROPERTIES,
+    D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_ELLIPSE,
+    D2D1_INTERPOLATION_MODE_LINEAR, D2D1_LAYER_OPTIONS1_NONE, D2D1_LAYER_PARAMETERS1,
+    D2D1_LINE_JOIN_ROUND, D2D1_MAP_OPTIONS_READ, D2D1_PRIMITIVE_BLEND_COPY,
+    D2D1_PRIMITIVE_BLEND_SOURCE_OVER, D2D1_PROPERTY_TYPE_FLOAT, D2D1_PROPERTY_TYPE_VECTOR4,
+    D2D1_QUADRATIC_BEZIER_SEGMENT, D2D1_SHADOW_PROP_BLUR_STANDARD_DEVIATION,
+    D2D1_SHADOW_PROP_COLOR, D2D1_STROKE_STYLE_PROPERTIES,
 };
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
 use windows::Win32::Graphics::Direct3D11::{
@@ -35,6 +36,12 @@ use windows::Win32::Graphics::Direct3D11::{
 };
 use windows::Win32::Graphics::DirectComposition::{
     DCompositionCreateDevice, IDCompositionDevice, IDCompositionTarget, IDCompositionVisual,
+};
+use windows::Win32::Graphics::DirectWrite::{
+    DWriteCreateFactory, IDWriteFactory, IDWriteFontCollection, DWRITE_FACTORY_TYPE_SHARED,
+    DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL,
+    DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_TEXT_ALIGNMENT_LEADING,
+    DWRITE_WORD_WRAPPING_WRAP,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN,
@@ -154,6 +161,7 @@ pub struct OverlayRenderer {
     butt_stroke: ID2D1StrokeStyle,
     eraser_dash: ID2D1StrokeStyle,
     selection_lasso_dash: ID2D1StrokeStyle,
+    dwrite: IDWriteFactory,
     swap_target: Option<ID2D1Bitmap1>,
     completed_bitmap: Option<ID2D1Bitmap1>,
     _dcomp_target: IDCompositionTarget,
@@ -208,6 +216,7 @@ impl OverlayRenderer {
         let selection_lasso_dash = unsafe {
             factory.CreateStrokeStyle(&dash_properties, Some(&[3.333_333_3, 2.666_666_7]))
         }?;
+        let dwrite = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED) }?;
         let swap_target = Some(create_swap_target(&context, &swap_chain)?);
         let completed_bitmap = Some(create_completed_bitmap(&context, width, height)?);
         let swap_image: ID2D1Image = swap_target
@@ -235,6 +244,7 @@ impl OverlayRenderer {
             butt_stroke,
             eraser_dash,
             selection_lasso_dash,
+            dwrite,
             swap_target,
             completed_bitmap,
             _dcomp_target: dcomp_target,
@@ -568,6 +578,47 @@ impl OverlayRenderer {
             failures.push(format!(
                 "가리개: 중심 BGRA={:?}, alpha가 0.9 이하임",
                 cover_sample.bgra
+            ));
+        }
+
+        let text_start = Point { x: 0.2, y: 0.2 };
+        let text_end = Point { x: 0.8, y: 0.5 };
+        let text = InkStroke::new(
+            "selftest-text",
+            InkStrokeTool::Text,
+            [0.9, 0.95, 1.0, 1.0],
+            1.0,
+            false,
+            vec![
+                InkPoint::new(text_start, 1.0, 0.0),
+                InkPoint::new(text_end, 1.0, 1.0),
+            ],
+            InkStrokeContent::Text(InkTextContent {
+                string: "가A".to_owned(),
+                font_size: 32.0,
+            }),
+        );
+        self.draw_strokes_to_bitmap(
+            &frame,
+            std::slice::from_ref(&text),
+            minimum_ratio,
+            highlighter_opacity,
+            true,
+        )?;
+        self.restore_swap_target()?;
+        let text_rect = D2D_RECT_F {
+            left: text_start.x as f32 * self.width as f32,
+            top: text_start.y as f32 * self.height as f32,
+            right: text_end.x as f32 * self.width as f32,
+            bottom: text_end.y as f32 * self.height as f32,
+        };
+        let (inside_alpha, outside_alpha) = alpha_counts_in_rect(&self.context, &frame, text_rect)?;
+        if inside_alpha == 0 {
+            failures.push("텍스트: 영역 안 alpha>0 픽셀이 없음".to_owned());
+        }
+        if outside_alpha != 0 {
+            failures.push(format!(
+                "텍스트: 영역 밖 alpha>0 픽셀이 존재함 ({outside_alpha})"
             ));
         }
 
@@ -1224,8 +1275,9 @@ impl OverlayRenderer {
     ) -> Result<()> {
         match &stroke.content {
             InkStrokeContent::Shape(kind) => return self.draw_shape(stroke, *kind),
+            InkStrokeContent::Text(content) => return self.draw_text(stroke, content),
             InkStrokeContent::Cover => return self.draw_cover(stroke),
-            InkStrokeContent::Freehand | InkStrokeContent::Text(_) => {}
+            InkStrokeContent::Freehand => {}
         }
         if stroke.tool != InkStrokeTool::Highlighter {
             return self.draw_opaque_stroke(stroke, minimum_ratio);
@@ -1370,6 +1422,59 @@ impl OverlayRenderer {
                 &self.round_stroke,
             );
         }
+        Ok(())
+    }
+
+    fn draw_text(&self, stroke: &InkStroke, content: &InkTextContent) -> Result<()> {
+        let (Some(first), Some(last)) = (stroke.points.first(), stroke.points.last()) else {
+            return Ok(());
+        };
+        let canvas = Size {
+            width: f64::from(self.width),
+            height: f64::from(self.height),
+        };
+        let rect = standardized_rect(
+            InkGeometry::screen_point(first.location, canvas),
+            InkGeometry::screen_point(last.location, canvas),
+        );
+        if rect.right <= rect.left || rect.bottom <= rect.top {
+            return Ok(());
+        }
+        let format = unsafe {
+            self.dwrite.CreateTextFormat(
+                windows::core::w!("Segoe UI"),
+                None::<&IDWriteFontCollection>,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                (content.font_size * px_per_dip(self.dpi)) as f32,
+                windows::core::w!("ko-KR"),
+            )
+        }?;
+        unsafe {
+            format.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP)?;
+            format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
+            format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
+        }
+        let color = D2D1_COLOR_F {
+            r: stroke.color[0] as f32,
+            g: stroke.color[1] as f32,
+            b: stroke.color[2] as f32,
+            a: stroke.color[3] as f32,
+        };
+        let brush = unsafe { self.context.CreateSolidColorBrush(&color, None) }?;
+        let target: ID2D1RenderTarget = self.context.cast()?;
+        let text = content.string.encode_utf16().collect::<Vec<_>>();
+        unsafe {
+            target.DrawText(
+                &text,
+                &format,
+                &rect,
+                &brush,
+                D2D1_DRAW_TEXT_OPTIONS_CLIP,
+                DWRITE_MEASURING_MODE_NATURAL,
+            )
+        };
         Ok(())
     }
 
@@ -1713,6 +1818,35 @@ fn read_pixel_samples(
         })
         .collect();
     Ok(samples)
+}
+
+fn alpha_counts_in_rect(
+    context: &ID2D1DeviceContext,
+    bitmap: &ID2D1Bitmap1,
+    rect: D2D_RECT_F,
+) -> Result<(usize, usize)> {
+    let size = unsafe { bitmap.GetPixelSize() };
+    let (pixels, pitch) = read_bitmap_bgra(context, bitmap)?;
+    let mut inside = 0;
+    let mut outside = 0;
+    for y in 0..size.height {
+        for x in 0..size.width {
+            let offset = y as usize * pitch as usize + x as usize * 4;
+            if pixels[offset + 3] == 0 {
+                continue;
+            }
+            let is_inside = (x as f32) >= rect.left
+                && (x as f32) < rect.right
+                && (y as f32) >= rect.top
+                && (y as f32) < rect.bottom;
+            if is_inside {
+                inside += 1;
+            } else {
+                outside += 1;
+            }
+        }
+    }
+    Ok((inside, outside))
 }
 
 pub(crate) fn count_nonzero_alpha(
