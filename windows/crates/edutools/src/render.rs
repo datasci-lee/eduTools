@@ -1,24 +1,31 @@
 use crate::app_icon::{AppIconRenderer, IconTint};
+use crate::ink_view::{EraserRenderState, LaserRenderState};
 use crate::log::Logger;
+use edutools_core::eraser::{
+    EraserAreaShape, EraserEngine, EraserGesture, EraserHitRule, EraserMode, EraserSettings,
+    EraserTargetFilter,
+};
 use edutools_core::ink::{
     InkGeometry, InkPoint, InkStroke, InkStrokeContent, InkStrokeTool, PathCommand, Point, Size,
 };
 use windows::core::{Error, Interface, Result};
 use windows::Win32::Foundation::{E_FAIL, E_INVALIDARG, HMODULE, HWND, RECT};
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_FIGURE_BEGIN_FILLED,
-    D2D1_FIGURE_BEGIN_HOLLOW, D2D1_FIGURE_END_CLOSED, D2D1_FIGURE_END_OPEN, D2D1_PIXEL_FORMAT,
-    D2D_RECT_F, D2D_SIZE_U,
+    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_COMPOSITE_MODE_SOURCE_OVER,
+    D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_BEGIN_HOLLOW, D2D1_FIGURE_END_CLOSED,
+    D2D1_FIGURE_END_OPEN, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_U,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1CreateDevice, ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext, ID2D1Factory, ID2D1Image,
-    ID2D1Layer, ID2D1StrokeStyle, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
-    D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_CPU_READ, D2D1_BITMAP_OPTIONS_TARGET,
-    D2D1_BITMAP_PROPERTIES1, D2D1_CAP_STYLE_FLAT, D2D1_CAP_STYLE_ROUND, D2D1_DASH_STYLE_SOLID,
+    CLSID_D2D1Shadow, D2D1CreateDevice, ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext, ID2D1Effect,
+    ID2D1Factory, ID2D1Image, ID2D1Layer, ID2D1PathGeometry, ID2D1StrokeStyle,
+    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+    D2D1_BITMAP_OPTIONS_CPU_READ, D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
+    D2D1_CAP_STYLE_FLAT, D2D1_CAP_STYLE_ROUND, D2D1_DASH_STYLE_CUSTOM, D2D1_DASH_STYLE_SOLID,
     D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_ELLIPSE, D2D1_INTERPOLATION_MODE_LINEAR,
     D2D1_LAYER_OPTIONS1_NONE, D2D1_LAYER_PARAMETERS1, D2D1_LINE_JOIN_ROUND, D2D1_MAP_OPTIONS_READ,
-    D2D1_PRIMITIVE_BLEND_COPY, D2D1_PRIMITIVE_BLEND_SOURCE_OVER, D2D1_QUADRATIC_BEZIER_SEGMENT,
-    D2D1_STROKE_STYLE_PROPERTIES,
+    D2D1_PRIMITIVE_BLEND_COPY, D2D1_PRIMITIVE_BLEND_SOURCE_OVER, D2D1_PROPERTY_TYPE_FLOAT,
+    D2D1_PROPERTY_TYPE_VECTOR4, D2D1_QUADRATIC_BEZIER_SEGMENT,
+    D2D1_SHADOW_PROP_BLUR_STANDARD_DEVIATION, D2D1_SHADOW_PROP_COLOR, D2D1_STROKE_STYLE_PROPERTIES,
 };
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
 use windows::Win32::Graphics::Direct3D11::{
@@ -44,6 +51,12 @@ struct PixelSample {
     x: u32,
     y: u32,
     bgra: [u8; 4],
+}
+
+struct PreparedLaser {
+    bitmap: ID2D1Bitmap1,
+    _shadow: ID2D1Effect,
+    shadow_output: ID2D1Image,
 }
 
 macro_rules! d2d_point {
@@ -111,6 +124,7 @@ pub struct OverlayRenderer {
     factory: ID2D1Factory,
     round_stroke: ID2D1StrokeStyle,
     butt_stroke: ID2D1StrokeStyle,
+    eraser_dash: ID2D1StrokeStyle,
     swap_target: Option<ID2D1Bitmap1>,
     completed_bitmap: Option<ID2D1Bitmap1>,
     _dcomp_target: IDCompositionTarget,
@@ -156,6 +170,12 @@ impl OverlayRenderer {
             ..stroke_properties
         };
         let butt_stroke = unsafe { factory.CreateStrokeStyle(&butt_properties, None) }?;
+        let dash_properties = D2D1_STROKE_STYLE_PROPERTIES {
+            dashStyle: D2D1_DASH_STYLE_CUSTOM,
+            ..stroke_properties
+        };
+        let eraser_dash =
+            unsafe { factory.CreateStrokeStyle(&dash_properties, Some(&[4.0, 2.666_666_7])) }?;
         let swap_target = Some(create_swap_target(&context, &swap_chain)?);
         let completed_bitmap = Some(create_completed_bitmap(&context, width, height)?);
         let swap_image: ID2D1Image = swap_target
@@ -181,6 +201,7 @@ impl OverlayRenderer {
             factory,
             round_stroke,
             butt_stroke,
+            eraser_dash,
             swap_target,
             completed_bitmap,
             _dcomp_target: dcomp_target,
@@ -272,6 +293,8 @@ impl OverlayRenderer {
             &frame,
             &completed,
             None,
+            None,
+            None,
             minimum_ratio,
             highlighter_opacity,
             false,
@@ -301,6 +324,8 @@ impl OverlayRenderer {
                 &frame,
                 &completed,
                 None,
+                None,
+                None,
                 minimum_ratio,
                 highlighter_opacity,
                 false,
@@ -320,6 +345,123 @@ impl OverlayRenderer {
                     sample.x, sample.y, sample.bgra
                 ));
             }
+        }
+
+        let eraser_stroke = InkStroke::new(
+            "selftest-partial-eraser",
+            InkStrokeTool::Pen,
+            [0.2, 0.8, 1.0, 1.0],
+            12.0,
+            false,
+            vec![
+                InkPoint::new(Point { x: 0.2, y: 0.5 }, 1.0, 0.0),
+                InkPoint::new(Point { x: 0.8, y: 0.5 }, 1.0, 1.0),
+            ],
+            InkStrokeContent::Freehand,
+        );
+        let canvas_size = Size {
+            width: f64::from(self.width),
+            height: f64::from(self.height),
+        };
+        let eraser_settings = EraserSettings {
+            diameter: (f64::from(self.width) * 0.08).max(24.0),
+            mode: EraserMode::Partial,
+            hit_rule: EraserHitRule::Touching,
+            target_filter: EraserTargetFilter::All,
+            area_shape: EraserAreaShape::Rectangle,
+        };
+        let erased = EraserEngine::erase(
+            std::slice::from_ref(&eraser_stroke),
+            &EraserGesture::Sweep(vec![Point {
+                x: f64::from(self.width) * 0.5,
+                y: f64::from(self.height) * 0.5,
+            }]),
+            &eraser_settings,
+            canvas_size,
+            minimum_ratio,
+        );
+        self.draw_strokes_to_bitmap(
+            &completed,
+            &erased,
+            minimum_ratio,
+            highlighter_opacity,
+            true,
+        )?;
+        self.draw_frame_to_bitmap(
+            &frame,
+            &completed,
+            None,
+            None,
+            None,
+            minimum_ratio,
+            highlighter_opacity,
+            false,
+        )?;
+        self.restore_swap_target()?;
+        let eraser_samples = read_pixel_samples(
+            &self.context,
+            &frame,
+            &[
+                (self.width / 2, self.height / 2),
+                (self.width * 3 / 10, self.height / 2),
+                (self.width * 7 / 10, self.height / 2),
+            ],
+        )?;
+        if eraser_samples[0].bgra[3] != 0 {
+            failures.push(format!(
+                "부분 지우개: 가운데 BGRA={:?}, alpha가 0이 아님",
+                eraser_samples[0].bgra
+            ));
+        }
+        for sample in &eraser_samples[1..] {
+            if sample.bgra[3] == 0 {
+                failures.push(format!(
+                    "부분 지우개: 바깥 ({}, {}) BGRA={:?}, alpha가 0임",
+                    sample.x, sample.y, sample.bgra
+                ));
+            }
+        }
+
+        self.draw_strokes_to_bitmap(&completed, &[], minimum_ratio, highlighter_opacity, true)?;
+        let laser = LaserRenderState {
+            point: Some(Point {
+                x: f64::from(self.width) * 0.75,
+                y: f64::from(self.height) * 0.75,
+            }),
+            trails: vec![vec![
+                Point {
+                    x: f64::from(self.width) * 0.25,
+                    y: f64::from(self.height) * 0.75,
+                },
+                Point {
+                    x: f64::from(self.width) * 0.75,
+                    y: f64::from(self.height) * 0.75,
+                },
+            ]],
+            color: [1.0, 0.1, 0.1, 1.0],
+            size_dip: 8.0,
+        };
+        self.draw_frame_to_bitmap(
+            &frame,
+            &completed,
+            None,
+            None,
+            Some(&laser),
+            minimum_ratio,
+            highlighter_opacity,
+            false,
+        )?;
+        self.restore_swap_target()?;
+        let laser_sample = read_pixel_samples(
+            &self.context,
+            &frame,
+            &[(self.width / 2, self.height * 3 / 4)],
+        )?[0];
+        if laser_sample.bgra[3] == 0 {
+            failures.push(format!(
+                "레이저 꼬리: 가운데 BGRA={:?}, alpha가 0임",
+                laser_sample.bgra
+            ));
         }
 
         Ok(failures)
@@ -360,6 +502,8 @@ impl OverlayRenderer {
     pub fn draw_frame(
         &self,
         active_stroke: Option<&InkStroke>,
+        eraser: Option<&EraserRenderState>,
+        laser: Option<&LaserRenderState>,
         minimum_ratio: f64,
         highlighter_opacity: f64,
         debug_visible: bool,
@@ -372,6 +516,8 @@ impl OverlayRenderer {
             swap_target,
             self.completed_bitmap(),
             active_stroke,
+            eraser,
+            laser,
             minimum_ratio,
             highlighter_opacity,
             debug_visible,
@@ -384,10 +530,28 @@ impl OverlayRenderer {
         target: &ID2D1Bitmap1,
         completed: &ID2D1Bitmap1,
         active_stroke: Option<&InkStroke>,
+        eraser: Option<&EraserRenderState>,
+        laser: Option<&LaserRenderState>,
         minimum_ratio: f64,
         highlighter_opacity: f64,
         debug_visible: bool,
     ) -> Result<()> {
+        let preview_bitmap =
+            if let Some(strokes) = eraser.and_then(|state| state.preview_strokes.as_deref()) {
+                let bitmap = create_completed_bitmap(&self.context, self.width, self.height)?;
+                let result = self.draw_strokes_to_bitmap(
+                    &bitmap,
+                    strokes,
+                    minimum_ratio,
+                    highlighter_opacity,
+                    true,
+                );
+                self.finish_offscreen_draw(result)?;
+                Some(bitmap)
+            } else {
+                None
+            };
+        let prepared_laser = laser.map(|laser| self.prepare_laser(laser)).transpose()?;
         self.set_target(target)?;
         let clear = if debug_visible {
             D2D1_COLOR_F {
@@ -420,7 +584,7 @@ impl OverlayRenderer {
                 self.context.SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_COPY);
             }
             self.context.DrawBitmap(
-                completed,
+                preview_bitmap.as_ref().unwrap_or(completed),
                 Some(&bounds),
                 1.0,
                 D2D1_INTERPOLATION_MODE_LINEAR,
@@ -430,11 +594,18 @@ impl OverlayRenderer {
             self.context
                 .SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_SOURCE_OVER);
         }
-        let draw_result = if let Some(stroke) = active_stroke {
-            self.draw_stroke(stroke, minimum_ratio, highlighter_opacity)
-        } else {
+        let draw_result: Result<()> = (|| {
+            if let Some(stroke) = active_stroke {
+                self.draw_stroke(stroke, minimum_ratio, highlighter_opacity)?;
+            }
+            if let Some(eraser) = eraser {
+                self.draw_eraser(eraser, minimum_ratio, highlighter_opacity)?;
+            }
+            if let Some(prepared) = prepared_laser.as_ref() {
+                self.draw_prepared_laser(prepared)?;
+            }
             Ok(())
-        };
+        })();
         if let Some(brush) = debug_brush {
             let stroke = 4.0;
             let inset = stroke / 2.0;
@@ -452,6 +623,251 @@ impl OverlayRenderer {
         let end_result = unsafe { self.context.EndDraw(None, None) };
         draw_result?;
         end_result
+    }
+
+    fn draw_eraser(
+        &self,
+        eraser: &EraserRenderState,
+        minimum_ratio: f64,
+        _highlighter_opacity: f64,
+    ) -> Result<()> {
+        if !eraser.highlighted_strokes.is_empty() {
+            let parameters = opacity_layer_parameters(frame_bounds(self.width, self.height), 0.45);
+            unsafe { self.context.PushLayer(&parameters, None::<&ID2D1Layer>) };
+            let result: Result<()> = (|| {
+                for stroke in &eraser.highlighted_strokes {
+                    let mut highlight = stroke.clone();
+                    highlight.tool = InkStrokeTool::Pen;
+                    highlight.color = [0.0, 0.47, 0.84, 1.0];
+                    highlight.width += 4.0;
+                    highlight.uses_pressure = false;
+                    self.draw_opaque_stroke(&highlight, minimum_ratio)?;
+                }
+                Ok(())
+            })();
+            unsafe { self.context.PopLayer() };
+            result?;
+        }
+
+        if eraser.settings.mode == EraserMode::Area {
+            self.draw_eraser_area(eraser)?;
+        }
+        if let Some(point) = eraser.cursor {
+            let radius = (eraser.settings.diameter / 2.0) as f32;
+            let ellipse = D2D1_ELLIPSE {
+                point: d2d_point!(point),
+                radiusX: radius,
+                radiusY: radius,
+            };
+            let black = D2D1_COLOR_F {
+                a: 0.8,
+                ..Default::default()
+            };
+            let white = D2D1_COLOR_F {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            };
+            let black_brush = unsafe { self.context.CreateSolidColorBrush(&black, None) }?;
+            let white_brush = unsafe { self.context.CreateSolidColorBrush(&white, None) }?;
+            let scale = px_per_dip(self.dpi) as f32;
+            unsafe {
+                self.context
+                    .DrawEllipse(&ellipse, &black_brush, 3.5 * scale, &self.round_stroke);
+                self.context
+                    .DrawEllipse(&ellipse, &white_brush, 1.5 * scale, &self.round_stroke);
+            }
+        }
+        Ok(())
+    }
+
+    fn draw_eraser_area(&self, eraser: &EraserRenderState) -> Result<()> {
+        let Some(first) = eraser.points.first().copied() else {
+            return Ok(());
+        };
+        let accent = D2D1_COLOR_F {
+            r: 0.0,
+            g: 0.47,
+            b: 0.84,
+            a: 1.0,
+        };
+        let fill = D2D1_COLOR_F { a: 0.12, ..accent };
+        let stroke_brush = unsafe { self.context.CreateSolidColorBrush(&accent, None) }?;
+        let fill_brush = unsafe { self.context.CreateSolidColorBrush(&fill, None) }?;
+        let stroke_width = (1.5 * px_per_dip(self.dpi)) as f32;
+        match eraser.settings.area_shape {
+            EraserAreaShape::Rectangle => {
+                let last = eraser.points.last().copied().unwrap_or(first);
+                let rect = D2D_RECT_F {
+                    left: first.x.min(last.x) as f32,
+                    top: first.y.min(last.y) as f32,
+                    right: first.x.max(last.x) as f32,
+                    bottom: first.y.max(last.y) as f32,
+                };
+                unsafe {
+                    self.context.FillRectangle(&rect, &fill_brush);
+                    self.context.DrawRectangle(
+                        &rect,
+                        &stroke_brush,
+                        stroke_width,
+                        &self.eraser_dash,
+                    );
+                }
+            }
+            EraserAreaShape::Lasso if eraser.points.len() >= 2 => {
+                let geometry = unsafe { self.factory.CreatePathGeometry() }?;
+                let sink = unsafe { geometry.Open() }?;
+                unsafe {
+                    sink.BeginFigure(d2d_point!(first), D2D1_FIGURE_BEGIN_FILLED);
+                    for point in eraser.points.iter().skip(1) {
+                        sink.AddLine(d2d_point!(*point));
+                    }
+                    sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+                    sink.Close()?;
+                    self.context.FillGeometry(
+                        &geometry,
+                        &fill_brush,
+                        None::<&windows::Win32::Graphics::Direct2D::ID2D1Brush>,
+                    );
+                    self.context.DrawGeometry(
+                        &geometry,
+                        &stroke_brush,
+                        stroke_width,
+                        &self.eraser_dash,
+                    );
+                }
+            }
+            EraserAreaShape::Lasso => {}
+        }
+        Ok(())
+    }
+
+    fn prepare_laser(&self, laser: &LaserRenderState) -> Result<PreparedLaser> {
+        let bitmap = create_completed_bitmap(&self.context, self.width, self.height)?;
+        self.set_target(&bitmap)?;
+        let color = D2D1_COLOR_F {
+            r: laser.color[0] as f32,
+            g: laser.color[1] as f32,
+            b: laser.color[2] as f32,
+            a: 1.0,
+        };
+        let brush = unsafe { self.context.CreateSolidColorBrush(&color, None) }?;
+        let scale = px_per_dip(self.dpi);
+        let radius = laser.size_dip * scale;
+        let trail_width = (4.0_f64.max(laser.size_dip * 1.25) * scale) as f32;
+        unsafe {
+            self.context.BeginDraw();
+            self.context.Clear(Some(&D2D1_COLOR_F::default()));
+        }
+        let draw_result = (|| {
+            if let Some(geometry) = self.laser_geometry(&laser.trails)? {
+                let parameters =
+                    opacity_layer_parameters(frame_bounds(self.width, self.height), 0.7);
+                unsafe {
+                    self.context.PushLayer(&parameters, None::<&ID2D1Layer>);
+                    self.context
+                        .DrawGeometry(&geometry, &brush, trail_width, &self.round_stroke);
+                    self.context.PopLayer();
+                }
+            }
+            if let Some(point) = laser.point {
+                let ellipse = D2D1_ELLIPSE {
+                    point: d2d_point!(point),
+                    radiusX: radius as f32,
+                    radiusY: radius as f32,
+                };
+                unsafe { self.context.FillEllipse(&ellipse, &brush) };
+            }
+            Ok(())
+        })();
+        let end_result = unsafe { self.context.EndDraw(None, None) };
+        self.finish_offscreen_draw(draw_result)?;
+        end_result?;
+
+        let shadow = unsafe { self.context.CreateEffect(&CLSID_D2D1Shadow) }?;
+        let image: ID2D1Image = bitmap.cast()?;
+        let blur = radius as f32;
+        let shadow_color = [
+            laser.color[0] as f32,
+            laser.color[1] as f32,
+            laser.color[2] as f32,
+            0.9_f32,
+        ];
+        unsafe {
+            shadow.SetInput(0, &image, true);
+            shadow.SetValue(
+                D2D1_SHADOW_PROP_BLUR_STANDARD_DEVIATION.0 as u32,
+                D2D1_PROPERTY_TYPE_FLOAT,
+                bytes_of(&blur),
+            )?;
+            shadow.SetValue(
+                D2D1_SHADOW_PROP_COLOR.0 as u32,
+                D2D1_PROPERTY_TYPE_VECTOR4,
+                bytes_of(&shadow_color),
+            )?;
+        }
+        let shadow_output = unsafe { shadow.GetOutput() }?;
+        Ok(PreparedLaser {
+            bitmap,
+            _shadow: shadow,
+            shadow_output,
+        })
+    }
+
+    fn laser_geometry(&self, trails: &[Vec<Point>]) -> Result<Option<ID2D1PathGeometry>> {
+        let geometry = unsafe { self.factory.CreatePathGeometry() }?;
+        let sink = unsafe { geometry.Open() }?;
+        let mut has_figure = false;
+        let mut figure_open = false;
+        for trail in trails {
+            for command in InkGeometry::laser_trail_path(trail) {
+                match command {
+                    PathCommand::MoveTo(point) => {
+                        if figure_open {
+                            unsafe { sink.EndFigure(D2D1_FIGURE_END_OPEN) };
+                        }
+                        unsafe { sink.BeginFigure(d2d_point!(point), D2D1_FIGURE_BEGIN_HOLLOW) };
+                        figure_open = true;
+                        has_figure = true;
+                    }
+                    PathCommand::LineTo(point) => unsafe { sink.AddLine(d2d_point!(point)) },
+                    PathCommand::QuadTo { control, to } => unsafe {
+                        sink.AddQuadraticBezier(&D2D1_QUADRATIC_BEZIER_SEGMENT {
+                            point1: d2d_point!(control),
+                            point2: d2d_point!(to),
+                        })
+                    },
+                }
+            }
+        }
+        if figure_open {
+            unsafe { sink.EndFigure(D2D1_FIGURE_END_OPEN) };
+        }
+        unsafe { sink.Close()? };
+        Ok(has_figure.then_some(geometry))
+    }
+
+    fn draw_prepared_laser(&self, laser: &PreparedLaser) -> Result<()> {
+        let bounds = frame_bounds(self.width, self.height);
+        unsafe {
+            self.context.DrawImage(
+                &laser.shadow_output,
+                None,
+                None,
+                D2D1_INTERPOLATION_MODE_LINEAR,
+                D2D1_COMPOSITE_MODE_SOURCE_OVER,
+            );
+            self.context.DrawBitmap(
+                &laser.bitmap,
+                Some(&bounds),
+                1.0,
+                D2D1_INTERPOLATION_MODE_LINEAR,
+                Some(&bounds),
+                None,
+            );
+        }
+        Ok(())
     }
 
     pub fn selftest_icons(&self) -> Result<()> {
@@ -723,6 +1139,26 @@ fn frame_bounds(width: u32, height: u32) -> D2D_RECT_F {
         top: 0.0,
         right: width as f32,
         bottom: height as f32,
+    }
+}
+
+fn opacity_layer_parameters(bounds: D2D_RECT_F, opacity: f32) -> D2D1_LAYER_PARAMETERS1 {
+    let mut parameters = D2D1_LAYER_PARAMETERS1 {
+        contentBounds: bounds,
+        maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+        opacity,
+        layerOptions: D2D1_LAYER_OPTIONS1_NONE,
+        ..Default::default()
+    };
+    parameters.maskTransform.M11 = 1.0;
+    parameters.maskTransform.M22 = 1.0;
+    parameters
+}
+
+fn bytes_of<T>(value: &T) -> &[u8] {
+    // SAFETY: the returned byte view is limited to value's lifetime and exact initialized size.
+    unsafe {
+        std::slice::from_raw_parts((value as *const T).cast::<u8>(), std::mem::size_of::<T>())
     }
 }
 
