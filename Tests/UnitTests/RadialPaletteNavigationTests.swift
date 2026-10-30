@@ -31,7 +31,7 @@ struct RadialPaletteNavigationTests {
       ),
       RadialNavigationExpectation(
         scenario: .groupWithSelectedIdentifier,
-        expectedIdentifier: "entry.palette.display-presets"
+        expectedIdentifier: "entry.palette.settings"
       ),
       RadialNavigationExpectation(
         scenario: .entryToOption,
@@ -73,7 +73,7 @@ struct RadialPaletteNavigationTests {
       isSelected: true
     )
     let laser = entryCell(.command(.useLaser), isSelected: true)
-    let displayPresets = entryCell(.displayPresets, isSelected: false)
+    let settings = entryCell(.openSettings, isSelected: false)
     let option = optionCell(identifier: "pen.color.1")
 
     switch scenario {
@@ -83,10 +83,10 @@ struct RadialPaletteNavigationTests {
       return ([group, pen, highlighter], .cell(group.identifier), .deeper, nil)
     case .groupWithSelectedIdentifier:
       return (
-        [group, laser, displayPresets],
+        [group, laser, settings],
         .cell(group.identifier),
         .deeper,
-        displayPresetsEntryIdentifier
+        settingsEntryIdentifier
       )
     case .entryToOption:
       return (
@@ -106,7 +106,7 @@ struct RadialPaletteNavigationTests {
   }
 
   private var penEntryIdentifier: String { "tool.pen" }
-  private var displayPresetsEntryIdentifier: String { "palette.display-presets" }
+  private var settingsEntryIdentifier: String { "palette.settings" }
 
   private func groupCell() -> RadialPaletteCell {
     RadialPaletteCell(
