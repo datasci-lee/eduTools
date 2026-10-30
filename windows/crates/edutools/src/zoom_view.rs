@@ -58,7 +58,12 @@ struct ZoomWindowState {
 
 impl Drop for ZoomWindowState {
     fn drop(&mut self) {
+        // CreateCursor 로 만든 커서는 DestroyCursor 가 FALSE 이면서 GetLastError 가 0 일 수 있다
+        // (VM 실측) — 오류 코드가 없는 반환은 실패로 기록하지 않는다.
         if let Err(error) = unsafe { DestroyCursor(self.transparent_cursor) } {
+            if error.code().is_ok() {
+                return;
+            }
             self.logger
                 .event(&format!("줌 투명 커서 제거 실패: {error}"));
         }
