@@ -1,7 +1,11 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+#[path = "src/icon_assets.rs"]
+mod icon_assets;
 
 const TRAY_FILES: [&str; 4] = [
     "menubar.off.light-taskbar.ico",
@@ -19,6 +23,8 @@ fn main() {
         .expect("edutools must remain under windows/crates/edutools")
         .to_path_buf();
     let tray_dir = repository_root.join("assets/symbols/windows/tray");
+
+    generate_icon_table(&repository_root, &manifest_dir);
 
     println!(
         "cargo:rerun-if-changed={}",
@@ -89,6 +95,164 @@ fn main() {
     }
 
     println!("cargo:rustc-link-arg-bins={}", output.display());
+}
+
+fn generate_icon_table(repository_root: &Path, manifest_dir: &Path) {
+    let icons_dir = repository_root.join("assets/icons");
+    let symbol_map_path = repository_root.join("assets/symbol-map.tsv");
+    let os_map_path = repository_root.join("windows/icon-os.tsv");
+    let validator_path = manifest_dir.join("src/icon_assets.rs");
+    println!("cargo:rerun-if-changed={}", icons_dir.display());
+    println!("cargo:rerun-if-changed={}", symbol_map_path.display());
+    println!("cargo:rerun-if-changed={}", os_map_path.display());
+    println!("cargo:rerun-if-changed={}", validator_path.display());
+
+    let symbol_map = read_tsv(&symbol_map_path);
+    let known_keys = symbol_map
+        .iter()
+        .map(|(_, app_key)| app_key.clone())
+        .collect::<BTreeSet<_>>();
+    let os_overrides = read_tsv(&os_map_path)
+        .into_iter()
+        .collect::<BTreeMap<_, _>>();
+
+    let mut icons = fs::read_dir(&icons_dir)
+        .unwrap_or_else(|error| panic!("{} 읽기에 실패했습니다: {error}", icons_dir.display()))
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|value| value == "svg"))
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    icons.sort();
+    assert_eq!(
+        icons.len(),
+        57,
+        "assets/icons에는 앱 SVG 57개가 있어야 합니다"
+    );
+
+    let mut generated_icons = Vec::with_capacity(icons.len());
+    let icon_keys = icons
+        .iter()
+        .map(|path| {
+            path.file_stem()
+                .and_then(|value| value.to_str())
+                .expect("아이콘 파일명은 UTF-8이어야 합니다")
+                .to_owned()
+        })
+        .collect::<BTreeSet<_>>();
+    for path in icons {
+        let key = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .expect("아이콘 파일명은 UTF-8이어야 합니다")
+            .to_owned();
+        let regular_key = key.strip_suffix(".selected").unwrap_or(&key);
+        assert!(
+            known_keys.contains(regular_key),
+            "알 수 없는 앱 아이콘 파일명: {}",
+            path.display()
+        );
+        if key.ends_with(".selected") {
+            assert!(
+                icon_keys.contains(regular_key),
+                "일반 아이콘 짝이 없는 selected 아이콘: {}",
+                path.display()
+            );
+        }
+
+        validate_svg_file(&path);
+
+        let (source_path, source_name, is_os_override) =
+            if let Some(source) = os_overrides.get(&key) {
+                let source_path = repository_root
+                    .join("assets/symbols/svg")
+                    .join(format!("{source}.svg"));
+                assert!(
+                    source_path.is_file(),
+                    "OS 아이콘 예외 원본이 없습니다: {}",
+                    source_path.display()
+                );
+                (source_path, source.clone(), true)
+            } else {
+                (path.clone(), key.clone(), false)
+            };
+        if is_os_override {
+            validate_svg_file(&source_path);
+        }
+        generated_icons.push((key, source_name, source_path, is_os_override));
+    }
+
+    for key in os_overrides.keys() {
+        assert!(
+            icon_keys.contains(key),
+            "icon-os.tsv 키가 앱 SVG 키에 없습니다: {key}"
+        );
+    }
+
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is required"));
+    let output_path = out_dir.join("icons_embed.rs");
+    let mut output =
+        String::from("pub(crate) static EMBEDDED_ICONS: &[(&str, &[u8], &str, bool)] = &[\n");
+    for (key, source, path, is_os_override) in generated_icons {
+        let absolute = fs::canonicalize(&path)
+            .unwrap_or_else(|error| panic!("{} 경로 확인 실패: {error}", path.display()));
+        output.push_str(&format!(
+            "    ({key:?}, include_bytes!({path:?}), {source:?}, {is_os_override}),\n",
+            path = absolute.to_string_lossy(),
+        ));
+    }
+    output.push_str(
+        "];
+pub(crate) static SYMBOL_MAP: &[(&str, &str)] = &[\n",
+    );
+    for (design_name, app_key) in &symbol_map {
+        output.push_str(&format!("    ({design_name:?}, {app_key:?}),\n"));
+    }
+    output.push_str(
+        "];
+pub(crate) static OS_ICON_OVERRIDES: &[(&str, &str)] = &[\n",
+    );
+    for (app_key, source) in &os_overrides {
+        output.push_str(&format!("    ({app_key:?}, {source:?}),\n"));
+    }
+    output.push_str("];\n");
+    fs::write(&output_path, output)
+        .unwrap_or_else(|error| panic!("{} 생성에 실패했습니다: {error}", output_path.display()));
+}
+
+fn read_tsv(path: &Path) -> Vec<(String, String)> {
+    let source = fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("{} 읽기에 실패했습니다: {error}", path.display()));
+    source
+        .lines()
+        .enumerate()
+        .filter_map(|(index, raw)| {
+            let line = raw.trim();
+            if line.is_empty() || line.starts_with('#') {
+                return None;
+            }
+            let (left, right) = line.split_once('\t').unwrap_or_else(|| {
+                panic!(
+                    "{}:{}: 탭으로 나뉜 두 열이 필요합니다",
+                    path.display(),
+                    index + 1
+                )
+            });
+            assert!(
+                !left.trim().is_empty() && !right.trim().is_empty() && !right.contains('\t'),
+                "{}:{}: 비어 있지 않은 두 열만 허용합니다",
+                path.display(),
+                index + 1
+            );
+            Some((left.trim().to_owned(), right.trim().to_owned()))
+        })
+        .collect()
+}
+
+fn validate_svg_file(path: &Path) {
+    let bytes = fs::read(path)
+        .unwrap_or_else(|error| panic!("{} 읽기에 실패했습니다: {error}", path.display()));
+    icon_assets::validate_svg(&path.display().to_string(), &bytes)
+        .unwrap_or_else(|error| panic!("{error}"));
 }
 
 fn resource_path_literal(path: &Path) -> String {

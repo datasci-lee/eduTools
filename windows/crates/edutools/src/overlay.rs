@@ -627,6 +627,7 @@ impl OverlayWindow {
             .as_ref()
             .expect("renderer lives until OverlayWindow::drop");
         let highlighter_opacity = self.state.input.highlighter_opacity();
+        renderer.selftest_icons()?;
         let pixel_failures = renderer.selftest_pixel_failures(ratio, highlighter_opacity)?;
         renderer.rebuild_completed(fake_layer.strokes(), ratio, highlighter_opacity)?;
         renderer.draw_frame(None, ratio, highlighter_opacity, false)?;

@@ -1,7 +1,11 @@
 #[cfg(windows)]
 mod app;
 #[cfg(windows)]
+mod app_icon;
+#[cfg(windows)]
 mod hotkey;
+#[cfg(test)]
+mod icon_assets;
 #[cfg(windows)]
 mod ink_view;
 #[cfg(windows)]

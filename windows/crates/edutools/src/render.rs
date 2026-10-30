@@ -1,3 +1,4 @@
+use crate::app_icon::{AppIconRenderer, IconTint};
 use crate::log::Logger;
 use edutools_core::ink::{
     InkGeometry, InkPoint, InkStroke, InkStrokeContent, InkStrokeTool, PathCommand, Point, Size,
@@ -94,6 +95,13 @@ impl GraphicsDevice {
             dcomp_device,
         })
     }
+
+    pub fn create_d2d_context(&self) -> Result<ID2D1DeviceContext> {
+        unsafe {
+            self.d2d_device
+                .CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)
+        }
+    }
 }
 
 pub struct OverlayRenderer {
@@ -128,11 +136,7 @@ impl OverlayRenderer {
         let height = valid_dimension(height)?;
         let swap_chain = create_swap_chain(graphics, width, height)?;
         // SAFETY: the D2D device is live and all access is confined to the UI thread.
-        let context = unsafe {
-            graphics
-                .d2d_device
-                .CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)
-        }?;
+        let context = graphics.create_d2d_context()?;
         unsafe { context.SetDpi(TARGET_DPI, TARGET_DPI) };
         let factory = unsafe { context.GetFactory() }?;
         let stroke_properties = D2D1_STROKE_STYLE_PROPERTIES {
@@ -169,6 +173,7 @@ impl OverlayRenderer {
             dcomp_target.SetRoot(&visual)?;
             graphics.dcomp_device.Commit()?;
         }
+        AppIconRenderer::audit_startup(&logger);
         let renderer = Self {
             hwnd,
             swap_chain,
@@ -447,6 +452,43 @@ impl OverlayRenderer {
         let end_result = unsafe { self.context.EndDraw(None, None) };
         draw_result?;
         end_result
+    }
+
+    pub fn selftest_icons(&self) -> Result<()> {
+        self.restore_swap_target()?;
+        unsafe {
+            self.context.BeginDraw();
+            self.context.Clear(Some(&D2D1_COLOR_F {
+                r: 0.16,
+                g: 0.18,
+                b: 0.22,
+                a: 1.0,
+            }));
+        }
+        let mut renderer = AppIconRenderer::new(self.context.clone(), self.logger.clone())?;
+        let cases = [
+            ("tool.arrow", IconTint::rgba(1.0, 1.0, 1.0, 1.0)),
+            ("board.black", IconTint::rgba(0.0, 0.0, 0.0, 1.0)),
+            (
+                "tool.highlighter",
+                IconTint::rgba(0.2196, 0.7412, 0.9725, 0.55),
+            ),
+        ];
+        for (index, (key, tint)) in cases.into_iter().enumerate() {
+            let left = 16.0 + index as f32 * 40.0;
+            renderer.draw(
+                key,
+                D2D_RECT_F {
+                    left,
+                    top: 16.0,
+                    right: left + 24.0,
+                    bottom: 40.0,
+                },
+                tint,
+            )?;
+        }
+        let end = unsafe { self.context.EndDraw(None, None) };
+        renderer.handle_render_result(end)
     }
 
     fn draw_stroke(
