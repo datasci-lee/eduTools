@@ -6,13 +6,16 @@ use crate::log::Logger;
 use crate::monitor::{
     enumerate_monitors, monitor_at_point, monitor_by_key, plan_monitor_sync, Monitor,
 };
-use crate::render::{GraphicsDevice, OverlayRenderer};
+use crate::render::{BoardRenderState, GraphicsDevice, OverlayRenderer};
 use crate::text_entry::{TextEntryCommit, TextEntryRequest, WM_APP_TEXT_ENTRY_OPEN};
 use crate::z_bands::{raise_band_order, Band, BandRegistration};
+use edutools_core::board::{BoardAppearance, BoardBackgroundPattern};
+use edutools_core::dispatch::BoardPageDirection;
 use edutools_core::ink::{
     text_stroke_size, InkCommand, InkLayerState, InkPoint, InkStroke, InkStrokeContent,
     InkStrokeTool, InkTextContent, Point, Size,
 };
+use edutools_core::settings::{AppSettings, SettingsColor};
 use edutools_core::state::AppState;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -45,6 +48,14 @@ static TEXT_STROKE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 type LayerStore = Rc<RefCell<HashMap<String, InkLayerState>>>;
 type SharedAppState = Rc<RefCell<AppState>>;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BoardMoveResult {
+    pub changed: bool,
+    pub from: usize,
+    pub to: usize,
+    pub total: usize,
+}
 
 pub struct OverlayManager {
     overlays: HashMap<String, OverlayWindow>,
@@ -203,12 +214,82 @@ impl OverlayManager {
         overlay.add_text_stroke(commit)
     }
 
+    pub fn refresh_board(&mut self, settings: &AppSettings) -> Result<()> {
+        let pattern = BoardBackgroundPattern::parse(&settings.board.background_pattern)
+            .expect("validated board background pattern");
+        for (monitor_key, overlay) in &mut self.overlays {
+            let board = {
+                let state = self.app_state.borrow();
+                state.board_kind_on(monitor_key).map(|kind| {
+                    let background =
+                        BoardAppearance::settings_background_color(kind, &settings.board);
+                    let pattern_color = BoardAppearance::pattern_color(kind);
+                    let mut background_color = color_components(&background);
+                    background_color[3] = 1.0;
+                    BoardRenderState {
+                        kind,
+                        background_color,
+                        pattern,
+                        pattern_color: color_components(&pattern_color),
+                        page_position: state
+                            .board_page_position(monitor_key)
+                            .expect("board kind and page position are paired"),
+                    }
+                })
+            };
+            overlay.set_board(board)?;
+        }
+        Ok(())
+    }
+
+    pub fn redraw_monitor(&mut self, monitor_key: &str) -> Result<()> {
+        self.rebuild_monitor(monitor_key)
+    }
+
+    pub fn move_board_page(
+        &mut self,
+        direction: BoardPageDirection,
+        monitor_key: &str,
+        settings: &AppSettings,
+    ) -> Result<BoardMoveResult> {
+        if let Some(overlay) = self.overlays.get_mut(monitor_key) {
+            overlay.finish_active("보드 페이지 이동")?;
+        }
+        let (changed, from, to, total) = {
+            let mut state = self.app_state.borrow_mut();
+            let before = state.board_page_position(monitor_key);
+            let changed = match direction {
+                BoardPageDirection::Previous => state.move_to_previous_board_page(monitor_key),
+                BoardPageDirection::Next => state.move_to_next_board_page(monitor_key),
+            };
+            let after = state.board_page_position(monitor_key);
+            let from = before.map_or(0, |position| position.current);
+            let to = after.map_or(from, |position| position.current);
+            let total = after.or(before).map_or(0, |position| position.total);
+            (changed, from, to, total)
+        };
+        if changed {
+            self.refresh_board(settings)?;
+        }
+        Ok(BoardMoveResult {
+            changed,
+            from,
+            to,
+            total,
+        })
+    }
+
     pub fn undo(&mut self, monitor_key: &str) -> Result<bool> {
         let changed = {
             let mut layers = self.layers.borrow_mut();
-            layers
-                .get_mut(monitor_key)
-                .is_some_and(|layer| self.app_state.borrow_mut().undo_ink(monitor_key, layer))
+            let layer = layers.entry(monitor_key.to_owned()).or_default();
+            let mut state = self.app_state.borrow_mut();
+            let route = state.ink_route(monitor_key);
+            self.logger.event(&format!(
+                "스트로크 라우팅: operation=undo monitor={monitor_key} target={}",
+                route.label()
+            ));
+            state.undo_ink(monitor_key, layer)
         };
         if changed {
             self.rebuild_monitor(monitor_key)?;
@@ -219,9 +300,14 @@ impl OverlayManager {
     pub fn redo(&mut self, monitor_key: &str) -> Result<bool> {
         let changed = {
             let mut layers = self.layers.borrow_mut();
-            layers
-                .get_mut(monitor_key)
-                .is_some_and(|layer| self.app_state.borrow_mut().redo_ink(monitor_key, layer))
+            let layer = layers.entry(monitor_key.to_owned()).or_default();
+            let mut state = self.app_state.borrow_mut();
+            let route = state.ink_route(monitor_key);
+            self.logger.event(&format!(
+                "스트로크 라우팅: operation=redo monitor={monitor_key} target={}",
+                route.label()
+            ));
+            state.redo_ink(monitor_key, layer)
         };
         if changed {
             self.rebuild_monitor(monitor_key)?;
@@ -230,27 +316,42 @@ impl OverlayManager {
     }
 
     pub fn clear_all(&mut self) -> Result<usize> {
-        let changed_keys = {
+        let board_display = self
+            .app_state
+            .borrow()
+            .presented_board()
+            .map(|board| board.display_id.clone());
+        let changed_keys = if let Some(key) = board_display {
             let mut layers = self.layers.borrow_mut();
             let mut app_state = self.app_state.borrow_mut();
-            layers
+            let layer = layers.entry(key.clone()).or_default();
+            let route = app_state.ink_route(&key);
+            self.logger.event(&format!(
+                "전체 지우기 대상: monitor={key} target={}",
+                route.label()
+            ));
+            if app_state.clear_ink(&key, layer) {
+                vec![key]
+            } else {
+                Vec::new()
+            }
+        } else {
+            let mut layers = self.layers.borrow_mut();
+            let mut app_state = self.app_state.borrow_mut();
+            let changed = layers
                 .iter_mut()
                 .filter_map(|(key, layer)| {
-                    if layer.strokes().is_empty() {
+                    if app_state.strokes_for(key, layer).is_empty() {
                         return None;
                     }
-                    let before = layer.strokes().to_vec();
-                    app_state.execute_ink_command(
-                        key,
-                        layer,
-                        InkCommand::ReplaceStrokes {
-                            before,
-                            after: Vec::new(),
-                        },
-                    );
+                    self.logger
+                        .event(&format!("전체 지우기 대상: monitor={key} target=ink"));
+                    app_state.clear_ink(key, layer);
                     Some(key.clone())
                 })
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            app_state.clear_all_selections();
+            changed
         };
         for key in &changed_keys {
             self.rebuild_monitor(key)?;
@@ -418,6 +519,7 @@ struct OverlayWindowState {
     app_state: SharedAppState,
     input: InkInputController,
     renderer: Option<OverlayRenderer>,
+    board: Option<BoardRenderState>,
     debug_visible: bool,
     laser_timer_running: bool,
     recognition_timer_running: bool,
@@ -567,6 +669,7 @@ impl OverlayWindowState {
                 eraser.as_ref(),
                 laser.as_ref(),
                 selection.as_ref(),
+                self.board.as_ref(),
                 self.input.pressure_minimum_width_ratio(),
                 self.input.highlighter_opacity(),
                 self.debug_visible,
@@ -579,20 +682,28 @@ impl OverlayWindowState {
     }
 
     fn current_strokes(&self) -> Vec<InkStroke> {
-        self.layers
-            .borrow()
+        let layers = self.layers.borrow();
+        let layer = layers
             .get(&self.monitor.session_key)
-            .map(|layer| layer.strokes().to_vec())
-            .unwrap_or_default()
+            .expect("overlay monitor layer is initialized");
+        self.app_state
+            .borrow()
+            .strokes_for(&self.monitor.session_key, layer)
+            .to_vec()
     }
 
     fn execute_ink_command(&mut self, command: InkCommand) {
         let display_id = self.monitor.session_key.clone();
         let mut layers = self.layers.borrow_mut();
         let layer = layers.entry(display_id.clone()).or_default();
-        self.app_state
+        let route = self
+            .app_state
             .borrow_mut()
             .execute_ink_command(&display_id, layer, command);
+        self.logger.event(&format!(
+            "스트로크 라우팅: operation=execute monitor={display_id} target={}",
+            route.label()
+        ));
     }
 
     fn sync_laser_timer(&mut self, hwnd: HWND) -> Result<()> {
@@ -680,6 +791,7 @@ impl OverlayWindow {
             layers,
             app_state,
             renderer: None,
+            board: None,
             debug_visible: annotation_enabled && debug_overlay,
             laser_timer_running: false,
             recognition_timer_running: false,
@@ -852,12 +964,13 @@ impl OverlayWindow {
     }
 
     fn strokes(&self) -> Vec<InkStroke> {
-        self.state
-            .layers
-            .borrow()
-            .get(&self.state.monitor.session_key)
-            .map(|layer| layer.strokes().to_vec())
-            .unwrap_or_default()
+        self.state.current_strokes()
+    }
+
+    fn set_board(&mut self, board: Option<BoardRenderState>) -> Result<()> {
+        self.state.board = board;
+        self.rebuild_completed()?;
+        self.state.draw()
     }
 
     fn rebuild_completed(&self) -> Result<()> {
@@ -953,11 +1066,24 @@ impl OverlayWindow {
         renderer.selftest_icons()?;
         let pixel_failures = renderer.selftest_pixel_failures(ratio, highlighter_opacity)?;
         renderer.rebuild_completed(fake_layer.strokes(), ratio, highlighter_opacity)?;
-        renderer.draw_frame(None, None, None, None, ratio, highlighter_opacity, false)?;
+        renderer.draw_frame(
+            None,
+            None,
+            None,
+            None,
+            None,
+            ratio,
+            highlighter_opacity,
+            false,
+        )?;
         renderer.rebuild_completed(&self.strokes(), ratio, highlighter_opacity)?;
         self.state.draw()?;
         Ok(pixel_failures)
     }
+}
+
+fn color_components(color: &SettingsColor) -> [f64; 4] {
+    [color.red, color.green, color.blue, color.alpha]
 }
 
 impl Drop for OverlayWindow {

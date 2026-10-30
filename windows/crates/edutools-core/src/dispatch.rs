@@ -316,21 +316,30 @@ pub fn dispatch(
                 .map(str::to_owned)
                 .or_else(|| state.active_display_id().map(str::to_owned));
             if let Some(display_id) = target {
+                let pass_through_was_enabled = state.is_pass_through_mode_enabled();
                 state.toggle_board(shortcut_board(*board), display_id.clone());
-                vec![
+                let mut effects = vec![
                     Effect::BoardChanged(state.presented_board().cloned()),
                     Effect::FocusBoardPanel(display_id),
-                ]
+                ];
+                if pass_through_was_enabled && !state.is_pass_through_mode_enabled() {
+                    effects.insert(0, Effect::PassThroughModeChanged(false));
+                }
+                effects
             } else {
                 vec![Effect::BoardTargetMissing]
             }
         }
-        ShortcutCommand::PreviousBoardPage => {
-            board_page_effect(BoardPageDirection::Previous, state, context.display_id)
-        }
-        ShortcutCommand::NextBoardPage => {
-            board_page_effect(BoardPageDirection::Next, state, context.display_id)
-        }
+        ShortcutCommand::PreviousBoardPage => board_page_effect(
+            BoardPageDirection::Previous,
+            state,
+            context.board_display_id.or(context.display_id),
+        ),
+        ShortcutCommand::NextBoardPage => board_page_effect(
+            BoardPageDirection::Next,
+            state,
+            context.board_display_id.or(context.display_id),
+        ),
         ShortcutCommand::SelectTool(tool) => {
             state.select_tool(shortcut_tool(*tool));
             vec![Effect::ToolChanged(state.current_tool())]

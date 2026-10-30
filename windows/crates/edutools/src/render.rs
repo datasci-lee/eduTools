@@ -1,6 +1,7 @@
 use crate::app_icon::{AppIconRenderer, IconTint};
 use crate::ink_view::{EraserRenderState, LaserRenderState, SelectionRenderState};
 use crate::log::Logger;
+use edutools_core::board::{BoardBackgroundPattern, BoardKind, BoardPagePosition};
 use edutools_core::eraser::{
     EraserAreaShape, EraserEngine, EraserGesture, EraserHitRule, EraserMode, EraserSettings,
     EraserTargetFilter,
@@ -27,7 +28,7 @@ use windows::Win32::Graphics::Direct2D::{
     D2D1_INTERPOLATION_MODE_LINEAR, D2D1_LAYER_OPTIONS1_NONE, D2D1_LAYER_PARAMETERS1,
     D2D1_LINE_JOIN_ROUND, D2D1_MAP_OPTIONS_READ, D2D1_PRIMITIVE_BLEND_COPY,
     D2D1_PRIMITIVE_BLEND_SOURCE_OVER, D2D1_PROPERTY_TYPE_FLOAT, D2D1_PROPERTY_TYPE_VECTOR4,
-    D2D1_QUADRATIC_BEZIER_SEGMENT, D2D1_SHADOW_PROP_BLUR_STANDARD_DEVIATION,
+    D2D1_QUADRATIC_BEZIER_SEGMENT, D2D1_ROUNDED_RECT, D2D1_SHADOW_PROP_BLUR_STANDARD_DEVIATION,
     D2D1_SHADOW_PROP_COLOR, D2D1_STROKE_STYLE_PROPERTIES,
 };
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
@@ -40,8 +41,9 @@ use windows::Win32::Graphics::DirectComposition::{
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteFontCollection, DWRITE_FACTORY_TYPE_SHARED,
     DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL,
-    DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_TEXT_ALIGNMENT_LEADING,
-    DWRITE_WORD_WRAPPING_WRAP,
+    DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+    DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
+    DWRITE_WORD_WRAPPING_NO_WRAP, DWRITE_WORD_WRAPPING_WRAP,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN,
@@ -77,6 +79,15 @@ struct PreparedLaser {
     bitmap: ID2D1Bitmap1,
     _shadow: ID2D1Effect,
     shadow_output: ID2D1Image,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct BoardRenderState {
+    pub kind: BoardKind,
+    pub background_color: [f64; 4],
+    pub pattern: BoardBackgroundPattern,
+    pub pattern_color: [f64; 4],
+    pub page_position: BoardPagePosition,
 }
 
 macro_rules! d2d_point {
@@ -339,6 +350,7 @@ impl OverlayRenderer {
             None,
             None,
             None,
+            None,
             minimum_ratio,
             highlighter_opacity,
             false,
@@ -349,6 +361,86 @@ impl OverlayRenderer {
             &read_pixel_samples(&self.context, &frame, &transparent_points)?,
             &mut failures,
         );
+
+        let white_board = BoardRenderState {
+            kind: BoardKind::White,
+            background_color: [1.0, 1.0, 1.0, 1.0],
+            pattern: BoardBackgroundPattern::Grid,
+            pattern_color: [0.0, 0.0, 0.0, 0.12],
+            page_position: BoardPagePosition {
+                current: 1,
+                total: 1,
+            },
+        };
+        self.draw_frame_to_bitmap(
+            &frame,
+            &completed,
+            None,
+            None,
+            None,
+            None,
+            Some(&white_board),
+            minimum_ratio,
+            highlighter_opacity,
+            false,
+        )?;
+        self.restore_swap_target()?;
+        let spacing = (40.0 * px_per_dip(self.dpi)).round() as u32;
+        let white_samples = read_pixel_samples(
+            &self.context,
+            &frame,
+            &[(5, 5), (spacing.min(self.width - 1), 5)],
+        )?;
+        if white_samples[0].bgra != [255, 255, 255, 255] {
+            failures.push(format!(
+                "화이트보드: 배경 BGRA={:?}, 불투명 흰색이 아님",
+                white_samples[0].bgra
+            ));
+        }
+        if white_samples[1].bgra == white_samples[0].bgra {
+            failures.push(format!(
+                "화이트보드: 격자 BGRA={:?}, 배경과 같음",
+                white_samples[1].bgra
+            ));
+        }
+        let indicator_rect = self.board_page_indicator_rect();
+        let text_pixels = pixel_count_in_rect(&self.context, &frame, indicator_rect, |pixel| {
+            pixel[3] == 255 && pixel[0] < 180 && pixel[1] < 180 && pixel[2] < 180
+        })?;
+        if text_pixels == 0 {
+            failures.push("화이트보드: 페이지 표시 영역에 글자 픽셀이 없음".to_owned());
+        }
+
+        let black_board = BoardRenderState {
+            kind: BoardKind::Black,
+            background_color: [0.0, 0.0, 0.0, 1.0],
+            pattern: BoardBackgroundPattern::None,
+            pattern_color: [1.0, 1.0, 1.0, 0.18],
+            page_position: BoardPagePosition {
+                current: 1,
+                total: 1,
+            },
+        };
+        self.draw_frame_to_bitmap(
+            &frame,
+            &completed,
+            None,
+            None,
+            None,
+            None,
+            Some(&black_board),
+            minimum_ratio,
+            highlighter_opacity,
+            false,
+        )?;
+        self.restore_swap_target()?;
+        let black_sample = read_pixel_samples(&self.context, &frame, &[(5, 5)])?[0];
+        if black_sample.bgra[3] != 255 || black_sample.bgra[..3].iter().any(|value| *value > 8) {
+            failures.push(format!(
+                "블랙보드: 배경 BGRA={:?}, 불투명 검정 계열이 아님",
+                black_sample.bgra
+            ));
+        }
 
         for (name, tool, width) in [
             ("펜 획", InkStrokeTool::Pen, 12.0),
@@ -367,6 +459,7 @@ impl OverlayRenderer {
             self.draw_frame_to_bitmap(
                 &frame,
                 &completed,
+                None,
                 None,
                 None,
                 None,
@@ -454,6 +547,7 @@ impl OverlayRenderer {
             None,
             None,
             Some(&selection),
+            None,
             minimum_ratio,
             highlighter_opacity,
             false,
@@ -669,6 +763,7 @@ impl OverlayRenderer {
             None,
             None,
             None,
+            None,
             minimum_ratio,
             highlighter_opacity,
             false,
@@ -723,6 +818,7 @@ impl OverlayRenderer {
             None,
             None,
             Some(&laser),
+            None,
             None,
             minimum_ratio,
             highlighter_opacity,
@@ -782,6 +878,7 @@ impl OverlayRenderer {
         eraser: Option<&EraserRenderState>,
         laser: Option<&LaserRenderState>,
         selection: Option<&SelectionRenderState>,
+        board: Option<&BoardRenderState>,
         minimum_ratio: f64,
         highlighter_opacity: f64,
         debug_visible: bool,
@@ -797,6 +894,7 @@ impl OverlayRenderer {
             eraser,
             laser,
             selection,
+            board,
             minimum_ratio,
             highlighter_opacity,
             debug_visible,
@@ -812,6 +910,7 @@ impl OverlayRenderer {
         eraser: Option<&EraserRenderState>,
         laser: Option<&LaserRenderState>,
         selection: Option<&SelectionRenderState>,
+        board: Option<&BoardRenderState>,
         minimum_ratio: f64,
         highlighter_opacity: f64,
         debug_visible: bool,
@@ -857,26 +956,56 @@ impl OverlayRenderer {
             None
         };
         let bounds = frame_bounds(self.width, self.height);
-        unsafe {
-            self.context.BeginDraw();
-            if debug_visible {
-                self.context.Clear(Some(&clear));
+        unsafe { self.context.BeginDraw() };
+        let draw_result: Result<()> = (|| {
+            if let Some(board) = board {
+                // Copy an opaque full-frame board first so transparent/opaque transitions never
+                // retain a stale flip-buffer pixel, then source-over pattern and ink.
+                unsafe { self.context.SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_COPY) };
+                self.draw_board_background(board, bounds)?;
+                unsafe {
+                    self.context
+                        .SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_SOURCE_OVER)
+                };
+                self.draw_board_pattern(board, bounds)?;
+                unsafe {
+                    self.context.DrawBitmap(
+                        preview_bitmap.as_ref().unwrap_or(completed),
+                        Some(&bounds),
+                        1.0,
+                        D2D1_INTERPOLATION_MODE_LINEAR,
+                        Some(&bounds),
+                        None,
+                    );
+                }
+            } else if debug_visible {
+                unsafe {
+                    self.context.Clear(Some(&clear));
+                    self.context.DrawBitmap(
+                        preview_bitmap.as_ref().unwrap_or(completed),
+                        Some(&bounds),
+                        1.0,
+                        D2D1_INTERPOLATION_MODE_LINEAR,
+                        Some(&bounds),
+                        None,
+                    );
+                }
             } else {
                 // Transparent source-over cannot erase stale flip-buffer alpha; copy exact bounds.
-                self.context.SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_COPY);
+                unsafe {
+                    self.context.SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_COPY);
+                    self.context.DrawBitmap(
+                        preview_bitmap.as_ref().unwrap_or(completed),
+                        Some(&bounds),
+                        1.0,
+                        D2D1_INTERPOLATION_MODE_LINEAR,
+                        Some(&bounds),
+                        None,
+                    );
+                    self.context
+                        .SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_SOURCE_OVER);
+                }
             }
-            self.context.DrawBitmap(
-                preview_bitmap.as_ref().unwrap_or(completed),
-                Some(&bounds),
-                1.0,
-                D2D1_INTERPOLATION_MODE_LINEAR,
-                Some(&bounds),
-                None,
-            );
-            self.context
-                .SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_SOURCE_OVER);
-        }
-        let draw_result: Result<()> = (|| {
             if let Some(selection) = selection {
                 self.draw_selection(selection)?;
             }
@@ -888,6 +1017,9 @@ impl OverlayRenderer {
             }
             if let Some(prepared) = prepared_laser.as_ref() {
                 self.draw_prepared_laser(prepared)?;
+            }
+            if let Some(board) = board {
+                self.draw_board_page_indicator(board)?;
             }
             Ok(())
         })();
@@ -908,6 +1040,127 @@ impl OverlayRenderer {
         let end_result = unsafe { self.context.EndDraw(None, None) };
         draw_result?;
         end_result
+    }
+
+    fn draw_board_background(&self, board: &BoardRenderState, bounds: D2D_RECT_F) -> Result<()> {
+        let color = d2d_color(board.background_color);
+        let brush = unsafe { self.context.CreateSolidColorBrush(&color, None) }?;
+        unsafe { self.context.FillRectangle(&bounds, &brush) };
+        Ok(())
+    }
+
+    fn draw_board_pattern(&self, board: &BoardRenderState, bounds: D2D_RECT_F) -> Result<()> {
+        if board.pattern == BoardBackgroundPattern::None {
+            return Ok(());
+        }
+        let scale = px_per_dip(self.dpi) as f32;
+        let spacing = 40.0 * scale;
+        let stroke = scale;
+        let color = d2d_color(board.pattern_color);
+        let brush = unsafe { self.context.CreateSolidColorBrush(&color, None) }?;
+        unsafe {
+            if board.pattern == BoardBackgroundPattern::Grid {
+                let mut x = spacing;
+                while x <= bounds.right {
+                    let mut start = D2D1_ELLIPSE::default().point;
+                    start.X = x;
+                    start.Y = bounds.top;
+                    let mut end = D2D1_ELLIPSE::default().point;
+                    end.X = x;
+                    end.Y = bounds.bottom;
+                    self.context
+                        .DrawLine(start, end, &brush, stroke, &self.butt_stroke);
+                    x += spacing;
+                }
+            }
+            let mut y = spacing;
+            while y <= bounds.bottom {
+                let mut start = D2D1_ELLIPSE::default().point;
+                start.X = bounds.left;
+                start.Y = y;
+                let mut end = D2D1_ELLIPSE::default().point;
+                end.X = bounds.right;
+                end.Y = y;
+                self.context
+                    .DrawLine(start, end, &brush, stroke, &self.butt_stroke);
+                y += spacing;
+            }
+        }
+        Ok(())
+    }
+
+    fn draw_board_page_indicator(&self, board: &BoardRenderState) -> Result<()> {
+        let rect = self.board_page_indicator_rect();
+        if rect.right <= rect.left || rect.bottom <= rect.top {
+            return Ok(());
+        }
+        let scale = px_per_dip(self.dpi) as f32;
+        let (foreground, background) = match board.kind {
+            BoardKind::White => ([0.0, 0.0, 0.0, 0.68], [0.0, 0.0, 0.0, 0.08]),
+            BoardKind::Black => ([1.0, 1.0, 1.0, 0.82], [1.0, 1.0, 1.0, 0.12]),
+        };
+        let foreground = d2d_color(foreground);
+        let background = d2d_color(background);
+        let foreground_brush = unsafe { self.context.CreateSolidColorBrush(&foreground, None) }?;
+        let background_brush = unsafe { self.context.CreateSolidColorBrush(&background, None) }?;
+        let rounded = D2D1_ROUNDED_RECT {
+            rect,
+            radiusX: 8.0 * scale,
+            radiusY: 8.0 * scale,
+        };
+        unsafe {
+            self.context
+                .FillRoundedRectangle(&rounded, &background_brush)
+        };
+
+        let format = unsafe {
+            self.dwrite.CreateTextFormat(
+                windows::core::w!("Segoe UI"),
+                None::<&IDWriteFontCollection>,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                15.0 * scale,
+                windows::core::w!("ko-KR"),
+            )
+        }?;
+        unsafe {
+            format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+            format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+            format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+        }
+        let text = format!(
+            "{} / {}",
+            board.page_position.current, board.page_position.total
+        )
+        .encode_utf16()
+        .collect::<Vec<_>>();
+        let target: ID2D1RenderTarget = self.context.cast()?;
+        unsafe {
+            target.DrawText(
+                &text,
+                &format,
+                &rect,
+                &foreground_brush,
+                D2D1_DRAW_TEXT_OPTIONS_CLIP,
+                DWRITE_MEASURING_MODE_NATURAL,
+            )
+        };
+        Ok(())
+    }
+
+    fn board_page_indicator_rect(&self) -> D2D_RECT_F {
+        let scale = px_per_dip(self.dpi) as f32;
+        let width = (self.width as f32 - 32.0 * scale)
+            .max(0.0)
+            .min(84.0 * scale);
+        let left = (16.0 * scale).max(self.width as f32 - width - 20.0 * scale);
+        D2D_RECT_F {
+            left,
+            top: 20.0 * scale,
+            right: left + width,
+            bottom: 50.0 * scale,
+        }
     }
 
     fn draw_selection(&self, selection: &SelectionRenderState) -> Result<()> {
@@ -1694,6 +1947,15 @@ fn frame_bounds(width: u32, height: u32) -> D2D_RECT_F {
     }
 }
 
+fn d2d_color(components: [f64; 4]) -> D2D1_COLOR_F {
+    D2D1_COLOR_F {
+        r: components[0] as f32,
+        g: components[1] as f32,
+        b: components[2] as f32,
+        a: components[3] as f32,
+    }
+}
+
 fn opacity_layer_parameters(bounds: D2D_RECT_F, opacity: f32) -> D2D1_LAYER_PARAMETERS1 {
     let mut parameters = D2D1_LAYER_PARAMETERS1 {
         contentBounds: bounds,
@@ -1847,6 +2109,35 @@ fn alpha_counts_in_rect(
         }
     }
     Ok((inside, outside))
+}
+
+fn pixel_count_in_rect(
+    context: &ID2D1DeviceContext,
+    bitmap: &ID2D1Bitmap1,
+    rect: D2D_RECT_F,
+    predicate: impl Fn([u8; 4]) -> bool,
+) -> Result<usize> {
+    let size = unsafe { bitmap.GetPixelSize() };
+    let (pixels, pitch) = read_bitmap_bgra(context, bitmap)?;
+    let left = rect.left.max(0.0).floor() as u32;
+    let top = rect.top.max(0.0).floor() as u32;
+    let right = rect.right.max(0.0).ceil().min(size.width as f32) as u32;
+    let bottom = rect.bottom.max(0.0).ceil().min(size.height as f32) as u32;
+    let mut count = 0;
+    for y in top..bottom {
+        for x in left..right {
+            let offset = y as usize * pitch as usize + x as usize * 4;
+            if predicate([
+                pixels[offset],
+                pixels[offset + 1],
+                pixels[offset + 2],
+                pixels[offset + 3],
+            ]) {
+                count += 1;
+            }
+        }
+    }
+    Ok(count)
 }
 
 pub(crate) fn count_nonzero_alpha(

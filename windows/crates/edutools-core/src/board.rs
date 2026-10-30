@@ -1,6 +1,6 @@
 //! Board presentation, appearance, pages, and page-local history.
 
-use crate::settings::SettingsColor;
+use crate::settings::{BoardGroupSettings, SettingsColor};
 use serde::{Deserialize, Serialize};
 
 // Swift: BoardKind
@@ -25,6 +25,18 @@ pub enum BoardBackgroundPattern {
     None,
     Grid,
     Lines,
+}
+
+impl BoardBackgroundPattern {
+    // Swift: BoardBackgroundPattern.init(rawValue:)
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "none" => Some(Self::None),
+            "grid" => Some(Self::Grid),
+            "lines" => Some(Self::Lines),
+            _ => None,
+        }
+    }
 }
 
 // Swift: BoardPresentation
@@ -74,6 +86,17 @@ impl BoardAppearance {
         match kind {
             BoardKind::White => color(BoardColors::WHITE_PATTERN),
             BoardKind::Black => color(BoardColors::BLACK_PATTERN),
+        }
+    }
+
+    // Swift: AppState.boardBackgroundColor(for:)
+    pub fn settings_background_color(
+        kind: BoardKind,
+        settings: &BoardGroupSettings,
+    ) -> SettingsColor {
+        match kind {
+            BoardKind::White => settings.whiteboard_color.clone(),
+            BoardKind::Black => settings.blackboard_color.clone(),
         }
     }
 

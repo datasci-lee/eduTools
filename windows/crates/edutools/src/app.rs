@@ -21,6 +21,7 @@ use crate::text_entry::{
     WM_APP_TEXT_ENTRY_COMMIT, WM_APP_TEXT_ENTRY_OPEN,
 };
 use crate::tray::{self, Tray, CALLBACK_MESSAGE, MENU_EXIT, MENU_TOGGLE_ANNOTATION};
+use edutools_core::board::BoardPresentation;
 use edutools_core::dispatch::{dispatch, DispatchContext, Effect, PressedShortcuts};
 use edutools_core::eraser::EraserMode;
 use edutools_core::ink::{
@@ -166,6 +167,7 @@ struct App {
     radial_palette: Option<RadialPaletteManager>,
     text_entry: Option<TextEntryWindow>,
     help: Option<HelpManager>,
+    last_board_presentation: Option<BoardPresentation>,
     logger: Logger,
     shutting_down: bool,
 }
@@ -316,9 +318,15 @@ impl App {
             }
             None => None,
         };
+        let board_display_id = self
+            .state
+            .borrow()
+            .presented_board()
+            .map(|board| board.display_id.clone());
         let context = DispatchContext {
             scope: ShortcutScope::Annotation,
             display_id: display_id.as_deref(),
+            board_display_id: board_display_id.as_deref(),
             has_selection: display_id.as_deref().is_some_and(|display_id| {
                 !self
                     .state
@@ -421,8 +429,24 @@ impl App {
                     let input_config =
                         InkInputConfig::from_core(&self.state.borrow(), &self.settings);
                     if let Some(overlays) = self.overlays.as_mut() {
-                        if let Err(error) = overlays.set_annotation_mode(enabled, input_config) {
+                        let annotation_error =
+                            overlays.set_annotation_mode(enabled, input_config).err();
+                        let board_error = (!enabled)
+                            .then(|| overlays.refresh_board(&self.settings).err())
+                            .flatten();
+                        if let Some(error) = annotation_error {
                             self.report_overlay_error("판서 모드 반영", &error);
+                        }
+                        if let Some(error) = board_error {
+                            self.report_overlay_error("보드 닫기 반영", &error);
+                        }
+                    }
+                    if !enabled {
+                        if let Some(board) = self.last_board_presentation.take() {
+                            self.logger.event(&format!(
+                                "보드 닫기: kind={:?} display={}",
+                                board.kind, board.display_id
+                            ));
                         }
                     }
                     self.logger.event(&format!(
@@ -453,6 +477,70 @@ impl App {
                             "지우개 모드 HUD 대체 로그: {}",
                             self.settings.eraser.mode
                         ));
+                    }
+                }
+                Effect::BoardChanged(presentation) => {
+                    if let Some(overlays) = self.overlays.as_mut() {
+                        if let Err(error) = overlays.refresh_board(&self.settings) {
+                            self.report_overlay_error("보드 표시 반영", &error);
+                        }
+                    }
+                    match presentation {
+                        Some(board) => {
+                            self.logger.event(&format!(
+                                "보드 열기/변경: kind={:?} display={}",
+                                board.kind, board.display_id
+                            ));
+                            self.last_board_presentation = Some(board);
+                        }
+                        None => {
+                            if let Some(board) = self.last_board_presentation.take() {
+                                self.logger.event(&format!(
+                                    "보드 닫기: kind={:?} display={}",
+                                    board.kind, board.display_id
+                                ));
+                            } else {
+                                self.logger.event("보드 닫기: 기존 표시 없음");
+                            }
+                        }
+                    }
+                }
+                Effect::FocusBoardPanel(display_id) => {
+                    // Windows에는 별도 보드 패널이 없으므로 활성 디스플레이와 재그리기만 맞춘다.
+                    self.state
+                        .borrow_mut()
+                        .set_active_display(display_id.clone());
+                    if let Some(overlays) = self.overlays.as_mut() {
+                        if let Err(error) = overlays.redraw_monitor(&display_id) {
+                            self.report_overlay_error("보드 포커스 재그리기", &error);
+                        }
+                    }
+                    self.logger
+                        .event(&format!("보드 포커스: active_display={display_id}"));
+                }
+                Effect::BoardTargetMissing => {
+                    self.logger.event("보드 대상 디스플레이 없음");
+                }
+                Effect::MoveBoardPage {
+                    direction,
+                    display_id,
+                } => {
+                    let result = self.overlays.as_mut().map(|overlays| {
+                        overlays.move_board_page(direction, &display_id, &self.settings)
+                    });
+                    match result {
+                        Some(Ok(moved)) if moved.changed => self.logger.event(&format!(
+                            "보드 페이지 이동: direction={direction:?} display={display_id} {}→{}/{}",
+                            moved.from, moved.to, moved.total
+                        )),
+                        Some(Ok(moved)) => self.logger.event(&format!(
+                            "보드 페이지 이동 불가: direction={direction:?} display={display_id} current={}/{}",
+                            moved.to, moved.total
+                        )),
+                        Some(Err(error)) => self.report_overlay_error("보드 페이지 이동", &error),
+                        None => self.logger.event(&format!(
+                            "보드 페이지 이동 불가: 오버레이 없음 display={display_id}"
+                        )),
                     }
                 }
                 Effect::SettingsMutation(mutation) => {
@@ -591,8 +679,16 @@ impl App {
     fn synchronize_overlays(&mut self, reason: &str) {
         self.cancel_text_entry("모니터 변경");
         if let Some(overlays) = self.overlays.as_mut() {
-            if let Err(error) = overlays.synchronize(reason) {
+            let synchronize_error = overlays.synchronize(reason).err();
+            let board_error = synchronize_error
+                .is_none()
+                .then(|| overlays.refresh_board(&self.settings).err())
+                .flatten();
+            if let Some(error) = synchronize_error {
                 self.report_overlay_error("모니터 재구성", &error);
+            }
+            if let Some(error) = board_error {
+                self.report_overlay_error("모니터 재구성 보드 반영", &error);
             }
         }
         if let Some(palette) = self.palette.as_mut() {
@@ -1183,6 +1279,7 @@ fn run_message_loop(logger: Logger) -> Result<i32> {
         radial_palette: None,
         text_entry: None,
         help: None,
+        last_board_presentation: None,
         logger,
         shutting_down: false,
     });
