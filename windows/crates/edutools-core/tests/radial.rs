@@ -6,7 +6,7 @@ use edutools_core::radial::{
     RadialPaletteFocus, RadialPaletteGroupId, RadialPaletteHitTarget, RadialPaletteIntent,
     RadialPaletteNavigationKey, RadialPaletteOption, RadialPaletteOptionAction, RadialPaletteRing,
     RadialPaletteSectorGeometry, RadialPaletteState, ENTRY_INNER_RADIUS, ENTRY_OUTER_RADIUS,
-    EXPANDED_DIAMETER, OPTION_MAXIMUM_SLICE, PROPERTY_GAP, SECTOR_GAP,
+    EXPANDED_DIAMETER, PROPERTY_GAP, SECTOR_GAP,
 };
 use edutools_core::settings::FavoriteTool;
 use edutools_core::shortcut::ShortcutCommand;
@@ -175,6 +175,8 @@ fn eraser_mode_entries_select_one_mode_and_retoggle_area_shape() {
 fn option_ring_caps_slices_and_aligns_sections() {
     let full_circle = 2.0 * PI;
     let group_slice = full_circle / RadialPaletteGroupId::all().len() as f64;
+    let maximum_slice = 30.0_f64.to_radians();
+    let maximum_cell_width = maximum_slice - SECTOR_GAP;
 
     let mut laser_state = RadialPaletteState::default();
     laser_state.is_expanded = true;
@@ -184,7 +186,11 @@ fn option_ring_caps_slices_and_aligns_sections() {
     let laser_options = option_cells(&laser_state);
     assert_eq!(laser_options.len(), 6);
     assert!(laser_options.iter().all(|cell| {
-        cell.geometry.end_angle - cell.geometry.start_angle <= OPTION_MAXIMUM_SLICE + EPSILON
+        cell.geometry.end_angle - cell.geometry.start_angle <= maximum_slice + EPSILON
+    }));
+    assert!(laser_options.iter().all(|cell| {
+        ((cell.geometry.end_angle - cell.geometry.start_angle) - maximum_cell_width).abs()
+            <= EPSILON
     }));
     let first = laser_options.first().expect("laser first option");
     let last = laser_options.last().expect("laser last option");
@@ -201,6 +207,9 @@ fn option_ring_caps_slices_and_aligns_sections() {
     pen_state.current_tool = InkTool::Pen;
     let pen_options = option_cells(&pen_state);
     assert_eq!(pen_options.len(), 11);
+    assert!(pen_options.iter().all(|cell| {
+        cell.geometry.end_angle - cell.geometry.start_angle <= maximum_cell_width + EPSILON
+    }));
     assert!(
         (pen_options[0].geometry.start_angle - SECTOR_GAP / 2.0 - PROPERTY_GAP / 2.0).abs()
             <= EPSILON
