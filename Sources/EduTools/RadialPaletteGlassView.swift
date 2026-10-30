@@ -46,6 +46,7 @@ enum RadialPaletteMetrics {
     static let commandHoldDuration: TimeInterval = 0.5
     static let sectorGap: CGFloat = 2 * .pi / 180
     static let propertyGap: CGFloat = 9 * .pi / 180
+    static let optionMaximumSlice: CGFloat = .pi / 6
     static let tooltipGap: CGFloat = 8
     static let cellStrokeWidth: CGFloat = 0.8
     static let hoverStrokeWidth: CGFloat = 1.8

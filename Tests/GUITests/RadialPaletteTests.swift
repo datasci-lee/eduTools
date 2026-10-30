@@ -108,6 +108,76 @@ struct RadialPaletteTests {
     fixture.controller.activate(.cell(areaEntry))
     #expect(fixture.state.eraserAreaShape != originalAreaShape)
   }
+
+  @Test("옵션 칸은 30도 이하이며 단일 섹션은 그룹 반대편, 두 섹션은 12시부터 배치된다")
+  func optionRingCapsSlicesAndAlignsSections() throws {
+    requireWindowServer()
+    _ = NSApplication.shared
+    let fixture = try RadialPaletteFixture()
+    fixture.showAndExpand()
+
+    let fullCircle = 2 * CGFloat.pi
+    let groupSlice = fullCircle / CGFloat(RadialPaletteGroupID.allCases.count)
+    let tolerance: CGFloat = 0.0001
+
+    func normalized(_ angle: CGFloat) -> CGFloat {
+      let remainder = angle.truncatingRemainder(dividingBy: fullCircle)
+      return remainder >= 0 ? remainder : remainder + fullCircle
+    }
+
+    func angularDistance(_ lhs: CGFloat, _ rhs: CGFloat) -> CGFloat {
+      let difference = abs(normalized(lhs) - normalized(rhs))
+      return min(difference, fullCircle - difference)
+    }
+
+    func groupCell(_ group: RadialPaletteGroupID) throws -> RadialPaletteCell {
+      try #require(fixture.controller.layoutCells().first { cell in
+        guard case let .group(candidate) = cell.action else { return false }
+        return candidate == group
+      })
+    }
+
+    func entryCell(for tool: InkTool) throws -> RadialPaletteCell {
+      try #require(fixture.controller.layoutCells().first { cell in
+        guard case let .entry(entry) = cell.action else { return false }
+        return entry.inkTool == tool
+      })
+    }
+
+    fixture.controller.activate(.cell(try groupCell(.presenting)))
+    fixture.controller.activate(.cell(try entryCell(for: .laser)))
+    let laserOptions = fixture.controller.layoutCells().filter { $0.ring == .option }
+    let laserFirst = try #require(laserOptions.first)
+    let laserLast = try #require(laserOptions.last)
+    let laserArcStart = laserFirst.startAngle - RadialPaletteMetrics.sectorGap / 2
+    let laserArcEnd = laserLast.endAngle + RadialPaletteMetrics.sectorGap / 2
+    let laserArcCenter = (laserArcStart + laserArcEnd) / 2
+    let presentingOpposite = CGFloat(RadialPaletteGroupID.presenting.rawValue) * groupSlice + .pi
+
+    #expect(laserOptions.count == 6)
+    #expect(laserOptions.allSatisfy { cell in
+      cell.endAngle - cell.startAngle <= RadialPaletteMetrics.optionMaximumSlice + tolerance
+    })
+    #expect(laserFirst.startAngle >= 0)
+    #expect(laserLast.endAngle > fullCircle)
+    #expect(angularDistance(laserArcCenter, presentingOpposite) < tolerance)
+
+    fixture.controller.activate(.cell(try groupCell(.writing)))
+    fixture.controller.activate(.cell(try entryCell(for: .pen)))
+    let penOptions = fixture.controller.layoutCells().filter { $0.ring == .option }
+    let penFirst = try #require(penOptions.first)
+
+    #expect(penOptions.count == 11)
+    guard penOptions.count > 6 else { return }
+    #expect(abs(
+      penFirst.startAngle - RadialPaletteMetrics.sectorGap / 2
+        - RadialPaletteMetrics.propertyGap / 2
+    ) < tolerance)
+    #expect(
+      penOptions[6].startAngle - penOptions[5].endAngle
+        >= RadialPaletteMetrics.propertyGap
+    )
+  }
 }
 
 @MainActor

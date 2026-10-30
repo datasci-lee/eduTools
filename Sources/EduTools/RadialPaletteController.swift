@@ -1666,7 +1666,8 @@ final class RadialPaletteController: NSObject {
     func layoutCells() -> [RadialPaletteCell] {
         guard isExpanded else { return [] }
         var cells: [RadialPaletteCell] = []
-        let groupSlice = 2 * CGFloat.pi / CGFloat(RadialPaletteCatalog.groups.count)
+        let fullCircle = 2 * CGFloat.pi
+        let groupSlice = fullCircle / CGFloat(RadialPaletteCatalog.groups.count)
         for (index, group) in RadialPaletteCatalog.groups.enumerated() {
             let centerAngle = CGFloat(index) * groupSlice
             cells.append(
@@ -1733,8 +1734,21 @@ final class RadialPaletteController: NSObject {
         let optionCount = optionGroups.reduce(0) { $0 + $1.options.count }
         if optionCount > 0 {
             let totalGap = CGFloat(optionGroups.count) * RadialPaletteMetrics.propertyGap
-            let optionSlice = (2 * .pi - totalGap) / CGFloat(optionCount)
-            var cursor = RadialPaletteMetrics.propertyGap / 2
+            let optionSlice = min(
+                RadialPaletteMetrics.optionMaximumSlice,
+                (fullCircle - totalGap) / CGFloat(optionCount)
+            )
+            let optionSpan = CGFloat(optionCount) * optionSlice
+            let initialCursor: CGFloat
+            if optionGroups.count == 1 {
+                let groupCenter = CGFloat(selectedGroup.rawValue) * groupSlice
+                let centeredStart = groupCenter + fullCircle / 2 - optionSpan / 2
+                let remainder = centeredStart.truncatingRemainder(dividingBy: fullCircle)
+                initialCursor = remainder >= 0 ? remainder : remainder + fullCircle
+            } else {
+                initialCursor = RadialPaletteMetrics.propertyGap / 2
+            }
+            var cursor = initialCursor
             for optionGroup in optionGroups {
                 for option in optionGroup.options {
                     let cellStart = cursor + RadialPaletteMetrics.sectorGap / 2
