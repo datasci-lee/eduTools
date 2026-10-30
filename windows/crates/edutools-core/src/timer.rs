@@ -344,6 +344,126 @@ impl BreakTimerEngine {
     }
 }
 
+/// Swift `startFromSetup`가 빠른 선택과 시각 입력에 공통 적용하는 시작 판정.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BreakTimerStartInput {
+    Quick {
+        end_date: Timestamp,
+    },
+    TimeOfDay {
+        hour: u8,
+        minute: u8,
+        start_of_day: Timestamp,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BreakTimerStartDecision {
+    Start { end_date: Timestamp },
+    Change { end_date: Timestamp },
+    WarnPast,
+}
+
+pub fn break_timer_start_decision(
+    input: BreakTimerStartInput,
+    now: Timestamp,
+    is_running: bool,
+) -> BreakTimerStartDecision {
+    let candidate = match input {
+        BreakTimerStartInput::Quick { end_date } => (end_date > now).then_some(end_date),
+        BreakTimerStartInput::TimeOfDay {
+            hour,
+            minute,
+            start_of_day,
+        } => BreakTimerEngine::end_date_for_today(hour, minute, now, start_of_day),
+    };
+    match (candidate, is_running) {
+        (Some(end_date), false) => BreakTimerStartDecision::Start { end_date },
+        (Some(end_date), true) => BreakTimerStartDecision::Change { end_date },
+        (None, _) => BreakTimerStartDecision::WarnPast,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BreakProgressColor {
+    Accent,
+    NearEnd,
+    Finished,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BreakProgressPresentation {
+    pub fraction: f64,
+    pub start_degrees: f64,
+    pub sweep_degrees: f64,
+    pub color: BreakProgressColor,
+}
+
+pub fn break_progress_presentation(
+    remaining: TimeInterval,
+    initial_duration: TimeInterval,
+    phase: BreakTimerPhase,
+) -> BreakProgressPresentation {
+    let fraction = if initial_duration > 0.0 {
+        (remaining / initial_duration).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let color = if phase == BreakTimerPhase::Finished || remaining <= 0.0 {
+        BreakProgressColor::Finished
+    } else if remaining <= 60.0 {
+        BreakProgressColor::NearEnd
+    } else {
+        BreakProgressColor::Accent
+    };
+    BreakProgressPresentation {
+        fraction,
+        start_degrees: -90.0,
+        sweep_degrees: 360.0 * fraction,
+        color,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BreakTimerLayoutMetrics {
+    pub compact_width: u32,
+    pub compact_height: u32,
+    pub corner_radius: u32,
+    pub remaining_font: u32,
+    pub resume_font: u32,
+    pub ring_diameter: u32,
+    pub ring_stroke: u32,
+    pub vertical_gap: u32,
+    pub ring_visible: bool,
+    pub current_time_visible: bool,
+}
+
+pub fn break_timer_layout_metrics(collapsed: bool, dpi: u32) -> BreakTimerLayoutMetrics {
+    let scale = f64::from(dpi.max(96)) / 96.0;
+    let px = |dip: f64| (dip * scale).round() as u32;
+    BreakTimerLayoutMetrics {
+        compact_width: px(420.0),
+        compact_height: px(230.0),
+        corner_radius: px(if collapsed { 18.0 } else { 0.0 }),
+        remaining_font: px(if collapsed { 64.0 } else { 128.0 }),
+        resume_font: px(if collapsed { 20.0 } else { 32.0 }),
+        ring_diameter: px(260.0),
+        ring_stroke: px(14.0),
+        vertical_gap: px(20.0),
+        ring_visible: !collapsed,
+        current_time_visible: !collapsed,
+    }
+}
+
+pub fn break_resume_text(message: &str, time: Option<&str>) -> String {
+    let message = message.trim();
+    match (message.is_empty(), time) {
+        (true, Some(time)) => time.to_owned(),
+        (false, Some(time)) => format!("{message} {time}"),
+        (_, None) => message.to_owned(),
+    }
+}
+
 // Swift: CGPoint
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Point {
@@ -478,7 +598,180 @@ impl TimerCoordinator {
 
 #[cfg(test)]
 mod lesson_badge_tests {
-    use super::{Point, Rect, Size, TimerGeometry};
+    use super::{
+        break_progress_presentation, break_resume_text, break_timer_layout_metrics,
+        break_timer_start_decision, BreakProgressColor, BreakTimerPhase, BreakTimerStartDecision,
+        BreakTimerStartInput, Point, Rect, Size, TimerGeometry,
+    };
+
+    #[test]
+    fn break_start_rule_table_matches_setup_inputs() {
+        let cases = [
+            (
+                "quick future starts",
+                BreakTimerStartInput::Quick { end_date: 1_600.0 },
+                false,
+                BreakTimerStartDecision::Start { end_date: 1_600.0 },
+            ),
+            (
+                "quick future changes running timer",
+                BreakTimerStartInput::Quick { end_date: 1_600.0 },
+                true,
+                BreakTimerStartDecision::Change { end_date: 1_600.0 },
+            ),
+            (
+                "quick past warns while inactive",
+                BreakTimerStartInput::Quick { end_date: 900.0 },
+                false,
+                BreakTimerStartDecision::WarnPast,
+            ),
+            (
+                "quick past warns while running",
+                BreakTimerStartInput::Quick { end_date: 900.0 },
+                true,
+                BreakTimerStartDecision::WarnPast,
+            ),
+            (
+                "time future starts",
+                BreakTimerStartInput::TimeOfDay {
+                    hour: 1,
+                    minute: 0,
+                    start_of_day: 0.0,
+                },
+                false,
+                BreakTimerStartDecision::Start { end_date: 3_600.0 },
+            ),
+            (
+                "time future changes running timer",
+                BreakTimerStartInput::TimeOfDay {
+                    hour: 1,
+                    minute: 0,
+                    start_of_day: 0.0,
+                },
+                true,
+                BreakTimerStartDecision::Change { end_date: 3_600.0 },
+            ),
+            (
+                "time past warns while inactive",
+                BreakTimerStartInput::TimeOfDay {
+                    hour: 0,
+                    minute: 10,
+                    start_of_day: 0.0,
+                },
+                false,
+                BreakTimerStartDecision::WarnPast,
+            ),
+            (
+                "time past warns while running",
+                BreakTimerStartInput::TimeOfDay {
+                    hour: 0,
+                    minute: 10,
+                    start_of_day: 0.0,
+                },
+                true,
+                BreakTimerStartDecision::WarnPast,
+            ),
+        ];
+        for (name, input, running, expected) in cases {
+            assert_eq!(
+                break_timer_start_decision(input, 1_000.0, running),
+                expected,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn break_progress_angle_and_color_table_covers_boundaries() {
+        let cases = [
+            (
+                "half accent",
+                300.0,
+                600.0,
+                BreakTimerPhase::Running,
+                (0.5, 180.0, BreakProgressColor::Accent),
+            ),
+            (
+                "sixty seconds is near end",
+                60.0,
+                600.0,
+                BreakTimerPhase::Running,
+                (0.1, 36.0, BreakProgressColor::NearEnd),
+            ),
+            (
+                "finished is red",
+                0.0,
+                600.0,
+                BreakTimerPhase::Finished,
+                (0.0, 0.0, BreakProgressColor::Finished),
+            ),
+        ];
+        for (name, remaining, initial, phase, expected) in cases {
+            let actual = break_progress_presentation(remaining, initial, phase);
+            assert_eq!(actual.start_degrees, -90.0, "{name}");
+            assert!((actual.fraction - expected.0).abs() < 1e-9, "{name}");
+            assert!((actual.sweep_degrees - expected.1).abs() < 1e-9, "{name}");
+            assert_eq!(actual.color, expected.2, "{name}");
+        }
+    }
+
+    #[test]
+    fn break_layout_dimension_table_scales_literal_dips() {
+        let cases = [
+            (96, (420, 230, 18, 64, 20, 260, 14, 20)),
+            (144, (630, 345, 27, 96, 30, 390, 21, 30)),
+            (192, (840, 460, 36, 128, 40, 520, 28, 40)),
+        ];
+        for (dpi, expected) in cases {
+            let compact = break_timer_layout_metrics(true, dpi);
+            assert_eq!(
+                (
+                    compact.compact_width,
+                    compact.compact_height,
+                    compact.corner_radius,
+                    compact.remaining_font,
+                    compact.resume_font,
+                    compact.ring_diameter,
+                    compact.ring_stroke,
+                    compact.vertical_gap,
+                ),
+                expected,
+                "compact dpi={dpi}"
+            );
+            assert!(!compact.ring_visible && !compact.current_time_visible);
+            let full = break_timer_layout_metrics(false, dpi);
+            assert!(full.ring_visible && full.current_time_visible);
+            assert_eq!(
+                (
+                    full.corner_radius,
+                    full.remaining_font,
+                    full.resume_font,
+                    full.ring_diameter,
+                    full.ring_stroke,
+                    full.vertical_gap,
+                ),
+                match dpi {
+                    96 => (0, 128, 32, 260, 14, 20),
+                    144 => (0, 192, 48, 390, 21, 30),
+                    192 => (0, 256, 64, 520, 28, 40),
+                    _ => unreachable!(),
+                },
+                "full dpi={dpi}"
+            );
+        }
+    }
+
+    #[test]
+    fn break_resume_text_table_handles_optional_message() {
+        let cases = [
+            ("수업 재개 시각", Some("10:30"), "수업 재개 시각 10:30"),
+            ("  ", Some("10:30"), "10:30"),
+            ("메시지", None, "메시지"),
+        ];
+        for (message, time, expected) in cases {
+            assert_eq!(break_resume_text(message, time), expected);
+        }
+    }
 
     #[test]
     fn badge_snap_and_alt_decision_table_uses_physical_pixels() {

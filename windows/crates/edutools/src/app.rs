@@ -1,3 +1,6 @@
+use crate::break_screen::{
+    BreakStartOutcome, BreakTimerManager, WM_APP_BREAK_ACTION, WM_APP_BREAK_TICK,
+};
 use crate::help::{
     monotonic_millis, monotonic_seconds, HelpManager, HELP_RELEASE_TIMER_ID, WM_APP_HELP_ACTION,
     WM_APP_HELP_CLOSE, WM_APP_HELP_REFRESH,
@@ -7,8 +10,8 @@ use crate::ink_view::InkInputConfig;
 use crate::kbhook::{HookKeyEvent, KeyboardHook, WM_APP_KEY};
 use crate::keymap;
 use crate::lesson_badge::{
-    LessonBadgeManager, SettingsMutation as LessonSettingsMutation, WM_APP_LESSON_ACTION,
-    WM_APP_LESSON_COMPLETED,
+    play_completion_sound, LessonBadgeManager, SettingsMutation as LessonSettingsMutation,
+    WM_APP_LESSON_ACTION, WM_APP_LESSON_COMPLETED,
 };
 use crate::log::Logger;
 use crate::music::{BreakMusicManager, WM_APP_MUSIC_LAUNCH_RESULT, WM_APP_MUSIC_PAUSE_RESULT};
@@ -184,6 +187,7 @@ struct App {
     music: Option<BreakMusicManager>,
     last_board_presentation: Option<BoardPresentation>,
     lesson_badge: Option<LessonBadgeManager>,
+    break_timer: Option<BreakTimerManager>,
     pending_break_request: Option<i64>,
     logger: Logger,
     shutting_down: bool,
@@ -231,6 +235,12 @@ impl App {
         help.show_first_run_if_needed(&self.state.borrow(), &self.settings);
         self.help = Some(help);
         self.lesson_badge = Some(LessonBadgeManager::new(
+            self.hwnd,
+            self.hinstance,
+            &self.settings,
+            self.logger.clone(),
+        )?);
+        self.break_timer = Some(BreakTimerManager::new(
             self.hwnd,
             self.hinstance,
             &self.settings,
@@ -400,6 +410,14 @@ impl App {
             targets.push("break-music");
         }
 
+        if break_music_changed
+            || previous.timer.break_message != current.timer.break_message
+            || previous.timer.break_background_color != current.timer.break_background_color
+        {
+            self.refresh_break_settings("설정 변경");
+            targets.push("break-screen");
+        }
+
         if previous.board != current.board {
             let error = self
                 .overlays
@@ -554,26 +572,24 @@ impl App {
         } else if definition.command == ShortcutCommand::ToggleAnnotationMode {
             self.logger.event("전역 키 annotation.toggle 눌림");
             self.toggle_annotation("전역 키");
-        } else if definition.command == ShortcutCommand::ToggleLessonTimer {
-            self.logger.event("전역 키 timer.lesson.toggle 눌림");
+        } else if definition.command == ShortcutCommand::ToggleLessonTimer
+            || definition.command == ShortcutCommand::ShowBreakTimerSetup
+        {
+            self.logger
+                .event(&format!("전역 키 {} 눌림", definition.id));
             let context = DispatchContext {
                 scope: ShortcutScope::Global,
                 ..DispatchContext::default()
             };
             let result = {
                 let mut state = self.state.borrow_mut();
-                dispatch(
-                    &ShortcutCommand::ToggleLessonTimer,
-                    &mut state,
-                    &self.settings,
-                    context,
-                )
+                dispatch(&definition.command, &mut state, &self.settings, context)
             };
             match result {
-                Ok(effects) => self.apply_effects(effects, "전역 키 timer.lesson.toggle"),
+                Ok(effects) => self.apply_effects(effects, &format!("전역 키 {}", definition.id)),
                 Err(error) => self
                     .logger
-                    .event(&format!("timer.lesson.toggle core dispatch 실패: {error}")),
+                    .event(&format!("{} core dispatch 실패: {error}", definition.id)),
             }
         } else {
             self.logger.event(&format!(
@@ -991,6 +1007,15 @@ impl App {
                         self.report_lesson_badge_error("전역 토글", &error);
                     }
                 }
+                Effect::ShowBreakTimerSetup => {
+                    let result = self
+                        .break_timer
+                        .as_mut()
+                        .map(|timer| timer.open_setup(&self.settings));
+                    if let Some(Err(error)) = result {
+                        self.report_break_timer_error("설정 창 열기", &error);
+                    }
+                }
                 other => self
                     .logger
                     .event(&format!("이번 라운드에서 UI 미구현 core effect: {other:?}")),
@@ -1037,6 +1062,13 @@ impl App {
         }
         if let Some(help) = self.help.as_mut() {
             help.display_configuration_changed(&self.state.borrow(), &self.settings);
+        }
+        let result = self
+            .break_timer
+            .as_mut()
+            .map(|timer| timer.display_configuration_changed(reason));
+        if let Some(Err(error)) = result {
+            self.report_break_timer_error("모니터 재구성", &error);
         }
     }
 
@@ -1491,6 +1523,152 @@ impl App {
         }
     }
 
+    fn report_break_timer_error(&self, context: &str, error: &Error) {
+        let message = format!("쉬는 시간 타이머 {context} 실패: {error}");
+        self.logger.event(&message);
+        if let Some(tray) = self.tray.as_ref() {
+            tray.show_warning("쉬는 시간 타이머 오류", &message);
+        }
+    }
+
+    fn handle_break_start_outcome(&mut self, outcome: BreakStartOutcome) {
+        match outcome {
+            BreakStartOutcome::Started => {
+                if let Some(music) = self.music.as_mut() {
+                    music.break_did_start(&self.settings);
+                }
+            }
+            BreakStartOutcome::Restarted => {
+                if let Some(music) = self.music.as_mut() {
+                    music.break_did_start(&self.settings);
+                }
+            }
+            BreakStartOutcome::Changed => {
+                let timing = self
+                    .break_timer
+                    .as_ref()
+                    .and_then(BreakTimerManager::running_timing);
+                if let (Some((now, end_date)), Some(music)) = (timing, self.music.as_mut()) {
+                    music.break_did_update(&self.settings, now, end_date);
+                }
+            }
+            BreakStartOutcome::Warned => {}
+        }
+    }
+
+    fn handle_break_action(&mut self, action: usize) {
+        if BreakTimerManager::action_start_setup(action) {
+            let result = self
+                .break_timer
+                .as_mut()
+                .map(|timer| timer.start_from_setup(&self.settings));
+            match result {
+                Some(Ok(outcome)) => self.handle_break_start_outcome(outcome),
+                Some(Err(error)) => self.report_break_timer_error("설정 시작", &error),
+                None => {}
+            }
+        } else if BreakTimerManager::action_change_end(action) {
+            let result = self
+                .break_timer
+                .as_mut()
+                .map(|timer| timer.open_setup(&self.settings));
+            if let Some(Err(error)) = result {
+                self.report_break_timer_error("종료 시각 변경 창 열기", &error);
+            }
+        } else if BreakTimerManager::action_toggle_collapsed(action) {
+            let result = self
+                .break_timer
+                .as_mut()
+                .map(BreakTimerManager::toggle_collapsed);
+            if let Some(Err(error)) = result {
+                self.report_break_timer_error("접기/펼치기", &error);
+            }
+        } else if BreakTimerManager::action_end_early(action) {
+            if let Some(music) = self.music.as_mut() {
+                music.break_did_end();
+            }
+            if let Some(timer) = self.break_timer.as_mut() {
+                timer.end_early();
+            }
+        } else if BreakTimerManager::action_toggle_music(action) {
+            let enabled = BreakMusicManager::music_enabled_after_toggle(&self.settings);
+            self.update_settings("break-screen-music-toggle", move |settings| {
+                settings.timer.set_music_enabled(enabled);
+            });
+        } else if let Some(index) = BreakTimerManager::playlist_index_from_action(action) {
+            if let Some(index) =
+                BreakMusicManager::validated_playlist_selection(&self.settings, index)
+            {
+                self.update_settings("break-screen-playlist", move |settings| {
+                    settings.timer.select_playlist(index);
+                });
+            } else {
+                self.logger
+                    .event(&format!("재생목록 선택 거부: index={index} 범위 밖"));
+            }
+        } else {
+            self.logger
+                .event(&format!("쉬는 시간 화면 알 수 없는 동작: {action}"));
+        }
+    }
+
+    fn start_quick_break(&mut self, minutes: i64, source: &str) {
+        let was_running = self
+            .break_timer
+            .as_ref()
+            .is_some_and(BreakTimerManager::is_running);
+        if was_running {
+            if let Some(music) = self.music.as_mut() {
+                music.break_did_end();
+            }
+        }
+        let result = self
+            .break_timer
+            .as_mut()
+            .map(|timer| timer.start_quick(minutes, &self.settings, source));
+        match result {
+            Some(Ok(outcome)) => self.handle_break_start_outcome(outcome),
+            Some(Err(error)) => self.report_break_timer_error("빠른 시작", &error),
+            None => self
+                .logger
+                .event("빠른 쉬는 시간 요청 소비 실패: 타이머 관리자가 없음"),
+        }
+    }
+
+    fn handle_break_tick(&mut self, reason: &str) {
+        let result = self
+            .break_timer
+            .as_mut()
+            .map(|timer| timer.tick(&self.settings));
+        match result {
+            Some(Ok(outcome)) if outcome.did_finish => {
+                if let Some(music) = self.music.as_mut() {
+                    music.break_did_end();
+                }
+                play_completion_sound(&self.settings.timer.notification_sound, &self.logger);
+            }
+            Some(Ok(outcome)) => {
+                if let (Some(end_date), Some(music)) =
+                    (outcome.running_end_date, self.music.as_mut())
+                {
+                    music.break_did_update(&self.settings, outcome.now, end_date);
+                }
+            }
+            Some(Err(error)) => self.report_break_timer_error(reason, &error),
+            None => {}
+        }
+    }
+
+    fn refresh_break_settings(&mut self, reason: &str) {
+        let result = self
+            .break_timer
+            .as_mut()
+            .map(|timer| timer.apply_settings(&self.settings));
+        if let Some(Err(error)) = result {
+            self.report_break_timer_error(reason, &error);
+        }
+    }
+
     fn handle_lesson_action(&mut self, command: u16) {
         let result = self
             .lesson_badge
@@ -1515,6 +1693,10 @@ impl App {
             self.logger.event(&format!(
                 "수업 타이머 자동 쉬는 시간 pending 요청 노출: minutes={minutes} consumer=118d"
             ));
+            let request = self.pending_break_request.take();
+            if let Some(minutes) = request {
+                self.start_quick_break(minutes, "자동");
+            }
         } else {
             self.logger
                 .event("수업 타이머 완료: 자동 쉬는 시간 pending 요청 없음");
@@ -1651,6 +1833,7 @@ impl App {
             badge.hide("앱 종료");
         }
         self.lesson_badge = None;
+        self.break_timer = None;
         self.palette = None;
         self.overlays = None;
         if let Some(hotkeys) = self.hotkeys.as_mut() {
@@ -1737,6 +1920,7 @@ fn run_message_loop(logger: Logger) -> Result<i32> {
         music: None,
         last_board_presentation: None,
         lesson_badge: None,
+        break_timer: None,
         pending_break_request: None,
         logger,
         shutting_down: false,
@@ -1765,6 +1949,11 @@ fn run_message_loop(logger: Logger) -> Result<i32> {
             break Ok(i32::try_from(message.wParam.0).unwrap_or(1));
         }
         if app.collapse_radial_for_external_pointer_down(message.hwnd, message.message) {
+            continue;
+        }
+        if app.break_timer.as_mut().is_some_and(|timer| {
+            timer.pretranslate_message(message.hwnd, message.message, message.wParam)
+        }) {
             continue;
         }
         if app.pretranslate_help_message(&message) {
@@ -1848,6 +2037,14 @@ unsafe extern "system" fn window_proc(
                 app.handle_lesson_completion(i64::try_from(wparam.0).unwrap_or(0));
                 return LRESULT(0);
             }
+            WM_APP_BREAK_ACTION => {
+                app.handle_break_action(wparam.0);
+                return LRESULT(0);
+            }
+            WM_APP_BREAK_TICK => {
+                app.handle_break_tick("0.25초 갱신");
+                return LRESULT(0);
+            }
             WM_TIMER if wparam.0 == HELP_RELEASE_TIMER_ID => {
                 app.poll_help_release();
                 return LRESULT(0);
@@ -1900,6 +2097,13 @@ unsafe extern "system" fn window_proc(
                 if let Some(music) = app.music.as_mut() {
                     music.handle_launch_result_message(lparam);
                 }
+                let result = app
+                    .break_timer
+                    .as_mut()
+                    .map(BreakTimerManager::raise_to_front);
+                if let Some(Err(error)) = result {
+                    app.report_break_timer_error("음악 창 뒤에서 앞으로 올리기", &error);
+                }
                 return LRESULT(0);
             }
             WM_APP_MUSIC_PAUSE_RESULT => {
@@ -1930,10 +2134,54 @@ unsafe extern "system" fn window_proc(
             }
             WM_TIMECHANGE => {
                 app.synchronize_lesson_badge("WM_TIMECHANGE");
+                let result = app.break_timer.as_mut().map(|timer| {
+                    timer.synchronize_after_system_event(&app.settings, "WM_TIMECHANGE")
+                });
+                match result {
+                    Some(Ok(outcome)) if outcome.did_finish => {
+                        if let Some(music) = app.music.as_mut() {
+                            music.break_did_end();
+                        }
+                        play_completion_sound(&app.settings.timer.notification_sound, &app.logger);
+                    }
+                    Some(Ok(outcome)) => {
+                        if let (Some(end_date), Some(music)) =
+                            (outcome.running_end_date, app.music.as_mut())
+                        {
+                            music.break_did_update(&app.settings, outcome.now, end_date);
+                        }
+                    }
+                    Some(Err(error)) => {
+                        app.report_break_timer_error("WM_TIMECHANGE 동기화", &error)
+                    }
+                    None => {}
+                }
                 return LRESULT(0);
             }
             WM_POWERBROADCAST if wparam.0 == 0x12 => {
                 app.synchronize_lesson_badge("PBT_APMRESUMEAUTOMATIC");
+                let result = app.break_timer.as_mut().map(|timer| {
+                    timer.synchronize_after_system_event(&app.settings, "PBT_APMRESUMEAUTOMATIC")
+                });
+                match result {
+                    Some(Ok(outcome)) if outcome.did_finish => {
+                        if let Some(music) = app.music.as_mut() {
+                            music.break_did_end();
+                        }
+                        play_completion_sound(&app.settings.timer.notification_sound, &app.logger);
+                    }
+                    Some(Ok(outcome)) => {
+                        if let (Some(end_date), Some(music)) =
+                            (outcome.running_end_date, app.music.as_mut())
+                        {
+                            music.break_did_update(&app.settings, outcome.now, end_date);
+                        }
+                    }
+                    Some(Err(error)) => {
+                        app.report_break_timer_error("PBT_APMRESUMEAUTOMATIC 동기화", &error)
+                    }
+                    None => {}
+                }
                 return LRESULT(1);
             }
             WM_DESTROY => {
@@ -2031,6 +2279,10 @@ fn run_selftest(logger: &Logger) -> bool {
         match LessonBadgeManager::new(HWND::default(), hinstance, &settings, logger.clone()) {
             Ok(mut badge) => failures.extend(badge.selftest_failures()),
             Err(error) => failures.push(format!("lesson badge: 생성 실패: {error}")),
+        }
+        match BreakTimerManager::new(HWND::default(), hinstance, &settings, logger.clone()) {
+            Ok(mut timer) => failures.extend(timer.selftest_failures()),
+            Err(error) => failures.push(format!("break screen: 생성 실패: {error}")),
         }
     }
 

@@ -2,6 +2,8 @@
 mod app;
 #[cfg(windows)]
 mod app_icon;
+#[cfg(windows)]
+mod break_screen;
 #[cfg(any(windows, test))]
 mod help;
 #[cfg(any(windows, test))]
