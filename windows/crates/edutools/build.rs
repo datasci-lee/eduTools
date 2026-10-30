@@ -44,28 +44,34 @@ fn main() {
         );
         panic!("Windows 리소스 컴파일러 rc.exe가 필요합니다");
     });
-    let output =
-        PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is required")).join("edutools.res");
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is required"));
+    let output = out_dir.join("edutools.res");
+    let generated_rc = out_dir.join("app.generated.rc");
+    let template_path = manifest_dir.join("app.rc");
     let manifest = manifest_dir.join("app.manifest");
     let app_icon = tray_dir.join("menubar.on.dark-taskbar.ico");
     let tray_paths = TRAY_FILES.map(|file| tray_dir.join(file));
-    let definitions = [
-        ("EDUTOOLS_MANIFEST", manifest.as_path()),
-        ("EDUTOOLS_APP_ICON", app_icon.as_path()),
-        ("EDUTOOLS_TRAY_OFF_LIGHT", tray_paths[0].as_path()),
-        ("EDUTOOLS_TRAY_ON_LIGHT", tray_paths[1].as_path()),
-        ("EDUTOOLS_TRAY_OFF_DARK", tray_paths[2].as_path()),
-        ("EDUTOOLS_TRAY_ON_DARK", tray_paths[3].as_path()),
+    let resources = [
+        ("{{EDUTOOLS_MANIFEST}}", manifest.as_path()),
+        ("{{EDUTOOLS_APP_ICON}}", app_icon.as_path()),
+        ("{{EDUTOOLS_TRAY_OFF_LIGHT}}", tray_paths[0].as_path()),
+        ("{{EDUTOOLS_TRAY_ON_LIGHT}}", tray_paths[1].as_path()),
+        ("{{EDUTOOLS_TRAY_OFF_DARK}}", tray_paths[2].as_path()),
+        ("{{EDUTOOLS_TRAY_ON_DARK}}", tray_paths[3].as_path()),
     ];
+    let mut resource_script = fs::read_to_string(&template_path)
+        .unwrap_or_else(|error| panic!("{} 읽기에 실패했습니다: {error}", template_path.display()));
+    for (placeholder, path) in resources {
+        resource_script = resource_script.replace(placeholder, &resource_path_literal(path));
+    }
+    fs::write(&generated_rc, resource_script)
+        .unwrap_or_else(|error| panic!("{} 생성에 실패했습니다: {error}", generated_rc.display()));
 
     let mut command = Command::new(&rc);
     command
         .arg("/nologo")
-        .arg(format!("/fo{}", output.display()));
-    for (name, path) in definitions {
-        command.arg(resource_definition(name, path));
-    }
-    command.arg(manifest_dir.join("app.rc"));
+        .arg(format!("/fo{}", output.display()))
+        .arg(&generated_rc);
 
     let result = command.output().unwrap_or_else(|error| {
         println!(
@@ -85,9 +91,14 @@ fn main() {
     println!("cargo:rustc-link-arg-bins={}", output.display());
 }
 
-fn resource_definition(name: &str, path: &Path) -> String {
+fn resource_path_literal(path: &Path) -> String {
+    assert!(path.is_absolute(), "리소스 경로는 절대 경로여야 합니다");
     let path = path.to_string_lossy().replace('\\', "/");
-    format!("/d{name}=\\\"{path}\\\"")
+    assert!(
+        !path.contains('"'),
+        "리소스 경로에 큰따옴표를 사용할 수 없습니다"
+    );
+    format!("\"{path}\"")
 }
 
 fn find_resource_compiler() -> Option<PathBuf> {
