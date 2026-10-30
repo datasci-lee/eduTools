@@ -1,4 +1,6 @@
-use crate::ink_view::{pointer_id_from_wparam, InkInputConfig, InkInputController, InputOutcome};
+use crate::ink_view::{
+    pointer_id_from_wparam, stroke_shape_label, InkInputConfig, InkInputController, InputOutcome,
+};
 use crate::log::Logger;
 use crate::monitor::{
     enumerate_monitors, monitor_at_point, monitor_by_key, plan_monitor_sync, Monitor,
@@ -32,6 +34,8 @@ pub const SYNC_MESSAGE: u32 = 0x8000 + 2;
 const OVERLAY_CLASS: windows::core::PCWSTR = w!("EduToolsOverlay");
 const LASER_TIMER_ID: usize = 0xED11;
 const LASER_TIMER_INTERVAL_MS: u32 = 16;
+const RECOGNITION_TIMER_ID: usize = 0xED12;
+const RECOGNITION_TIMER_INTERVAL_MS: u32 = 500;
 
 type LayerStore = Rc<RefCell<HashMap<String, InkLayerState>>>;
 
@@ -355,6 +359,7 @@ struct OverlayWindowState {
     renderer: Option<OverlayRenderer>,
     debug_visible: bool,
     laser_timer_running: bool,
+    recognition_timer_running: bool,
 }
 
 impl OverlayWindowState {
@@ -371,6 +376,36 @@ impl OverlayWindowState {
                 .as_ref()
                 .expect("renderer initialized after window creation")
                 .append_completed(&stroke, minimum_ratio, highlighter_opacity)?;
+        }
+        if let Some(recognized) = outcome.recognized {
+            let before = self.current_strokes();
+            let after = before
+                .iter()
+                .map(|stroke| {
+                    if stroke.identifier == recognized.identifier {
+                        recognized.clone()
+                    } else {
+                        stroke.clone()
+                    }
+                })
+                .collect::<Vec<_>>();
+            if before != after {
+                self.logger.event(&format!(
+                    "도형 인식 후보 적용: monitor={} kind={} Undo=2(Add+Replace)",
+                    self.monitor.session_key,
+                    stroke_shape_label(&recognized)
+                ));
+                self.layers
+                    .borrow_mut()
+                    .entry(self.monitor.session_key.clone())
+                    .or_default()
+                    .execute(InkCommand::ReplaceStrokes { before, after });
+                let strokes = self.current_strokes();
+                self.renderer
+                    .as_ref()
+                    .expect("renderer initialized after window creation")
+                    .rebuild_completed(&strokes, minimum_ratio, highlighter_opacity)?;
+            }
         }
         if let Some(replacement) = outcome.replacement {
             self.logger.event(&format!(
@@ -398,13 +433,14 @@ impl OverlayWindowState {
     }
 
     fn draw(&self) -> Result<()> {
+        let active_stroke = self.input.active_stroke();
         let eraser = self.input.eraser_render_state();
         let laser = self.input.laser_render_state();
         self.renderer
             .as_ref()
             .expect("renderer initialized after window creation")
             .draw_frame(
-                self.input.active_stroke(),
+                active_stroke.as_ref(),
                 eraser.as_ref(),
                 laser.as_ref(),
                 self.input.pressure_minimum_width_ratio(),
@@ -445,6 +481,36 @@ impl OverlayWindowState {
         }
         Ok(())
     }
+
+    fn sync_recognition_timer(&mut self, hwnd: HWND) -> Result<()> {
+        if self.input.take_recognition_timer_reset() {
+            let timer = unsafe {
+                SetTimer(
+                    Some(hwnd),
+                    RECOGNITION_TIMER_ID,
+                    RECOGNITION_TIMER_INTERVAL_MS,
+                    None,
+                )
+            };
+            if timer == 0 {
+                return Err(Error::new(E_FAIL, "도형 인식 타이머 시작 실패"));
+            }
+            self.recognition_timer_running = true;
+        } else if self.recognition_timer_running && !self.input.recognition_timer_needed() {
+            unsafe { KillTimer(Some(hwnd), RECOGNITION_TIMER_ID) }?;
+            self.recognition_timer_running = false;
+        }
+        Ok(())
+    }
+
+    fn recognition_timer_fired(&mut self, hwnd: HWND) -> Result<()> {
+        if self.recognition_timer_running {
+            unsafe { KillTimer(Some(hwnd), RECOGNITION_TIMER_ID) }?;
+            self.recognition_timer_running = false;
+        }
+        self.input.recognize_active();
+        Ok(())
+    }
 }
 
 struct OverlayWindow {
@@ -481,6 +547,7 @@ impl OverlayWindow {
             renderer: None,
             debug_visible: annotation_enabled && debug_overlay,
             laser_timer_running: false,
+            recognition_timer_running: false,
         });
         let state_ptr = state.as_mut() as *mut OverlayWindowState;
         let ex_style =
@@ -604,12 +671,14 @@ impl OverlayWindow {
             .input
             .update_context(annotation_enabled, input_config);
         self.state.draw()?;
-        self.state.sync_laser_timer(self.hwnd)
+        self.state.sync_laser_timer(self.hwnd)?;
+        self.state.sync_recognition_timer(self.hwnd)
     }
 
     fn finish_active(&mut self, reason: &str) -> Result<()> {
         self.state.finish_active(reason)?;
-        self.state.sync_laser_timer(self.hwnd)
+        self.state.sync_laser_timer(self.hwnd)?;
+        self.state.sync_recognition_timer(self.hwnd)
     }
 
     fn set_click_through(&mut self, enabled: bool) -> Result<()> {
@@ -718,6 +787,14 @@ impl Drop for OverlayWindow {
             }
             self.state.laser_timer_running = false;
         }
+        if self.state.recognition_timer_running {
+            if let Err(error) = unsafe { KillTimer(Some(self.hwnd), RECOGNITION_TIMER_ID) } {
+                self.state
+                    .logger
+                    .event(&format!("도형 인식 타이머 해제 실패: {error}"));
+            }
+            self.state.recognition_timer_running = false;
+        }
         self.state.renderer.take();
         if let Err(error) = unsafe { DestroyWindow(self.hwnd) } {
             self.state
@@ -783,7 +860,8 @@ unsafe extern "system" fn overlay_window_proc(
                     .input
                     .handle_message(message, pointer_id, &state.monitor, &strokes)
                     .and_then(|outcome| state.apply_input_outcome(outcome))
-                    .and_then(|()| state.sync_laser_timer(hwnd));
+                    .and_then(|()| state.sync_laser_timer(hwnd))
+                    .and_then(|()| state.sync_recognition_timer(hwnd));
                 match result {
                     Ok(()) => {}
                     Err(error) => state.logger.event(&format!(
@@ -798,10 +876,20 @@ unsafe extern "system" fn overlay_window_proc(
                     .input
                     .retract_laser()
                     .and_then(|outcome| state.apply_input_outcome(outcome))
-                    .and_then(|()| state.sync_laser_timer(hwnd));
+                    .and_then(|()| state.sync_laser_timer(hwnd))
+                    .and_then(|()| state.sync_recognition_timer(hwnd));
                 if let Err(error) = result {
                     state.logger.event(&format!(
                         "레이저 줄이기 타이머 실패: monitor={}: {error}",
+                        state.monitor.session_key
+                    ));
+                }
+                return LRESULT(0);
+            }
+            WM_TIMER if wparam.0 == RECOGNITION_TIMER_ID => {
+                if let Err(error) = state.recognition_timer_fired(hwnd) {
+                    state.logger.event(&format!(
+                        "도형 인식 타이머 실패: monitor={}: {error}",
                         state.monitor.session_key
                     ));
                 }
