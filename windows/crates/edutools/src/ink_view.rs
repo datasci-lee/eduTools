@@ -17,6 +17,9 @@ use edutools_core::laser::{LaserPoint, LaserTrail};
 use edutools_core::settings::AppSettings;
 use edutools_core::shape::{LassoHitRule, Rect as SelectionRect, ShapeRecognizer};
 use edutools_core::state::AppState;
+use edutools_core::zoom::{
+    Point as ZoomPoint, Rect as ZoomRect, Size as ZoomSize, ZoomGeometry, ZoomSessionState,
+};
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -142,8 +145,58 @@ pub struct InputOutcome {
 #[derive(Clone, Debug)]
 pub struct TextEntrySeed {
     pub origin: Point,
+    pub display_origin: Point,
     pub color: [f64; 4],
     pub font_size: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum InkInputMapping {
+    Identity,
+    ThroughPresentation {
+        zoomed_size: ZoomSize,
+        source_rect: ZoomRect,
+    },
+}
+
+impl InkInputMapping {
+    pub fn for_zoom(session: &ZoomSessionState) -> Self {
+        if session.is_frozen {
+            Self::ThroughPresentation {
+                zoomed_size: session.screen_size,
+                source_rect: session.source_rect(),
+            }
+        } else {
+            Self::Identity
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Identity => "live/identity",
+            Self::ThroughPresentation { .. } => "frozen/original_point",
+        }
+    }
+
+    fn map_local(self, point: Point) -> Point {
+        match self {
+            Self::Identity => point,
+            Self::ThroughPresentation {
+                zoomed_size,
+                source_rect,
+            } => {
+                let mapped = ZoomGeometry::original_point(
+                    ZoomPoint::new(point.x, point.y),
+                    zoomed_size,
+                    source_rect,
+                );
+                Point {
+                    x: mapped.x,
+                    y: mapped.y,
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -403,6 +456,13 @@ impl InkInputController {
         self.active_stroke.as_ref().map(effective_stroke)
     }
 
+    pub fn gesture_in_progress(&self) -> bool {
+        self.owner.is_some()
+            || self.active_stroke.is_some()
+            || self.active_eraser.is_some()
+            || self.active_selection.is_some()
+    }
+
     pub fn recognition_timer_needed(&self) -> bool {
         self.recognition_timer_waiting
     }
@@ -538,6 +598,7 @@ impl InkInputController {
         monitor: &Monitor,
         strokes: &[InkStroke],
         selected_ids: &BTreeSet<String>,
+        mapping: InkInputMapping,
     ) -> Result<InputOutcome> {
         if !self.annotation_enabled {
             return Ok(InputOutcome::default());
@@ -577,11 +638,11 @@ impl InkInputController {
             _ => return Ok(InputOutcome::default()),
         }
 
-        let snapshot = PointerSnapshot::read(pointer_id, monitor.rect)?;
+        let snapshot = PointerSnapshot::read(pointer_id, monitor.rect, mapping)?;
         if message == WM_POINTERDOWN {
-            self.handle_down(snapshot, monitor, strokes, selected_ids)
+            self.handle_down(snapshot, monitor, strokes, selected_ids, mapping)
         } else {
-            self.handle_update_or_up(message, snapshot, monitor)
+            self.handle_update_or_up(message, snapshot, monitor, mapping)
         }
     }
 
@@ -591,6 +652,7 @@ impl InkInputController {
         monitor: &Monitor,
         strokes: &[InkStroke],
         selected_ids: &BTreeSet<String>,
+        mapping: InkInputMapping,
     ) -> Result<InputOutcome> {
         let mut outcome = InputOutcome::default();
         if let Some(owner) = self.owner {
@@ -624,7 +686,8 @@ impl InkInputController {
                 self.logger.event("무시한 입력: 유효하지 않은 지우개 설정");
                 return Ok(outcome);
             };
-            let points = pointer_screen_points(snapshot.pointer_id, snapshot.device, monitor.rect)?;
+            let points =
+                pointer_screen_points(snapshot.pointer_id, snapshot.device, monitor.rect, mapping)?;
             let canvas_size = Size {
                 width: f64::from(monitor.rect.width()),
                 height: f64::from(monitor.rect.height()),
@@ -692,6 +755,7 @@ impl InkInputController {
             };
             outcome.text_entry = Some(TextEntrySeed {
                 origin: snapshot.local_point,
+                display_origin: snapshot.presentation_point,
                 color,
                 font_size,
             });
@@ -806,7 +870,7 @@ impl InkInputController {
             (color, width)
         };
 
-        let history = pointer_history(snapshot.pointer_id, snapshot.device, monitor.rect)?;
+        let history = pointer_history(snapshot.pointer_id, snapshot.device, monitor.rect, mapping)?;
         if history.points.is_empty() {
             self.logger.event(&format!(
                 "무시한 입력: 포인터 이력 점 없음, pointerId={}",
@@ -892,6 +956,7 @@ impl InkInputController {
         message: u32,
         snapshot: PointerSnapshot,
         monitor: &Monitor,
+        mapping: InkInputMapping,
     ) -> Result<InputOutcome> {
         let mut outcome = InputOutcome::default();
         let Some(owner) = self.owner else {
@@ -914,10 +979,11 @@ impl InkInputController {
         }
 
         if self.active_selection.is_some() {
-            self.update_selection(snapshot, monitor)?;
+            self.update_selection(snapshot, monitor, mapping)?;
             outcome.redraw = true;
         } else if self.active_eraser.is_some() {
-            let points = pointer_screen_points(snapshot.pointer_id, snapshot.device, monitor.rect)?;
+            let points =
+                pointer_screen_points(snapshot.pointer_id, snapshot.device, monitor.rect, mapping)?;
             if let Some(active) = self.active_eraser.as_mut() {
                 append_unique_points(&mut active.points, points);
             }
@@ -925,7 +991,8 @@ impl InkInputController {
             self.refresh_eraser_preview();
             outcome.redraw = true;
         } else if let Some(active) = self.active_stroke.as_mut() {
-            let history = pointer_history(snapshot.pointer_id, snapshot.device, monitor.rect)?;
+            let history =
+                pointer_history(snapshot.pointer_id, snapshot.device, monitor.rect, mapping)?;
             let points_added = match &active.stroke.content {
                 InkStrokeContent::Shape(_) | InkStrokeContent::Cover => history
                     .points
@@ -1034,9 +1101,16 @@ impl InkInputController {
         }
     }
 
-    fn update_selection(&mut self, snapshot: PointerSnapshot, monitor: &Monitor) -> Result<()> {
+    fn update_selection(
+        &mut self,
+        snapshot: PointerSnapshot,
+        monitor: &Monitor,
+        mapping: InkInputMapping,
+    ) -> Result<()> {
         let lasso_points = matches!(self.active_selection, Some(ActiveSelection::Lasso { .. }))
-            .then(|| pointer_screen_points(snapshot.pointer_id, snapshot.device, monitor.rect))
+            .then(|| {
+                pointer_screen_points(snapshot.pointer_id, snapshot.device, monitor.rect, mapping)
+            })
             .transpose()?;
         let Some(selection) = self.active_selection.as_mut() else {
             return Ok(());
@@ -1615,6 +1689,7 @@ struct PointerSnapshot {
     pointer_id: u32,
     device: PointerDevice,
     local_point: Point,
+    presentation_point: Point,
     in_range: bool,
     in_contact: bool,
     first_button: bool,
@@ -1628,7 +1703,7 @@ struct PointerSnapshot {
 }
 
 impl PointerSnapshot {
-    fn read(pointer_id: u32, monitor: MonitorRect) -> Result<Self> {
+    fn read(pointer_id: u32, monitor: MonitorRect, mapping: InkInputMapping) -> Result<Self> {
         let mut info = POINTER_INFO::default();
         // Device type and pen flags are read from this WM_POINTER event only.
         unsafe { GetPointerInfo(pointer_id, &mut info) }?;
@@ -1641,10 +1716,12 @@ impl PointerSnapshot {
         } else {
             0
         };
+        let presentation_point = screen_point(info.ptPixelLocationRaw, monitor);
         Ok(Self {
             pointer_id,
             device,
-            local_point: screen_point(info.ptPixelLocationRaw, monitor),
+            local_point: mapping.map_local(presentation_point),
+            presentation_point,
             in_range: info.pointerFlags.contains(POINTER_FLAG_INRANGE),
             in_contact: info.pointerFlags.contains(POINTER_FLAG_INCONTACT),
             first_button: info.pointerFlags.contains(POINTER_FLAG_FIRSTBUTTON),
@@ -1884,6 +1961,7 @@ fn pointer_history(
     pointer_id: u32,
     device: PointerDevice,
     monitor: MonitorRect,
+    mapping: InkInputMapping,
 ) -> Result<PointerHistory> {
     let mut samples = if device == PointerDevice::Pen {
         pen_history(pointer_id)?
@@ -1896,7 +1974,7 @@ fn pointer_history(
         .into_iter()
         .map(|sample| {
             InkPoint::new(
-                normalized_monitor_point(sample.point, monitor),
+                mapped_monitor_point(sample.point, monitor, mapping),
                 sample.pressure,
                 f64::from(sample.timestamp_ms) / 1_000.0,
             )
@@ -1909,12 +1987,13 @@ fn pointer_screen_points(
     pointer_id: u32,
     device: PointerDevice,
     monitor: MonitorRect,
+    mapping: InkInputMapping,
 ) -> Result<Vec<Point>> {
     let size = Size {
         width: f64::from(monitor.width()),
         height: f64::from(monitor.height()),
     };
-    Ok(pointer_history(pointer_id, device, monitor)?
+    Ok(pointer_history(pointer_id, device, monitor, mapping)?
         .points
         .into_iter()
         .map(|point| InkGeometry::screen_point(point.location, size))
@@ -2031,9 +2110,14 @@ fn screen_point(point: POINT, monitor: MonitorRect) -> Point {
     }
 }
 
+#[cfg(test)]
 fn normalized_monitor_point(point: POINT, monitor: MonitorRect) -> Point {
+    mapped_monitor_point(point, monitor, InkInputMapping::Identity)
+}
+
+fn mapped_monitor_point(point: POINT, monitor: MonitorRect, mapping: InkInputMapping) -> Point {
     InkGeometry::normalized_point(
-        screen_point(point, monitor),
+        mapping.map_local(screen_point(point, monitor)),
         Size {
             width: f64::from(monitor.width()),
             height: f64::from(monitor.height()),
