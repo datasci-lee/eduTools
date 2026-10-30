@@ -98,10 +98,7 @@ private final class RadialPaletteFixture {
       dispatcher: dispatcher,
       settingsStore: settingsStore,
       defaults: defaults,
-      openSettings: {},
-      displayPresetEntries: { [] },
-      applyDisplayPreset: { _ in },
-      openDisplaySettings: {}
+      openSettings: {}
     )
     dispatcher.radialPaletteController = controller
     controller.window.alphaValue = 0

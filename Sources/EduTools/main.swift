@@ -117,15 +117,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             defaults: defaults,
             openSettings: { [weak settingsController] in
                 settingsController?.showSettings()
-            },
-            displayPresetEntries: {
-                displayApplier.menuEntries()
-            },
-            applyDisplayPreset: { index in
-                displayApplier.applyPreset(at: index)
-            },
-            openDisplaySettings: {
-                settingsController.showDisplaySettings()
             }
         )
         self.radialPaletteController = radialPaletteController

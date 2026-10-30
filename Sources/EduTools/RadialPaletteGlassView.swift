@@ -53,8 +53,6 @@ enum RadialPaletteMetrics {
     static let writingWidths: [CGFloat] = [1, 3, 5, 8, 12]
     static let highlighterWidths: [CGFloat] = [6, 12, 18, 24, 30]
     static let textSizes: [CGFloat] = [16, 24, 36, 48, 72]
-    static let highlighterOpacities: [CGFloat] = [0.2, 0.4, 0.6, 0.8, 1]
-    static let laserTrailDurations: [TimeInterval] = [0.3, 0.7, 1, 2]
     static let colorPreviewDiameter: CGFloat = 20
     static let previewSlotWidth: CGFloat = 18
     static let previewSlotHeight: CGFloat = 15
@@ -67,9 +65,6 @@ enum RadialPaletteMetrics {
     static let strokePreviewMaximumWidth: CGFloat = 8
     static let textPreviewMinimumSize: CGFloat = 8
     static let textPreviewMaximumSize: CGFloat = 14
-    static let opacityPreviewWidth: CGFloat = 16
-    static let opacityPreviewHeight: CGFloat = 10
-    static let opacityPreviewCornerRadius: CGFloat = 2
     static let eraserPreviewMinimumDiameter: CGFloat = 5
     static let eraserPreviewMaximumDiameter: CGFloat = 15
     static let eraserPreviewStrokeWidth: CGFloat = 1.2
@@ -78,7 +73,6 @@ enum RadialPaletteMetrics {
 enum RadialPalettePreview: Equatable {
     case strokeWidth(relative: CGFloat, color: NSColor)
     case textSize(relative: CGFloat, color: NSColor)
-    case opacity(CGFloat, color: NSColor)
     case eraserDiameter(relative: CGFloat)
 
     static func relativeSize(of value: CGFloat, in values: [CGFloat]) -> CGFloat {
@@ -719,19 +713,6 @@ struct RadialPaletteGlassView: View {
                     color: Color(nsColor: RadialPaletteArcStyle.previewOutlineOuterColor),
                     radius: 1
                 )
-        case let .opacity(opacity, color):
-            let sample = RoundedRectangle(
-                cornerRadius: RadialPaletteMetrics.opacityPreviewCornerRadius
-            )
-            ZStack {
-                sample.fill(Color(nsColor: .lightGray))
-                sample.fill(Color(nsColor: color).opacity(Double(opacity)))
-            }
-            .frame(
-                width: RadialPaletteMetrics.opacityPreviewWidth,
-                height: RadialPaletteMetrics.opacityPreviewHeight
-            )
-            .radialPalettePreviewOutline(in: sample)
         case let .eraserDiameter(relative):
             let diameter = previewDimension(
                 relative: relative,
