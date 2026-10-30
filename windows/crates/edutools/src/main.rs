@@ -2,6 +2,10 @@
 mod app;
 #[cfg(windows)]
 mod app_icon;
+#[cfg(any(windows, test))]
+mod help;
+#[cfg(any(windows, test))]
+mod help_state;
 #[cfg(windows)]
 mod hotkey;
 #[cfg(test)]
