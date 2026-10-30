@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var presenterEffectsController: PresenterEffectsController?
     private var archiveController: ArchiveController?
     private var displayApplier: DisplayApplier?
+    private var displayAutoSwitchCoordinator: DisplayAutoSwitchCoordinator?
     private var exportController: ExportController?
     private var dispatcher: AppCommandDispatcher?
     private var hotkeyCenter: HotkeyCenter?
@@ -108,6 +109,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             archiveController: archiveController
         )
         self.displayApplier = displayApplier
+        let displayAutoSwitchCoordinator = DisplayAutoSwitchCoordinator(
+            settingsStore: settingsStore,
+            applier: displayApplier
+        )
+        self.displayAutoSwitchCoordinator = displayAutoSwitchCoordinator
+        displayAutoSwitchCoordinator.start()
         dispatcher.displayApplier = displayApplier
 
         let radialPaletteController = RadialPaletteController(
@@ -232,6 +239,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        displayAutoSwitchCoordinator?.stop()
         displayApplier?.applicationWillTerminate()
         zoomController?.stopZoom()
         timerCoordinator?.stopBreakMusicForTermination()

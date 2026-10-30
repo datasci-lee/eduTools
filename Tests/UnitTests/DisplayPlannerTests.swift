@@ -114,6 +114,19 @@ private struct PlannedRectangle {
   }
 }
 
+enum DisplayAutoSwitchBoundary: CaseIterable, Sendable {
+  case unchangedConnectionSet
+  case disabled
+  case noMatchingPreset
+  case oneExtraOnlineDisplay
+  case oneMissingOnlineDisplay
+  case noAutomaticMonitors
+  case firstMatchingPresetWins
+  case currentLayoutAlreadyMatches
+  case insideCooldown
+  case cooldownElapsed
+}
+
 @Suite("화면 구성 플래너")
 struct DisplayPlannerTests {
   @Test(
@@ -410,6 +423,85 @@ struct DisplayPlannerTests {
         presets: [noAutomaticMonitors]
       ) == nil
     )
+  }
+
+  @Test(
+    "자동 전환 판정은 연결 집합·활성화·정확 일치·우선순위·현재 배치·쿨다운 경계를 지킨다",
+    arguments: DisplayAutoSwitchBoundary.allCases
+  )
+  func automaticSwitchPolicyPreservesSafetyBoundaries(
+    _ boundary: DisplayAutoSwitchBoundary
+  ) {
+    let displayOne = displayFixture(
+      id: 101,
+      size: DisplaySize(width: 2560, height: 1440)
+    )
+    let displayTwo = displayFixture(
+      id: 102,
+      size: DisplaySize(width: 1920, height: 1080)
+    )
+    let displayThree = displayFixture(
+      id: 103,
+      size: DisplaySize(width: 1280, height: 720)
+    )
+
+    func preset(name: String, automatic: Bool = true) -> DisplayPreset {
+      var monitorOne = displayOne.monitor
+      monitorOne.autoMatch = automatic
+      var monitorTwo = displayTwo.monitor
+      monitorTwo.autoMatch = automatic
+      return DisplayPreset(
+        name: name,
+        main: PresetScreen(monitors: [monitorOne, monitorTwo])
+      )
+    }
+
+    let firstPreset = preset(name: "First")
+    let secondPreset = preset(name: "Second")
+    var online = [displayOne.online, displayTwo.online]
+    var presets = [firstPreset]
+    var enabled = true
+    var lastJudgedUUIDs: Set<String>? = ["previous-display"]
+    var lastAutoApplyAt: TimeInterval?
+    let now: TimeInterval = 100
+    var expected = DisplayAutoSwitchDecision.ignore
+
+    switch boundary {
+    case .unchangedConnectionSet:
+      lastJudgedUUIDs = Set(online.map(\.uuid))
+    case .disabled:
+      enabled = false
+    case .noMatchingPreset:
+      online = [displayOne.online, displayThree.online]
+    case .oneExtraOnlineDisplay:
+      online.append(displayThree.online)
+    case .oneMissingOnlineDisplay:
+      online = [displayOne.online]
+    case .noAutomaticMonitors:
+      presets = [preset(name: "Manual only", automatic: false)]
+    case .firstMatchingPresetWins:
+      presets = [firstPreset, secondPreset]
+      expected = .apply(index: 0)
+    case .currentLayoutAlreadyMatches:
+      online[1].currentMirrorMasterID = displayOne.online.id
+    case .insideCooldown:
+      lastAutoApplyAt = 90
+      expected = .retry(after: 20)
+    case .cooldownElapsed:
+      lastAutoApplyAt = 70
+      expected = .apply(index: 0)
+    }
+
+    let decision = DisplayAutoSwitchPolicy.decide(
+      online: online,
+      presets: presets,
+      enabled: enabled,
+      lastJudgedUUIDs: lastJudgedUUIDs,
+      lastAutoApplyAt: lastAutoApplyAt,
+      now: now
+    )
+
+    #expect(decision == expected, "boundary=\(boundary)")
   }
 
   @Test("디스플레이 매칭은 유효한 하드웨어 식별을 쓰고 온라인 화면을 재사용하지 않는다")
