@@ -43,12 +43,17 @@ use crate::radial_palette::{
 };
 use crate::render::GraphicsDevice;
 use crate::settings_file::FileSettingsStorage;
+use crate::settings_ui::{
+    apply_change as apply_settings_window_change, SettingsChangeRequest, SettingsTab,
+    SettingsWindow, WM_APP_SETTINGS_CHANGE,
+};
 use crate::text_entry::{
     cancel_reason, TextEntryRequest, TextEntryWindow, WM_APP_TEXT_ENTRY_CANCEL,
     WM_APP_TEXT_ENTRY_COMMIT, WM_APP_TEXT_ENTRY_OPEN,
 };
 use crate::tray::{
-    self, display_preset_index, Tray, CALLBACK_MESSAGE, MENU_EXIT, MENU_TOGGLE_ANNOTATION,
+    self, display_preset_index, Tray, CALLBACK_MESSAGE, MENU_EXIT, MENU_SETTINGS,
+    MENU_TOGGLE_ANNOTATION,
 };
 use crate::zoom_view::{
     decode_pointer, decode_wheel, ZoomView, WM_APP_ZOOM_INK_INPUT, WM_APP_ZOOM_POINTER,
@@ -69,7 +74,9 @@ use edutools_core::radial::{
     RadialPaletteIntent, RadialPaletteKeyPassReason, RadialPaletteKeyboardInput,
     KEY_CAP_HOLD_DURATION_MS,
 };
-use edutools_core::settings::{changed_settings_groups, AppSettings, SettingsGroup};
+use edutools_core::settings::{
+    changed_settings_groups, AppSettings, SettingsGroup, SettingsValidator,
+};
 use edutools_core::settings_store::{
     SettingsBackupStore, SettingsStore, SettingsStoreIssue, SettingsStoreIssueKind,
 };
@@ -263,6 +270,7 @@ struct App {
     startup_settings_issue: Option<SettingsStoreIssue>,
     startup_backup_issue: Option<String>,
     settings_file_existed_at_launch: bool,
+    settings_window: Option<SettingsWindow>,
     tray: Option<Tray>,
     hotkeys: Option<HotkeyCenter>,
     keyboard_hook: Option<KeyboardHook>,
@@ -442,6 +450,9 @@ impl App {
                 self.logger
                     .event(&format!("설정 갱신: source={source} changed={names}"));
                 self.settings_changed(&previous, &current, &changed);
+                if let Some(window) = self.settings_window.as_mut() {
+                    window.refresh_external(&current, source);
+                }
                 true
             }
             Err(error) => {
@@ -574,6 +585,57 @@ impl App {
                 targets.join(",")
             }
         ));
+    }
+
+    fn show_settings(&mut self, tab: SettingsTab, source: &str) {
+        if self.settings_window.is_none() {
+            match SettingsWindow::new(
+                self.hwnd,
+                self.hinstance,
+                &self.settings,
+                self.logger.clone(),
+            ) {
+                Ok(window) => self.settings_window = Some(window),
+                Err(error) => {
+                    let message = format!("설정 창 생성 실패: source={source} error={error}");
+                    self.logger.event(&message);
+                    if let Some(tray) = self.tray.as_ref() {
+                        tray.show_warning("설정 창을 열 수 없습니다", &message);
+                    }
+                    return;
+                }
+            }
+        }
+        if let Some(window) = self.settings_window.as_mut() {
+            window.show(tab, &self.settings);
+        }
+    }
+
+    #[allow(dead_code)]
+    fn show_display_settings(&mut self, source: &str) {
+        self.show_settings(SettingsTab::Display, source);
+    }
+
+    fn handle_settings_change(&mut self, request: SettingsChangeRequest) {
+        let field_id = request.field_id;
+        let mut candidate = self.settings.clone();
+        let validation = apply_settings_window_change(&mut candidate, &request).and_then(|()| {
+            SettingsValidator::validate(&candidate).map_err(|error| error.to_string())
+        });
+        if let Err(reason) = validation {
+            if let Some(window) = self.settings_window.as_mut() {
+                window.reject_change(field_id, &reason, &self.settings);
+            }
+            return;
+        }
+
+        let request_for_update = request.clone();
+        self.update_settings("settings-window", move |settings| {
+            let _ = apply_settings_window_change(settings, &request_for_update);
+        });
+        if let Some(window) = self.settings_window.as_mut() {
+            window.accept_change(field_id, &self.settings);
+        }
     }
 
     fn report_settings_store_issue(&mut self) {
@@ -2771,8 +2833,7 @@ impl App {
                 }
             }
             RadialPaletteIntent::OpenSettings => {
-                self.logger
-                    .event("원형 팔레트 미구현 intent: 설정 창 미구현");
+                self.show_settings(SettingsTab::General, "원형 팔레트");
             }
             RadialPaletteIntent::SaveFavorite => {
                 let result = self.state.borrow().save_current_favorite(&self.settings);
@@ -3263,6 +3324,10 @@ impl App {
                 self.logger.event("트레이 메뉴 선택: 판서 모드");
                 self.toggle_annotation("트레이 메뉴");
             }
+            Some(MENU_SETTINGS) => {
+                self.logger.event("트레이 메뉴 선택: 설정");
+                self.show_settings(SettingsTab::General, "트레이 메뉴");
+            }
             Some(MENU_EXIT) => {
                 self.logger.event("트레이 메뉴 선택: EduTools 종료");
                 // SAFETY: hwnd is this app's hidden top-level window.
@@ -3313,6 +3378,7 @@ impl App {
         // Overlay HWNDs and graphics resources must be released on the UI thread before the tray
         // and hidden owner window go away.
         self.radial_palette = None;
+        self.settings_window = None;
         self.help = None;
         if let Some(badge) = self.lesson_badge.as_mut() {
             badge.hide("앱 종료");
@@ -3402,6 +3468,7 @@ fn run_message_loop(logger: Logger) -> Result<i32> {
         startup_settings_issue,
         startup_backup_issue,
         settings_file_existed_at_launch,
+        settings_window: None,
         tray: None,
         hotkeys: None,
         keyboard_hook: None,
@@ -3546,6 +3613,16 @@ unsafe extern "system" fn window_proc(
                         "원형 팔레트 키캡 훅 메시지 값 범위 밖: {}",
                         wparam.0
                     ));
+                }
+                return LRESULT(0);
+            }
+            WM_APP_SETTINGS_CHANGE => {
+                let request = lparam.0 as *mut SettingsChangeRequest;
+                if request.is_null() {
+                    app.logger.event("설정 창 변경 요청 포인터가 null임");
+                } else {
+                    let request = unsafe { Box::from_raw(request) };
+                    app.handle_settings_change(*request);
                 }
                 return LRESULT(0);
             }
@@ -3814,6 +3891,10 @@ fn run_selftest(logger: &Logger) -> bool {
     };
 
     if !hinstance.is_invalid() {
+        failures.extend(crate::settings_ui::selftest_failures(
+            hinstance,
+            logger.clone(),
+        ));
         failures.extend(crate::zoom_view::selftest_failures(
             hinstance,
             logger.clone(),
