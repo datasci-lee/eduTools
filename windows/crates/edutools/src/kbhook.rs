@@ -1,4 +1,5 @@
 use crate::keymap;
+use crate::text_entry;
 use edutools_core::dispatch::should_consume;
 use edutools_core::settings::AppSettings;
 use edutools_core::shortcut::{
@@ -169,6 +170,20 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
     let event = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
     // EduTools never injects keyboard input, so injected events cannot form a self-triggering loop.
 
+    if text_entry::text_input_active() {
+        if is_key_up {
+            CALLBACK_STATE.with(|slot| {
+                if let Some((key_index, _)) = physical_key(event) {
+                    if let Some(state) = slot.borrow_mut().as_mut() {
+                        state.pressed[key_index] = None;
+                    }
+                }
+            });
+        }
+        // 네이티브 EDIT/IME가 모든 키를 직접 처리해야 하므로 판서 훅은 전달만 한다.
+        return unsafe { CallNextHookEx(None, code, wparam, lparam) };
+    }
+
     let decision = CALLBACK_STATE.with(|slot| {
         let mut slot = slot.borrow_mut();
         let state = slot.as_mut()?;
@@ -187,8 +202,6 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
         }
 
         let modifiers = current_modifiers();
-        // Text-entry focus exclusion belongs to the later text-tool round; no text editor exists
-        // in this Windows app yet.
         let definition_index =
             matching_annotation_definition(&state.definitions, event.vkCode, modifiers)?;
         let consumed = should_consume(

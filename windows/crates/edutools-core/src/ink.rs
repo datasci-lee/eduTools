@@ -29,6 +29,51 @@ pub struct Size {
     pub height: f64,
 }
 
+/// AnnotationTextView와 Windows EDIT가 공유하는 텍스트 입력 키 분류.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TextEntryKey {
+    Enter,
+    Escape,
+    Other,
+}
+
+/// AnnotationTextView.keyDown(with:)의 텍스트 입력 처리 결과.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TextEntryAction {
+    Commit,
+    LineBreak,
+    Cancel,
+    Default,
+}
+
+/// Swift: commitTextEntry의 측정 결과 -> textSize 규칙.
+pub fn text_stroke_size(measured: Size, font_size: f64) -> Size {
+    Size {
+        width: font_size.max(measured.width + 8.0),
+        height: (font_size * 1.2).max(measured.height + 6.0),
+    }
+}
+
+/// Swift: beginTextEntry의 편집 창 폭 clamp 규칙(DIP).
+pub fn text_entry_width(monitor_width: f64, origin_x: f64) -> f64 {
+    (monitor_width - origin_x - 12.0).min(320.0).max(80.0)
+}
+
+/// Swift: AnnotationTextView.keyDown(with:)의 Enter/Esc 처리 규칙.
+pub fn text_entry_action(
+    key: TextEntryKey,
+    shift_pressed: bool,
+    ime_composing: bool,
+) -> TextEntryAction {
+    match key {
+        TextEntryKey::Escape => TextEntryAction::Cancel,
+        TextEntryKey::Enter if shift_pressed => TextEntryAction::LineBreak,
+        TextEntryKey::Enter if ime_composing => TextEntryAction::Default,
+        TextEntryKey::Enter => TextEntryAction::Commit,
+        TextEntryKey::Other => TextEntryAction::Default,
+    }
+}
+
 /// Swift: CGRect
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Rect {

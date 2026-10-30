@@ -135,7 +135,15 @@ pub struct InputOutcome {
     pub recognized: Option<InkStroke>,
     pub replacement: Option<StrokeReplacement>,
     pub selected_ids: Option<BTreeSet<String>>,
+    pub text_entry: Option<TextEntrySeed>,
     pub redraw: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct TextEntrySeed {
+    pub origin: Point,
+    pub color: [f64; 4],
+    pub font_size: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -660,6 +668,33 @@ impl InkInputController {
                     self.finish_owned("POINTER_FLAG_CANCELED", true),
                 );
             }
+            return Ok(outcome);
+        }
+
+        if self.config.current_tool == InkTool::Text {
+            if !snapshot_starts_text_entry(&snapshot) {
+                self.logger.event(&format!(
+                    "무시한 텍스트 입력: monitor={} device={:?} 접촉/좌클릭 아님",
+                    self.monitor_key, snapshot.device
+                ));
+                return Ok(outcome);
+            }
+            let Some(color) = self.config.current_color else {
+                self.logger.event(&format!(
+                    "무시한 텍스트 입력: 도구 색 인덱스 범위 밖 ({:?})",
+                    self.config.current_color_index
+                ));
+                return Ok(outcome);
+            };
+            let Some(font_size) = self.config.current_width else {
+                self.logger.event("무시한 텍스트 입력: 글꼴 크기 설정 없음");
+                return Ok(outcome);
+            };
+            outcome.text_entry = Some(TextEntrySeed {
+                origin: snapshot.local_point,
+                color,
+                font_size,
+            });
             return Ok(outcome);
         }
 
@@ -1565,6 +1600,14 @@ pub(crate) fn stroke_shape_label(stroke: &InkStroke) -> &'static str {
 
 fn shift_is_pressed() -> bool {
     (unsafe { GetKeyState(VK_SHIFT.0 as i32) } as u16 & 0x8000) != 0
+}
+
+fn snapshot_starts_text_entry(snapshot: &PointerSnapshot) -> bool {
+    match snapshot.device {
+        PointerDevice::Mouse => snapshot.first_button && !snapshot.second_button,
+        PointerDevice::Pen | PointerDevice::Touch => snapshot.in_contact,
+        PointerDevice::Pointer | PointerDevice::Touchpad | PointerDevice::Unknown(_) => false,
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
