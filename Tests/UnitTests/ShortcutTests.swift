@@ -1,6 +1,7 @@
 import AppKit
 import Carbon
 import Testing
+import TestSupport
 
 @testable import EduTools
 
@@ -69,10 +70,27 @@ struct ShortcutTests {
   }
 
   @Test("카탈로그는 같은 범위에 중복 키를 갖지 않는다")
-  func catalogBindingsAreUniqueWithinScope() {
+  func catalogBindingsAreUniqueWithinScope() throws {
     let bindingKeys = ShortcutCatalog.definitions.flatMap(\.bindings).map(\.uniquenessKey)
+    let catalogFixture = Fixtures.shortcutDefaults(
+      bindings: ShortcutCatalog.definitions.flatMap { definition in
+        definition.bindings.map { binding in
+          ShortcutFixtureBinding(
+            definitionID: definition.id,
+            scope: binding.scope.rawValue,
+            portableString: binding.portableString
+          )
+        }
+      },
+      unbound: ShortcutCatalog.definitions.filter(\.bindings.isEmpty).map(\.id)
+    )
+    let fixture = try Fixtures.decode(
+      ShortcutDefaultsFixture.self,
+      from: "shortcuts-default.json"
+    )
 
     #expect(Set(bindingKeys).count == bindingKeys.count)
+    #expect(catalogFixture == fixture)
   }
 
   @Test("모든 판서 단축키 명령은 디스패처에 연결된다")

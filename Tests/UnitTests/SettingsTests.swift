@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import TestSupport
 
 @testable import EduTools
 
@@ -92,6 +93,14 @@ struct SettingsTests {
       document: document,
       selectedBundles: Set(document.includedBundles)
     )
+    let decodedFixtureDocument = try SettingsTransfer.decode(
+      Fixtures.jsonData(named: "pansetting/macos-v1.pansetting")
+    )
+    let fixtureImported = try SettingsTransfer.appliedSettings(
+      current: .default,
+      document: decodedFixtureDocument,
+      selectedBundles: Set(decodedFixtureDocument.includedBundles)
+    )
 
     #expect(!document.includesComputerSpecific)
     #expect(document.payload.general?.archiveFolderPath == nil)
@@ -100,6 +109,7 @@ struct SettingsTests {
     #expect(displayObject["autoSwitchEnabled"] == nil)
     #expect(imported.display.presets == settings.display.presets)
     #expect(!imported.display.autoSwitchEnabled)
+    #expect(fixtureImported == AppSettings.default)
   }
 
   @Test(
