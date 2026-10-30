@@ -158,6 +158,7 @@ fn one_hundred_one_strokes_permit_one_hundred_undos() {
 
     assert!((0..100).all(|_| layer.undo()));
     assert_eq!(layer.strokes().len(), 1);
+    assert!(!layer.undo());
 }
 
 #[test]
