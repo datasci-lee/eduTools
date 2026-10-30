@@ -1,6 +1,7 @@
 use crate::keymap;
 use crate::log::Logger;
 use crate::tray::Tray;
+use edutools_core::settings::AppSettings;
 use edutools_core::shortcut::{
     ShortcutCatalog, ShortcutDefinition, ShortcutModifiers, ShortcutScope,
 };
@@ -23,8 +24,8 @@ pub struct HotkeyCenter {
 }
 
 impl HotkeyCenter {
-    pub fn register_defaults(hwnd: HWND, tray: &mut Tray, logger: Logger) -> Self {
-        let definitions = ShortcutCatalog::definitions()
+    pub fn register(hwnd: HWND, tray: &mut Tray, logger: Logger, settings: &AppSettings) -> Self {
+        let definitions = ShortcutCatalog::resolved_definitions(&settings.shortcuts)
             .into_iter()
             .filter(|definition| definition.binding(ShortcutScope::Global).is_some());
         let mut registered = Vec::new();

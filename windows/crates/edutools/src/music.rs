@@ -305,31 +305,41 @@ mod platform {
             self.restore_volume();
         }
 
-        pub(crate) fn toggle_music(&mut self, settings: &mut AppSettings) {
-            let should_enable = !settings.timer.music_enabled;
-            settings.timer.set_music_enabled(should_enable);
+        pub(crate) fn settings_changed(&mut self, previous: &AppSettings, current: &AppSettings) {
             if !self.is_break_active {
                 return;
             }
-            if should_enable {
-                self.start_playback(settings, true);
-            } else {
+            if previous.timer.music_enabled != current.timer.music_enabled {
+                if current.timer.music_enabled {
+                    self.start_playback(current, true);
+                } else {
+                    self.stop_playback();
+                    self.restore_volume();
+                }
+                return;
+            }
+            let playback_source_changed = previous.timer.playlist_urls
+                != current.timer.playlist_urls
+                || previous.timer.default_playlist_index != current.timer.default_playlist_index
+                || previous.timer.music_browser != current.timer.music_browser;
+            if current.timer.music_enabled && playback_source_changed {
                 self.stop_playback();
-                self.restore_volume();
+                self.start_playback(current, self.volume_snapshot.is_none());
             }
         }
 
-        pub(crate) fn select_playlist(&mut self, settings: &mut AppSettings, index: i64) {
-            if !settings.timer.select_playlist(index) {
-                self.logger
-                    .event("경고: 잘못된 쉬는 시간 음악 재생목록 선택 무시");
-                return;
-            }
-            if !self.is_break_active || !settings.timer.music_enabled {
-                return;
-            }
-            self.stop_playback();
-            self.start_playback(settings, self.volume_snapshot.is_none());
+        /// 설정 소유자는 `App::update_settings`이므로 UI는 이 요청 값을 store closure에 넘긴다.
+        pub(crate) fn music_enabled_after_toggle(settings: &AppSettings) -> bool {
+            !settings.timer.music_enabled
+        }
+
+        /// 저장 전 검증용 요청 생성기. 실제 갱신과 런타임 통지는 App의 단일 경로가 맡는다.
+        pub(crate) fn validated_playlist_selection(
+            settings: &AppSettings,
+            index: i64,
+        ) -> Option<i64> {
+            let mut candidate = settings.timer.clone();
+            candidate.select_playlist(index).then_some(index)
         }
 
         pub(crate) fn stop_music_for_termination(&mut self) {
