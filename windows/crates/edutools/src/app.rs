@@ -3877,6 +3877,9 @@ unsafe extern "system" fn window_proc(
 
 fn run_selftest(logger: &Logger) -> bool {
     let mut failures = Vec::new();
+    if let Err(error) = crate::app_icon::run_selftest_attr_icons(logger) {
+        failures.push(format!("attr icon: D2D selftest 실패: {error}"));
+    }
     failures.extend(crate::display_apply::selftest_failures());
     failures.extend(crate::monitor::online_display_selftest_failures());
     failures.extend(crate::music::selftest_failures());
