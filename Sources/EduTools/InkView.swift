@@ -999,7 +999,6 @@ final class InkView: NSView {
                 from: original,
                 canvasSize: self.bounds.size
             )
-            self.renderActiveStroke()
         }
         recognitionWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: workItem)
@@ -1548,7 +1547,7 @@ final class InkView: NSView {
     private func renderActiveStroke() {
         activeLayer.sublayers?.forEach { $0.removeFromSuperlayer() }
         guard let activeStroke else { return }
-        let stroke = recognizedStroke ?? inkStroke(for: activeStroke)
+        let stroke = inkStroke(for: activeStroke)
         let container = makeVectorLayer(for: stroke)
         activeLayer.addSublayer(container)
     }
