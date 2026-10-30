@@ -46,6 +46,20 @@ struct DisplayPresetMenuEntry {
     let disabledReason: String?
 }
 
+protocol DisplayPresetArchiveControlling: AnyObject {
+    func archiveDisconnectedDisplaysForPreset(_ displayUUIDs: Set<String>) -> Set<String>?
+    func restoreDisplaysArchivedForFailedPreset(_ displayUUIDs: Set<String>)
+    func setDisplayPresetRestorationDeferred(_ isDeferred: Bool, resumePending: Bool)
+}
+
+extension DisplayPresetArchiveControlling {
+    func setDisplayPresetRestorationDeferred(_ isDeferred: Bool) {
+        setDisplayPresetRestorationDeferred(isDeferred, resumePending: true)
+    }
+}
+
+extension ArchiveController: DisplayPresetArchiveControlling {}
+
 final class DisplayApplier {
     enum State: Equatable {
         case idle
@@ -67,6 +81,18 @@ final class DisplayApplier {
         }
     }
 
+    private enum ApplicationSource: Equatable {
+        case manual
+        case automatic
+    }
+
+    private struct PreparedApplication {
+        let preset: DisplayPreset
+        let mainDisplayID: UInt32
+        let skippedMonitorNames: [String]
+        let archivedDisplayUUIDs: Set<String>
+    }
+
     enum ConfirmationDecision {
         case keep
         case revert
@@ -83,23 +109,31 @@ final class DisplayApplier {
     }
 
     private let settingsStore: SettingsStore
-    private let archiveController: ArchiveController
+    private let archiveController: DisplayPresetArchiveControlling
     private let displayConfigurationLayer: DisplayConfigurationApplying
+    private let onlineProvider: () throws -> [OnlineDisplay]
     private let now: () -> TimeInterval
+    private let messagePresenter: (String, String) -> Void
     private(set) var state = State.idle
     private var confirmationSession: ConfirmationSession?
     private var confirmationDeadline: TimeInterval?
 
     init(
         settingsStore: SettingsStore,
-        archiveController: ArchiveController,
+        archiveController: DisplayPresetArchiveControlling,
         displayConfigurationLayer: DisplayConfigurationApplying = SystemDisplayConfigurationLayer(),
-        now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+        onlineProvider: @escaping () throws -> [OnlineDisplay] = {
+            try OnlineDisplayProvider.current()
+        },
+        now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+        messagePresenter: ((String, String) -> Void)? = nil
     ) {
         self.settingsStore = settingsStore
         self.archiveController = archiveController
         self.displayConfigurationLayer = displayConfigurationLayer
+        self.onlineProvider = onlineProvider
         self.now = now
+        self.messagePresenter = messagePresenter ?? Self.presentSystemMessage
     }
 
     func menuEntries() -> [DisplayPresetMenuEntry] {
@@ -118,7 +152,7 @@ final class DisplayApplier {
 
         let online: [OnlineDisplay]
         do {
-            online = try OnlineDisplayProvider.current()
+            online = try onlineProvider()
         } catch {
             return disabledEntries(
                 presets: presets,
@@ -152,18 +186,105 @@ final class DisplayApplier {
 
     func applyPreset(at index: Int) {
         precondition(Thread.isMainThread, "Display presets must be applied on the main thread")
+        guard let prepared = prepareAndBeginApplying(presetAt: index, source: .manual) else {
+            return
+        }
+
+        let panelController = DisplayConfirmationPanelController(
+            deadline: confirmationDeadline ?? now(),
+            now: now,
+            skippedMonitorNames: prepared.skippedMonitorNames,
+            decisionHandler: { [weak self] decision in
+                switch decision {
+                case .keep:
+                    self?.handleConfirmationDecision(.keep)
+                case .revert:
+                    self?.handleConfirmationDecision(.revert)
+                case .cancel:
+                    self?.handleConfirmationDecision(.cancel)
+                case .expired:
+                    self?.handleConfirmationExpiration()
+                }
+            }
+        )
+        confirmationSession?.panelController = panelController
+        panelController.show(on: prepared.mainDisplayID)
+    }
+
+    func applyPresetAutomatically(at index: Int) {
+        precondition(Thread.isMainThread, "Display presets must be applied on the main thread")
+        let startedFromIdle = state == .idle
+        guard let prepared = prepareAndBeginApplying(presetAt: index, source: .automatic) else {
+            if startedFromIdle {
+                archiveController.setDisplayPresetRestorationDeferred(false, resumePending: true)
+            }
+            return
+        }
+        defer {
+            archiveController.setDisplayPresetRestorationDeferred(false, resumePending: true)
+        }
+
+        let verificationFailure: String?
+        do {
+            let online = try onlineProvider()
+            verificationFailure = !online.isEmpty
+                && DisplayPlanner.matchesCurrent(preset: prepared.preset, online: online)
+                ? nil
+                : "적용 후 실제 화면 구성이 계획과 일치하지 않습니다."
+        } catch {
+            verificationFailure = "적용 후 화면 구성을 다시 읽지 못했습니다.\n\n\(error.localizedDescription)"
+        }
+
+        if verificationFailure == nil {
+            guard let outcome = resolveConfirmation(.keep) else { return }
+            if case .success = outcome {
+                // The archived ink stays archived while the display remains mirrored.
+            } else {
+                archiveController.restoreDisplaysArchivedForFailedPreset(
+                    prepared.archivedDisplayUUIDs
+                )
+            }
+            presentFailureIfNeeded(outcome)
+            return
+        }
+
+        archiveController.restoreDisplaysArchivedForFailedPreset(prepared.archivedDisplayUUIDs)
+        let outcome = resolveConfirmation(.revert)
+        let recoveryMessage: String
+        if case .success? = outcome {
+            recoveryMessage = "이전 구성으로 되돌렸습니다."
+        } else {
+            recoveryMessage = "이전 구성으로 되돌리는 작업도 완료하지 못했습니다."
+        }
+        presentMessage(
+            title: "\(prepared.preset.name) 자동 화면 구성을 적용하지 못했습니다",
+            message: "\(verificationFailure ?? "자동 검증에 실패했습니다.")\n\n\(recoveryMessage)"
+        )
+        if let outcome {
+            presentFailureIfNeeded(outcome)
+        }
+    }
+
+    private func prepareAndBeginApplying(
+        presetAt index: Int,
+        source: ApplicationSource
+    ) -> PreparedApplication? {
         switch state {
         case .idle:
             break
         case .applying:
-            NSSound.beep()
-            return
+            if source == .manual {
+                NSSound.beep()
+            }
+            return nil
         case .awaitingConfirmation:
-            confirmationSession?.panelController?.appendStatus(
-                "다른 프리셋을 적용하려면 먼저 유지하거나 되돌리세요."
-            )
-            NSSound.beep()
-            return
+            if source == .manual {
+                confirmationSession?.panelController?.appendStatus(
+                    "다른 프리셋을 적용하려면 먼저 유지하거나 되돌리세요."
+                )
+                NSSound.beep()
+            }
+            return nil
         }
 
         let presets = settingsStore.settings.display.presets
@@ -172,20 +293,20 @@ final class DisplayApplier {
                 title: "화면 구성을 적용할 수 없습니다",
                 message: "프리셋 \(index + 1) 이 없습니다."
             )
-            return
+            return nil
         }
 
         state = .applying
         let online: [OnlineDisplay]
         do {
-            online = try OnlineDisplayProvider.current()
+            online = try onlineProvider()
         } catch {
             state = .idle
             presentMessage(
                 title: "화면 구성을 읽지 못했습니다",
                 message: error.localizedDescription
             )
-            return
+            return nil
         }
         guard !online.isEmpty else {
             state = .idle
@@ -193,7 +314,7 @@ final class DisplayApplier {
                 title: "화면 구성을 적용할 수 없습니다",
                 message: "연결된 모니터가 없습니다."
             )
-            return
+            return nil
         }
 
         let preset = presets[index]
@@ -204,7 +325,7 @@ final class DisplayApplier {
                 ? "주 디스플레이를 정할 수 없습니다."
                 : plan.layoutIssues.joined(separator: "\n")
             presentMessage(title: "\(preset.name)을 적용할 수 없습니다", message: reason)
-            return
+            return nil
         }
 
         let snapshot: DisplayPlan
@@ -216,7 +337,7 @@ final class DisplayApplier {
                 title: "직전 화면 구성을 보관하지 못했습니다",
                 message: error.localizedDescription
             )
-            return
+            return nil
         }
 
         let desiredMirrorDisplayIDs = Set(plan.mirrors.map(\.slaveID))
@@ -229,7 +350,7 @@ final class DisplayApplier {
             disappearingDisplayUUIDs
         ) else {
             state = .idle
-            return
+            return nil
         }
 
         let desiredOperations = DisplayConfigurationOperations.build(from: plan)
@@ -248,29 +369,15 @@ final class DisplayApplier {
                 title: "화면 구성을 적용하지 못했습니다",
                 message: error.localizedDescription
             )
-            return
+            return nil
         }
 
-        let skippedMonitorNames = plan.missingPresetMonitors.map(\.name)
-        let panelController = DisplayConfirmationPanelController(
-            deadline: confirmationDeadline ?? now(),
-            now: now,
-            skippedMonitorNames: skippedMonitorNames,
-            decisionHandler: { [weak self] decision in
-                switch decision {
-                case .keep:
-                    self?.handleConfirmationDecision(.keep)
-                case .revert:
-                    self?.handleConfirmationDecision(.revert)
-                case .cancel:
-                    self?.handleConfirmationDecision(.cancel)
-                case .expired:
-                    self?.handleConfirmationExpiration()
-                }
-            }
+        return PreparedApplication(
+            preset: preset,
+            mainDisplayID: mainDisplayID,
+            skippedMonitorNames: plan.missingPresetMonitors.map(\.name),
+            archivedDisplayUUIDs: archivedDisplayUUIDs
         )
-        confirmationSession?.panelController = panelController
-        panelController.show(on: mainDisplayID)
     }
 
     func applicationWillTerminate() {
@@ -452,6 +559,10 @@ final class DisplayApplier {
     }
 
     private func presentMessage(title: String, message: String) {
+        messagePresenter(title, message)
+    }
+
+    private static func presentSystemMessage(title: String, message: String) {
         NSLog("EduTools: %@: %@", title, message)
         let alert = NSAlert()
         alert.alertStyle = .warning
