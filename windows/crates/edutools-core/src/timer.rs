@@ -451,6 +451,18 @@ impl TimerCoordinator {
         }
     }
 
+    /// 118d가 소비할 앱 내 pending 요청을 만드는 순수 규칙.
+    pub const fn pending_auto_break_request(
+        auto_start_break: bool,
+        break_default_minutes: i64,
+    ) -> Option<i64> {
+        if auto_start_break {
+            Some(break_default_minutes)
+        } else {
+            None
+        }
+    }
+
     // Swift: TimerCoordinator wiring of LessonTimerController.onAutoBreakRequested
     pub fn synchronize(&mut self, now: Timestamp) -> Result<bool, BreakTimerStartError> {
         if !self.lesson.synchronize(now) {
@@ -461,5 +473,49 @@ impl TimerCoordinator {
             self.break_timer.start(end_date, now)?;
         }
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod lesson_badge_tests {
+    use super::{Point, Rect, Size, TimerGeometry};
+
+    #[test]
+    fn badge_snap_and_alt_decision_table_uses_physical_pixels() {
+        let visible = Rect::new(100.0, 200.0, 1_000.0, 700.0);
+        let size = Size::new(180.0, 80.0);
+        let cases = [
+            (
+                "within 16 physical pixels snaps",
+                Point::new(115.0, 805.0),
+                false,
+                Point::new(100.0, 820.0),
+            ),
+            (
+                "outside 16 physical pixels does not snap",
+                Point::new(117.0, 802.0),
+                false,
+                Point::new(117.0, 802.0),
+            ),
+            (
+                "Alt disables snap but keeps work-area clamp",
+                Point::new(115.0, 805.0),
+                true,
+                Point::new(115.0, 805.0),
+            ),
+            (
+                "Alt still clamps outside work area",
+                Point::new(50.0, 900.0),
+                true,
+                Point::new(100.0, 820.0),
+            ),
+        ];
+        for (name, proposed, alt_pressed, expected) in cases {
+            assert_eq!(
+                TimerGeometry::snapped_origin(proposed, size, visible, alt_pressed),
+                expected,
+                "{name}"
+            );
+        }
     }
 }
