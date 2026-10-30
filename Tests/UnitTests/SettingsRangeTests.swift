@@ -142,6 +142,35 @@ private let settingsRangeCases: [SettingsRangeCase] = [
 
 @Suite("설정 값 범위")
 struct SettingsRangeTests {
+  @Test("렌더 하한은 0.70으로 올리되 옛 저장값은 계속 허용한다")
+  func raisesEffectiveOpacityWithoutRejectingStoredLegacyValues() throws {
+    let effectiveCases: [(stored: Double, expected: Double)] = [
+      (0.55, 0.70),
+      (0.62, 0.70),
+      (0.70, 0.70),
+      (0.86, 0.86),
+      (0.90, 0.90),
+    ]
+    for opacityCase in effectiveCases {
+      #expect(
+        RadialPaletteGlassStyle.effectiveOpacity(stored: opacityCase.stored)
+          == opacityCase.expected
+      )
+    }
+
+    var settings = AppSettings.default
+    for storedOpacity in [0.55, 0.62] {
+      settings.tools.paletteGlassOpacity = storedOpacity
+      try SettingsValidator.validate(settings)
+    }
+    for invalidOpacity in [0.54, 0.91] {
+      settings.tools.paletteGlassOpacity = invalidOpacity
+      #expect(throws: SettingsValidationError.self) {
+        try SettingsValidator.validate(settings)
+      }
+    }
+  }
+
   @Test(
     "경계값은 허용하고 바로 바깥 값은 거부한다",
     arguments: settingsRangeCases
