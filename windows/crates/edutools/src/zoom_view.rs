@@ -46,8 +46,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowLongPtrW, KillTimer, LoadCursorW, PostMessageW, RegisterClassW, SendMessageW,
     SetCursor, SetForegroundWindow, SetTimer, SetWindowDisplayAffinity, SetWindowLongPtrW,
     SetWindowPos, ShowWindow, CREATESTRUCTW, CURSORINFO, CURSOR_SHOWING, DI_NORMAL, GWLP_USERDATA,
-    HCURSOR, HICON, ICONINFO, IDC_IBEAM, SM_CXCURSOR, SM_CYCURSOR, SWP_SHOWWINDOW, SW_SHOW,
-    WDA_EXCLUDEFROMCAPTURE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY,
+    HCURSOR, HICON, ICONINFO, IDC_ARROW, IDC_IBEAM, SM_CXCURSOR, SM_CYCURSOR, SWP_SHOWWINDOW,
+    SW_SHOW, WDA_EXCLUDEFROMCAPTURE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY,
     WM_POINTERCAPTURECHANGED, WM_POINTERDOWN, WM_POINTERLEAVE, WM_POINTERUP, WM_POINTERUPDATE,
     WM_SETCURSOR, WM_TIMER, WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
     WS_POPUP,
@@ -774,32 +774,33 @@ impl ZoomRenderer {
             }
         }
 
-        let ibeam = unsafe { LoadCursorW(None, IDC_IBEAM) }?;
-        let cursor = acquire_cursor_bitmap(&self.context, ibeam, self.dpi)?;
-        if cursor.hotspot.x < 0.0
-            || cursor.hotspot.y < 0.0
-            || cursor.hotspot.x >= f64::from(cursor.width)
-            || cursor.hotspot.y >= f64::from(cursor.height)
-        {
-            failures.push(format!(
-                "zoom cursor: I-beam hotspot outside bitmap ({:.1},{:.1}) {}x{}",
-                cursor.hotspot.x, cursor.hotspot.y, cursor.width, cursor.height
-            ));
-        }
-        unsafe {
-            self.context.BeginDraw();
-            self.context.Clear(None);
-        }
-        self.draw_cursor_bitmap(&cursor, Point::new(160.0, 100.0), 1.0);
-        unsafe { self.context.EndDraw(None, None)? };
-        let (pointer_pixels, pointer_pitch) = read_bitmap_bgra(&self.context, &target)?;
-        let pointer_alpha = pointer_pixels
-            .chunks(pointer_pitch as usize)
-            .flat_map(|row| row[..width as usize * 4].chunks_exact(4))
-            .filter(|pixel| pixel[3] != 0)
-            .count();
-        if pointer_alpha == 0 {
-            failures.push("zoom cursor: I-beam bitmap alpha가 모두 0".to_owned());
+        for (name, resource) in [("arrow", IDC_ARROW), ("I-beam", IDC_IBEAM)] {
+            let handle = unsafe { LoadCursorW(None, resource) }?;
+            let cursor = acquire_cursor_bitmap(&self.context, handle, self.dpi)?;
+            if cursor.hotspot.x < 0.0
+                || cursor.hotspot.y < 0.0
+                || cursor.hotspot.x >= f64::from(cursor.width)
+                || cursor.hotspot.y >= f64::from(cursor.height)
+            {
+                failures.push(format!(
+                    "zoom cursor: {name} hotspot outside bitmap ({:.1},{:.1}) {}x{}",
+                    cursor.hotspot.x, cursor.hotspot.y, cursor.width, cursor.height
+                ));
+            }
+            unsafe {
+                self.context.BeginDraw();
+                self.context.Clear(None);
+            }
+            self.draw_cursor_bitmap(&cursor, Point::new(160.0, 100.0), 1.0);
+            unsafe { self.context.EndDraw(None, None)? };
+            let (pointer_pixels, pointer_pitch) = read_bitmap_bgra(&self.context, &target)?;
+            let has_alpha = pointer_pixels
+                .chunks(pointer_pitch as usize)
+                .flat_map(|row| row[..width as usize * 4].chunks_exact(4))
+                .any(|pixel| pixel[3] != 0);
+            if !has_alpha {
+                failures.push(format!("zoom cursor: {name} bitmap alpha가 모두 0"));
+            }
         }
 
         session.is_frozen = false;
@@ -941,27 +942,40 @@ fn acquire_cursor_bitmap(
             .filter(|value| *value > 0)
             .unwrap_or(native_height);
         let black = draw_icon_surface(copied, width, height, 0)?;
-        let white = draw_icon_surface(copied, width, height, 255)?;
-        let mut pixels = vec![0_u8; black.len()];
-        for ((output, black), white) in pixels
-            .chunks_exact_mut(4)
-            .zip(black.chunks_exact(4))
-            .zip(white.chunks_exact(4))
-        {
-            let background = (0..3)
-                .map(|channel| white[channel].saturating_sub(black[channel]))
-                .max()
-                .unwrap_or(255);
-            let alpha = if black[3] != 0 {
-                black[3]
-            } else {
-                255_u8.saturating_sub(background)
-            };
-            output[0] = black[0].min(alpha);
-            output[1] = black[1].min(alpha);
-            output[2] = black[2].min(alpha);
-            output[3] = alpha;
-        }
+        let pixels = if black.chunks_exact(4).any(|pixel| pixel[3] != 0) {
+            black
+        } else {
+            let white = draw_icon_surface(copied, width, height, 255)?;
+            let mut recovered = vec![0_u8; black.len()];
+            for ((output, black), white) in recovered
+                .chunks_exact_mut(4)
+                .zip(black.chunks_exact(4))
+                .zip(white.chunks_exact(4))
+            {
+                if (0..3).any(|channel| white[channel] < black[channel]) {
+                    // XOR 반전 픽셀은 배경 색을 알 수 없으므로 불투명 흰색 윤곽으로 근사한다.
+                    output.copy_from_slice(&[255, 255, 255, 255]);
+                    continue;
+                }
+                let background = (0..3)
+                    .map(|channel| white[channel] - black[channel])
+                    .max()
+                    .unwrap_or(255);
+                let alpha = 255_u8.saturating_sub(background);
+                for channel in 0..3 {
+                    let straight = if alpha == 0 {
+                        0
+                    } else {
+                        ((u16::from(black[channel]) * 255 + u16::from(alpha) / 2)
+                            / u16::from(alpha))
+                        .min(255)
+                    };
+                    output[channel] = ((straight * u16::from(alpha) + 127) / 255).min(255) as u8;
+                }
+                output[3] = alpha;
+            }
+            recovered
+        };
         if pixels.chunks_exact(4).all(|pixel| pixel[3] == 0) {
             return Err(Error::new(E_FAIL, "cursor bitmap alpha is empty"));
         }
