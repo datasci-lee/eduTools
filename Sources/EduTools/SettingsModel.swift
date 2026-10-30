@@ -91,7 +91,7 @@ enum RadialPaletteFaceTone: Equatable, Sendable {
 }
 
 enum RadialPaletteGlassStyle {
-    static let defaultOpacity = 0.62
+    static let defaultOpacity = 0.86
     static let minimumOpacity = 0.55
     static let maximumOpacity = 0.90
 
@@ -162,12 +162,7 @@ enum RadialPaletteGlassStyle {
             )
     }
 
-    // The white face is alpha-composited above the glass, so even if the material
-    // renders black its encoded sRGB value is at least a: a * 1 + (1 - a) * glass >= a.
-    // On black, L = ((a + 0.055) / 1.055)^2.4; near-black 0.10 content therefore has
-    // 5.22:1 contrast at a = 0.55 and 6.54:1 at the default a = 0.62.
-    // A black face over white is at most 1 - a in encoded sRGB; white content therefore
-    // has at least 4.8:1 contrast at a = 0.55.
+    // Legacy face-tone surface helper retained for the 088 cleanup.
     static func surfaceFaceColor(
         opacity: Double,
         tone: RadialPaletteFaceTone
@@ -176,6 +171,54 @@ enum RadialPaletteGlassStyle {
             calibratedWhite: tone == .light ? 1 : 0,
             alpha: CGFloat(opacity)
         )
+    }
+}
+
+enum RadialPaletteArcStyle {
+    static let surfaceRed: CGFloat = 20.0 / 255.0
+    static let surfaceGreen: CGFloat = 23.0 / 255.0
+    static let surfaceBlue: CGFloat = 31.0 / 255.0
+
+    static let outerBorderColor = NSColor(calibratedWhite: 1, alpha: 0.08)
+    static let hoverFillColor = NSColor(calibratedWhite: 1, alpha: 0.07)
+    static let inactiveArcColor = NSColor(calibratedWhite: 1, alpha: 0.18)
+    static let activeColor = NSColor(
+        deviceRed: 56.0 / 255.0,
+        green: 189.0 / 255.0,
+        blue: 248.0 / 255.0,
+        alpha: 1
+    )
+    static let activeGlowColor = activeColor.withAlphaComponent(0.5)
+    static let inactiveIconColor = NSColor(
+        deviceRed: 156.0 / 255.0,
+        green: 163.0 / 255.0,
+        blue: 175.0 / 255.0,
+        alpha: 1
+    )
+    static let activeIconColor = NSColor(calibratedWhite: 1, alpha: 1)
+
+    static let arcWidth: CGFloat = 3.5
+    static let activeGlowRadius: CGFloat = 6
+    static let edgeArcInset: CGFloat = 2
+    static let nodeArcPadding: CGFloat = 3
+    static let entryNodeMaximumDiameter: CGFloat = 26
+    static let optionNodeMaximumDiameter: CGFloat = 30
+
+    static func surfaceColor(opacity: Double) -> NSColor {
+        NSColor(
+            deviceRed: surfaceRed,
+            green: surfaceGreen,
+            blue: surfaceBlue,
+            alpha: CGFloat(opacity)
+        )
+    }
+
+    static func iconColor(isActive: Bool, isEnabled: Bool) -> NSColor {
+        let color = isActive ? activeIconColor : inactiveIconColor
+        guard isEnabled else {
+            return color.withAlphaComponent(CGFloat(RadialPaletteGlassStyle.disabledContentOpacity))
+        }
+        return color
     }
 }
 

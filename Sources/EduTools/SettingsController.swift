@@ -561,7 +561,7 @@ private struct SettingsRootView: View {
                     range: RadialPaletteGlassStyle.minimumOpacity...RadialPaletteGlassStyle.maximumOpacity,
                     step: 0.01
                 )
-                Text("낮을수록 투명, 어두운 화면에서는 읽기 어려울 수 있음")
+                Text("낮을수록 투명")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
