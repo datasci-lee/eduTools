@@ -6,7 +6,8 @@ use crate::overlay::{OverlayManager, SYNC_MESSAGE};
 use crate::tray::{self, Tray, CALLBACK_MESSAGE, MENU_EXIT, MENU_TOGGLE_ANNOTATION};
 use edutools_core::dispatch::{dispatch, DispatchContext, Effect, PressedShortcuts};
 use edutools_core::ink::{
-    InkGeometry, InkPoint, InkStroke, InkStrokeContent, InkStrokeTool, PathCommand, Point, Size,
+    InkGeometry, InkPoint, InkStroke, InkStrokeContent, InkStrokeTool, InkTool, PathCommand, Point,
+    Size,
 };
 use edutools_core::settings::AppSettings;
 use edutools_core::shortcut::{
@@ -354,11 +355,24 @@ impl App {
                 Effect::ToolChanged(tool) => {
                     self.logger
                         .event(&format!("효과 ({source}): 도구 선택 {tool:?}"));
+                    if tool == InkTool::Eraser {
+                        // 지우개 모드 HUD는 후속 팔레트 라운드 전까지 로그로 대체한다.
+                        self.logger.event(&format!(
+                            "지우개 모드 HUD 대체 로그: {}",
+                            self.settings.eraser.mode
+                        ));
+                    }
                 }
                 Effect::SettingsMutation(mutation) => {
                     mutation.apply(&mut self.settings);
                     self.logger
                         .event(&format!("효과 ({source}): 설정 변경 {mutation:?}"));
+                    if self.state.current_tool() == InkTool::Eraser {
+                        self.logger.event(&format!(
+                            "지우개 모드 HUD 대체 로그: {}",
+                            self.settings.eraser.mode
+                        ));
+                    }
                 }
                 Effect::Undo(display_id) => {
                     let result = self
@@ -406,7 +420,10 @@ impl App {
         }
         let input_config = InkInputConfig::from_core(&self.state, &self.settings);
         if let Some(overlays) = self.overlays.as_mut() {
-            overlays.update_input_context(input_config);
+            if let Err(error) = overlays.update_input_context(input_config) {
+                self.logger
+                    .event(&format!("오버레이 입력 설정 반영 실패: {error}"));
+            }
         }
     }
 

@@ -13,22 +13,24 @@ use std::ffi::{c_void, OsString};
 use std::rc::Rc;
 use windows::core::{w, Error, Result};
 use windows::Win32::Foundation::{
-    COLORREF, ERROR_CLASS_ALREADY_EXISTS, ERROR_SUCCESS, HINSTANCE, HWND, LPARAM, LRESULT, RECT,
-    WIN32_ERROR, WPARAM,
+    COLORREF, ERROR_CLASS_ALREADY_EXISTS, ERROR_SUCCESS, E_FAIL, HINSTANCE, HWND, LPARAM, LRESULT,
+    RECT, WIN32_ERROR, WPARAM,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos, GetWindowLongPtrW, GetWindowRect,
-    RegisterClassW, SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-    CREATESTRUCTW, GWLP_USERDATA, GWL_EXSTYLE, HWND_TOPMOST, LWA_ALPHA, MA_NOACTIVATE,
-    PA_NOACTIVATE, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE,
+    KillTimer, RegisterClassW, SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW,
+    SetWindowPos, ShowWindow, CREATESTRUCTW, GWLP_USERDATA, GWL_EXSTYLE, HWND_TOPMOST, LWA_ALPHA,
+    MA_NOACTIVATE, PA_NOACTIVATE, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE,
     WM_DISPLAYCHANGE, WM_DPICHANGED, WM_MOUSEACTIVATE, WM_NCCREATE, WM_NCDESTROY,
     WM_POINTERACTIVATE, WM_POINTERCAPTURECHANGED, WM_POINTERDOWN, WM_POINTERLEAVE, WM_POINTERUP,
-    WM_POINTERUPDATE, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    WM_POINTERUPDATE, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 pub const SYNC_MESSAGE: u32 = 0x8000 + 2;
 const OVERLAY_CLASS: windows::core::PCWSTR = w!("EduToolsOverlay");
+const LASER_TIMER_ID: usize = 0xED11;
+const LASER_TIMER_INTERVAL_MS: u32 = 16;
 
 type LayerStore = Rc<RefCell<HashMap<String, InkLayerState>>>;
 
@@ -141,7 +143,7 @@ impl OverlayManager {
         self.annotation_enabled = enabled;
         self.input_config = input_config.clone();
         for overlay in self.overlays.values_mut() {
-            overlay.update_input_context(enabled, input_config.clone());
+            overlay.update_input_context(enabled, input_config.clone())?;
             overlay.set_click_through(!enabled)?;
             overlay.draw(enabled && self.debug_overlay)?;
             let _ = unsafe { ShowWindow(overlay.hwnd(), SW_SHOWNOACTIVATE) };
@@ -149,11 +151,12 @@ impl OverlayManager {
         Ok(())
     }
 
-    pub fn update_input_context(&mut self, input_config: InkInputConfig) {
+    pub fn update_input_context(&mut self, input_config: InkInputConfig) -> Result<()> {
         self.input_config = input_config.clone();
         for overlay in self.overlays.values_mut() {
-            overlay.update_input_context(self.annotation_enabled, input_config.clone());
+            overlay.update_input_context(self.annotation_enabled, input_config.clone())?;
         }
+        Ok(())
     }
 
     pub fn monitor_key_at_cursor(&self) -> Result<Option<String>> {
@@ -349,6 +352,7 @@ struct OverlayWindowState {
     input: InkInputController,
     renderer: Option<OverlayRenderer>,
     debug_visible: bool,
+    laser_timer_running: bool,
 }
 
 impl OverlayWindowState {
@@ -366,6 +370,25 @@ impl OverlayWindowState {
                 .expect("renderer initialized after window creation")
                 .append_completed(&stroke, minimum_ratio, highlighter_opacity)?;
         }
+        if let Some(replacement) = outcome.replacement {
+            self.logger.event(&format!(
+                "지우개 replaceStrokes 적용: monitor={} erased={} Undo=1",
+                self.monitor.session_key, replacement.erased_strokes
+            ));
+            self.layers
+                .borrow_mut()
+                .entry(self.monitor.session_key.clone())
+                .or_default()
+                .execute(InkCommand::ReplaceStrokes {
+                    before: replacement.before,
+                    after: replacement.after,
+                });
+            let strokes = self.current_strokes();
+            self.renderer
+                .as_ref()
+                .expect("renderer initialized after window creation")
+                .rebuild_completed(&strokes, minimum_ratio, highlighter_opacity)?;
+        }
         if outcome.redraw {
             self.draw()?;
         }
@@ -373,11 +396,15 @@ impl OverlayWindowState {
     }
 
     fn draw(&self) -> Result<()> {
+        let eraser = self.input.eraser_render_state();
+        let laser = self.input.laser_render_state();
         self.renderer
             .as_ref()
             .expect("renderer initialized after window creation")
             .draw_frame(
                 self.input.active_stroke(),
+                eraser.as_ref(),
+                laser.as_ref(),
                 self.input.pressure_minimum_width_ratio(),
                 self.input.highlighter_opacity(),
                 self.debug_visible,
@@ -387,6 +414,34 @@ impl OverlayWindowState {
     fn finish_active(&mut self, reason: &str) -> Result<()> {
         let outcome = self.input.finish_active(reason);
         self.apply_input_outcome(outcome)
+    }
+
+    fn current_strokes(&self) -> Vec<InkStroke> {
+        self.layers
+            .borrow()
+            .get(&self.monitor.session_key)
+            .map(|layer| layer.strokes().to_vec())
+            .unwrap_or_default()
+    }
+
+    fn sync_laser_timer(&mut self, hwnd: HWND) -> Result<()> {
+        let needed = self.input.laser_timer_needed();
+        match (self.laser_timer_running, needed) {
+            (false, true) => {
+                let timer =
+                    unsafe { SetTimer(Some(hwnd), LASER_TIMER_ID, LASER_TIMER_INTERVAL_MS, None) };
+                if timer == 0 {
+                    return Err(Error::new(E_FAIL, "레이저 줄이기 타이머 시작 실패"));
+                }
+                self.laser_timer_running = true;
+            }
+            (true, false) => {
+                unsafe { KillTimer(Some(hwnd), LASER_TIMER_ID) }?;
+                self.laser_timer_running = false;
+            }
+            _ => {}
+        }
+        Ok(())
     }
 }
 
@@ -422,6 +477,7 @@ impl OverlayWindow {
             layers,
             renderer: None,
             debug_visible: annotation_enabled && debug_overlay,
+            laser_timer_running: false,
         });
         let state_ptr = state.as_mut() as *mut OverlayWindowState;
         let ex_style =
@@ -531,14 +587,21 @@ impl OverlayWindow {
         self.state.draw()
     }
 
-    fn update_input_context(&mut self, annotation_enabled: bool, input_config: InkInputConfig) {
+    fn update_input_context(
+        &mut self,
+        annotation_enabled: bool,
+        input_config: InkInputConfig,
+    ) -> Result<()> {
         self.state
             .input
             .update_context(annotation_enabled, input_config);
+        self.state.draw()?;
+        self.state.sync_laser_timer(self.hwnd)
     }
 
     fn finish_active(&mut self, reason: &str) -> Result<()> {
-        self.state.finish_active(reason)
+        self.state.finish_active(reason)?;
+        self.state.sync_laser_timer(self.hwnd)
     }
 
     fn set_click_through(&mut self, enabled: bool) -> Result<()> {
@@ -630,7 +693,7 @@ impl OverlayWindow {
         renderer.selftest_icons()?;
         let pixel_failures = renderer.selftest_pixel_failures(ratio, highlighter_opacity)?;
         renderer.rebuild_completed(fake_layer.strokes(), ratio, highlighter_opacity)?;
-        renderer.draw_frame(None, ratio, highlighter_opacity, false)?;
+        renderer.draw_frame(None, None, None, ratio, highlighter_opacity, false)?;
         renderer.rebuild_completed(&self.strokes(), ratio, highlighter_opacity)?;
         self.state.draw()?;
         Ok(pixel_failures)
@@ -639,6 +702,14 @@ impl OverlayWindow {
 
 impl Drop for OverlayWindow {
     fn drop(&mut self) {
+        if self.state.laser_timer_running {
+            if let Err(error) = unsafe { KillTimer(Some(self.hwnd), LASER_TIMER_ID) } {
+                self.state
+                    .logger
+                    .event(&format!("레이저 타이머 해제 실패: {error}"));
+            }
+            self.state.laser_timer_running = false;
+        }
         self.state.renderer.take();
         if let Err(error) = unsafe { DestroyWindow(self.hwnd) } {
             self.state
@@ -699,16 +770,32 @@ unsafe extern "system" fn overlay_window_proc(
             | WM_POINTERCAPTURECHANGED
             | WM_POINTERLEAVE => {
                 let pointer_id = pointer_id_from_wparam(wparam.0);
-                match state
+                let strokes = state.current_strokes();
+                let result = state
                     .input
-                    .handle_message(message, pointer_id, &state.monitor)
+                    .handle_message(message, pointer_id, &state.monitor, &strokes)
                     .and_then(|outcome| state.apply_input_outcome(outcome))
-                {
+                    .and_then(|()| state.sync_laser_timer(hwnd));
+                match result {
                     Ok(()) => {}
                     Err(error) => state.logger.event(&format!(
                         "포인터 입력/렌더 실패: monitor={} pointerId={pointer_id} message={message:#x}: {error}",
                         state.monitor.session_key
                     )),
+                }
+                return LRESULT(0);
+            }
+            WM_TIMER if wparam.0 == LASER_TIMER_ID => {
+                let result = state
+                    .input
+                    .retract_laser()
+                    .and_then(|outcome| state.apply_input_outcome(outcome))
+                    .and_then(|()| state.sync_laser_timer(hwnd));
+                if let Err(error) = result {
+                    state.logger.event(&format!(
+                        "레이저 줄이기 타이머 실패: monitor={}: {error}",
+                        state.monitor.session_key
+                    ));
                 }
                 return LRESULT(0);
             }

@@ -1,24 +1,38 @@
 use crate::log::Logger;
 use crate::monitor::{Monitor, MonitorRect};
-use edutools_core::ink::{
-    InkGeometry, InkPoint, InkStroke, InkStrokeContent, InkStrokeTool, InkTool, Point, Size,
+use crate::render::px_per_dip;
+use edutools_core::eraser::{
+    EraserAreaShape, EraserEngine, EraserGesture, EraserHitRule, EraserMode, EraserSettings,
+    EraserTargetFilter,
 };
+use edutools_core::ink::{
+    InkGeometry, InkPoint, InkStroke, InkStrokeContent, InkStrokeTool, InkTool, Point, Rect, Size,
+};
+use edutools_core::laser::{LaserPoint, LaserTrail};
 use edutools_core::settings::AppSettings;
 use edutools_core::state::AppState;
 use std::cmp::Ordering;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::sync::OnceLock;
 use windows::core::Result;
 use windows::Win32::Foundation::POINT;
+use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON};
 use windows::Win32::UI::Input::Pointer::{
-    GetPointerInfoHistory, GetPointerPenInfoHistory, GetPointerType, POINTER_FLAG_CANCELED,
-    POINTER_INFO, POINTER_PEN_INFO,
+    GetPointerInfo, GetPointerInfoHistory, GetPointerPenInfo, GetPointerPenInfoHistory,
+    POINTER_CHANGE_FIRSTBUTTON_DOWN, POINTER_CHANGE_FIRSTBUTTON_UP,
+    POINTER_CHANGE_SECONDBUTTON_DOWN, POINTER_CHANGE_SECONDBUTTON_UP, POINTER_FLAG_CANCELED,
+    POINTER_FLAG_FIRSTBUTTON, POINTER_FLAG_INCONTACT, POINTER_FLAG_INRANGE,
+    POINTER_FLAG_SECONDBUTTON, POINTER_INFO, POINTER_PEN_INFO,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    PEN_MASK_PRESSURE, POINTER_INPUT_TYPE, PT_MOUSE, PT_PEN, PT_POINTER, PT_TOUCH, PT_TOUCHPAD,
-    WM_POINTERCAPTURECHANGED, WM_POINTERDOWN, WM_POINTERLEAVE, WM_POINTERUP, WM_POINTERUPDATE,
+    PEN_FLAG_BARREL, PEN_FLAG_ERASER, PEN_FLAG_INVERTED, PEN_MASK_PRESSURE, POINTER_INPUT_TYPE,
+    PT_MOUSE, PT_PEN, PT_POINTER, PT_TOUCH, PT_TOUCHPAD, WM_POINTERCAPTURECHANGED, WM_POINTERDOWN,
+    WM_POINTERLEAVE, WM_POINTERUP, WM_POINTERUPDATE,
 };
 
 static STROKE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+static QPC_FREQUENCY: OnceLock<i64> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PointerDevice {
@@ -51,6 +65,10 @@ pub struct InkInputConfig {
     pub current_width: Option<f64>,
     pub highlighter_opacity: f64,
     pub pressure_minimum_width_ratio: f64,
+    pub eraser_settings: Option<EraserSettings>,
+    pub laser_color: [f64; 4],
+    pub laser_size: f64,
+    pub laser_trail_duration: f64,
 }
 
 impl InkInputConfig {
@@ -71,27 +89,173 @@ impl InkInputConfig {
             current_width: memory.map(|memory| memory.size),
             highlighter_opacity: settings.tools.highlighter_opacity,
             pressure_minimum_width_ratio: settings.tools.pressure_minimum_width_ratio,
+            eraser_settings: eraser_settings_from_core(settings),
+            laser_color: [
+                settings.tools.laser_color.red,
+                settings.tools.laser_color.green,
+                settings.tools.laser_color.blue,
+                1.0,
+            ],
+            laser_size: settings.tools.laser_size,
+            laser_trail_duration: settings.tools.laser_trail_duration,
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct StrokeReplacement {
+    pub before: Vec<InkStroke>,
+    pub after: Vec<InkStroke>,
+    pub erased_strokes: usize,
 }
 
 #[derive(Default)]
 pub struct InputOutcome {
     pub finished: Vec<InkStroke>,
+    pub replacement: Option<StrokeReplacement>,
     pub redraw: bool,
 }
 
+#[derive(Clone, Debug)]
+pub struct EraserRenderState {
+    pub settings: EraserSettings,
+    pub points: Vec<Point>,
+    pub cursor: Option<Point>,
+    pub preview_strokes: Option<Vec<InkStroke>>,
+    pub highlighted_strokes: Vec<InkStroke>,
+}
+
+#[derive(Clone, Debug)]
+pub struct LaserRenderState {
+    pub point: Option<Point>,
+    pub trails: Vec<Vec<Point>>,
+    pub color: [f64; 4],
+    pub size_dip: f64,
+}
+
 struct ActiveStroke {
+    stroke: InkStroke,
+}
+
+struct ActiveEraser {
+    settings: EraserSettings,
+    points: Vec<Point>,
+    before: Vec<InkStroke>,
+    canvas_size: Size,
+    preview_strokes: Option<Vec<InkStroke>>,
+    highlighted_strokes: Vec<InkStroke>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OwnerButton {
+    MousePrimary,
+    MouseSecondary,
+    PointerContact,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct InputOwner {
     pointer_id: u32,
     device: PointerDevice,
-    stroke: InkStroke,
+    button: OwnerButton,
+}
+
+impl InputOwner {
+    fn label(self) -> &'static str {
+        match self.button {
+            OwnerButton::MousePrimary => "mouse-primary",
+            OwnerButton::MouseSecondary => "mouse-secondary",
+            OwnerButton::PointerContact if self.device == PointerDevice::Pen => "pen",
+            OwnerButton::PointerContact if self.device == PointerDevice::Touch => "touch",
+            OwnerButton::PointerContact => "pointer",
+        }
+    }
+}
+
+#[derive(Default)]
+struct LaserInputState {
+    point: Option<Point>,
+    trails: Vec<LaserTrail>,
+    trailing: bool,
+    active_pointer_id: Option<u32>,
+    last_pointer_id: Option<u32>,
+}
+
+impl LaserInputState {
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    fn has_visual(&self) -> bool {
+        self.point.is_some() || self.trails.iter().any(|trail| !trail.trail.is_empty())
+    }
+
+    fn begin_or_append(&mut self, pointer_id: u32, point: Point, now: f64) -> bool {
+        let is_new_pointer = is_new_laser_pointer(self.last_pointer_id, pointer_id);
+        if !self.trailing || self.active_pointer_id != Some(pointer_id) {
+            self.trails.push(LaserTrail::default());
+        }
+        self.trailing = true;
+        self.active_pointer_id = Some(pointer_id);
+        self.last_pointer_id = Some(pointer_id);
+        self.point = Some(point);
+        self.trails
+            .last_mut()
+            .expect("laser trail was just created")
+            .push(LaserPoint {
+                location: point,
+                time: now,
+            });
+        is_new_pointer
+    }
+
+    fn show_point(&mut self, pointer_id: u32, point: Point) -> bool {
+        let became_visible = self.point.is_none();
+        self.point = Some(point);
+        self.last_pointer_id = Some(pointer_id);
+        became_visible
+    }
+
+    fn break_trail(&mut self, hide_point: bool) -> bool {
+        let changed = self.trailing || (hide_point && self.point.is_some());
+        self.trailing = false;
+        self.active_pointer_id = None;
+        if hide_point {
+            self.point = None;
+        }
+        changed
+    }
+
+    fn retract(&mut self, now: f64, duration: f64) {
+        for trail in &mut self.trails {
+            trail.retract(now, duration);
+        }
+        let active_index = self.trailing.then(|| self.trails.len().saturating_sub(1));
+        self.trails = self
+            .trails
+            .drain(..)
+            .enumerate()
+            .filter_map(|(index, trail)| {
+                (!trail.trail.is_empty() || Some(index) == active_index).then_some(trail)
+            })
+            .collect();
+    }
+
+    fn timer_needed(&self) -> bool {
+        self.trailing || self.trails.iter().any(|trail| !trail.trail.is_empty())
+    }
 }
 
 pub struct InkInputController {
     monitor_key: String,
     annotation_enabled: bool,
     config: InkInputConfig,
-    active: Option<ActiveStroke>,
+    dpi: u32,
+    owner: Option<InputOwner>,
+    active_stroke: Option<ActiveStroke>,
+    active_eraser: Option<ActiveEraser>,
+    eraser_cursor: Option<Point>,
+    laser: LaserInputState,
     logger: Logger,
 }
 
@@ -106,14 +270,32 @@ impl InkInputController {
             monitor_key,
             annotation_enabled,
             config,
-            active: None,
+            dpi: 96,
+            owner: None,
+            active_stroke: None,
+            active_eraser: None,
+            eraser_cursor: None,
+            laser: LaserInputState::default(),
             logger,
         }
     }
 
     pub fn update_context(&mut self, annotation_enabled: bool, config: InkInputConfig) {
+        let clear_laser = !annotation_enabled
+            || (self.config.current_tool == InkTool::Laser
+                && config.current_tool != InkTool::Laser);
         self.annotation_enabled = annotation_enabled;
         self.config = config;
+        if clear_laser && self.laser.has_visual() {
+            self.logger
+                .event("레이저 상태: 도구 전환/판서 끔으로 clear");
+            self.laser.clear();
+        }
+        if !annotation_enabled
+            || (self.config.current_tool != InkTool::Eraser && self.active_eraser.is_none())
+        {
+            self.eraser_cursor = None;
+        }
     }
 
     pub fn update_monitor_key(&mut self, monitor_key: String) {
@@ -129,15 +311,83 @@ impl InkInputController {
     }
 
     pub fn active_stroke(&self) -> Option<&InkStroke> {
-        self.active.as_ref().map(|active| &active.stroke)
+        self.active_stroke.as_ref().map(|active| &active.stroke)
+    }
+
+    pub fn eraser_render_state(&self) -> Option<EraserRenderState> {
+        let active = self.active_eraser.as_ref();
+        let settings = active
+            .map(|active| active.settings)
+            .or_else(|| self.scaled_eraser_settings())?;
+        if active.is_none() && self.eraser_cursor.is_none() {
+            return None;
+        }
+        Some(EraserRenderState {
+            settings,
+            points: active
+                .map(|active| active.points.clone())
+                .unwrap_or_default(),
+            cursor: self.eraser_cursor,
+            preview_strokes: active.and_then(|active| active.preview_strokes.clone()),
+            highlighted_strokes: active
+                .map(|active| active.highlighted_strokes.clone())
+                .unwrap_or_default(),
+        })
+    }
+
+    pub fn laser_render_state(&self) -> Option<LaserRenderState> {
+        let trails = self
+            .laser
+            .trails
+            .iter()
+            .filter(|trail| !trail.trail.is_empty())
+            .map(|trail| trail.trail.iter().map(|point| point.location).collect())
+            .collect::<Vec<Vec<Point>>>();
+        if self.laser.point.is_none() && trails.is_empty() {
+            return None;
+        }
+        Some(LaserRenderState {
+            point: self.laser.point,
+            trails,
+            color: self.config.laser_color,
+            size_dip: self.config.laser_size,
+        })
+    }
+
+    pub fn laser_timer_needed(&self) -> bool {
+        self.laser.timer_needed()
+    }
+
+    pub fn retract_laser(&mut self) -> Result<InputOutcome> {
+        let before = self
+            .laser
+            .trails
+            .iter()
+            .map(|trail| trail.trail.len())
+            .sum::<usize>();
+        self.laser
+            .retract(monotonic_seconds()?, self.config.laser_trail_duration);
+        let after = self
+            .laser
+            .trails
+            .iter()
+            .map(|trail| trail.trail.len())
+            .sum::<usize>();
+        Ok(InputOutcome {
+            redraw: before != after,
+            ..InputOutcome::default()
+        })
     }
 
     pub fn finish_active(&mut self, reason: &str) -> InputOutcome {
-        let mut outcome = InputOutcome::default();
-        if let Some(stroke) = self.take_active(reason) {
-            outcome.finished.push(stroke);
+        let mut outcome = self.finish_owned(reason, true);
+        if self.laser.has_visual() {
+            self.logger
+                .event(&format!("레이저 상태: {reason}으로 clear"));
+            self.laser.clear();
             outcome.redraw = true;
         }
+        self.eraser_cursor = None;
         outcome
     }
 
@@ -146,38 +396,168 @@ impl InkInputController {
         message: u32,
         pointer_id: u32,
         monitor: &Monitor,
+        strokes: &[InkStroke],
     ) -> Result<InputOutcome> {
         if !self.annotation_enabled {
             return Ok(InputOutcome::default());
         }
+        self.dpi = monitor.dpi.0;
         match message {
-            WM_POINTERDOWN => self.handle_down(pointer_id, monitor),
-            WM_POINTERUPDATE | WM_POINTERUP => {
-                self.handle_update_or_up(message, pointer_id, monitor)
+            WM_POINTERCAPTURECHANGED => {
+                let mut outcome = self.finish_owned("WM_POINTERCAPTURECHANGED", true);
+                if self.laser.break_trail(true) {
+                    self.logger
+                        .event("레이저 상태: capture changed, 점 숨김/꼬리 끊김");
+                    outcome.redraw = true;
+                }
+                return Ok(outcome);
             }
-            WM_POINTERCAPTURECHANGED => Ok(self.finish_active("WM_POINTERCAPTURECHANGED")),
-            WM_POINTERLEAVE => Ok(InputOutcome::default()),
-            _ => Ok(InputOutcome::default()),
+            WM_POINTERLEAVE => {
+                // 장치 종류와 플래그는 leave가 아니라 실제 WM_POINTER 입력에서만 읽는다.
+                let cursor_hidden = self.eraser_cursor.take().is_some();
+                let laser_owned = self.owner.is_some()
+                    && self.active_stroke.is_none()
+                    && self.active_eraser.is_none()
+                    && self.laser.trailing;
+                let laser_changed = self.laser.break_trail(true);
+                if laser_owned {
+                    self.owner = None;
+                }
+                if laser_changed {
+                    self.logger
+                        .event("레이저 상태: 범위 이탈, 점 숨김/꼬리 끊김");
+                }
+                return Ok(InputOutcome {
+                    redraw: cursor_hidden || laser_changed,
+                    ..InputOutcome::default()
+                });
+            }
+            WM_POINTERDOWN | WM_POINTERUPDATE | WM_POINTERUP => {}
+            _ => return Ok(InputOutcome::default()),
+        }
+
+        let snapshot = PointerSnapshot::read(pointer_id, monitor.rect)?;
+        if message == WM_POINTERDOWN {
+            self.handle_down(snapshot, monitor, strokes)
+        } else {
+            self.handle_update_or_up(message, snapshot, monitor)
         }
     }
 
-    fn handle_down(&mut self, pointer_id: u32, monitor: &Monitor) -> Result<InputOutcome> {
+    fn handle_down(
+        &mut self,
+        snapshot: PointerSnapshot,
+        monitor: &Monitor,
+        strokes: &[InkStroke],
+    ) -> Result<InputOutcome> {
         let mut outcome = InputOutcome::default();
-        if let Some(active) = self.active.as_ref() {
-            if active.pointer_id != pointer_id {
-                self.logger.event(&format!(
-                    "무시한 입력: 다른 포인터 down, owner={} incoming={pointer_id}",
-                    active.pointer_id
-                ));
+        if let Some(owner) = self.owner {
+            let owner_pressed = self.owner_is_pressed(owner);
+            match ownership_on_down(true, owner_pressed) {
+                OwnershipTransition::Ignore => {
+                    self.logger.event(&format!(
+                        "무시한 입력: owner={} pointerId={} incoming={:?}/{}",
+                        owner.label(),
+                        owner.pointer_id,
+                        snapshot.device,
+                        snapshot.pointer_id
+                    ));
+                    return Ok(outcome);
+                }
+                OwnershipTransition::RecoverAndAccept => {
+                    self.logger.event(&format!(
+                        "누락 up 복구: owner={} pointerId={}; 진행 제스처 확정 후 새 입력 수락",
+                        owner.label(),
+                        owner.pointer_id
+                    ));
+                    merge_outcome(&mut outcome, self.finish_owned("누락 up 복구", true));
+                }
+                OwnershipTransition::Accept => unreachable!("owner exists"),
+            }
+        }
+
+        let owner = snapshot.owner();
+        if snapshot_uses_eraser(self.config.current_tool, &snapshot) {
+            let Some(settings) = self.scaled_eraser_settings() else {
+                self.logger.event("무시한 입력: 유효하지 않은 지우개 설정");
                 return Ok(outcome);
+            };
+            let points = pointer_screen_points(snapshot.pointer_id, snapshot.device, monitor.rect)?;
+            let canvas_size = Size {
+                width: f64::from(monitor.rect.width()),
+                height: f64::from(monitor.rect.height()),
+            };
+            let mut effective_strokes = outcome
+                .replacement
+                .as_ref()
+                .map(|replacement| replacement.after.clone())
+                .unwrap_or_else(|| strokes.to_vec());
+            effective_strokes.extend(outcome.finished.iter().cloned());
+            self.owner = Some(owner);
+            self.active_eraser = Some(ActiveEraser {
+                settings,
+                points: if points.is_empty() {
+                    vec![snapshot.local_point]
+                } else {
+                    points
+                },
+                before: effective_strokes,
+                canvas_size,
+                preview_strokes: None,
+                highlighted_strokes: Vec::new(),
+            });
+            self.eraser_cursor = Some(snapshot.local_point);
+            self.laser.break_trail(true);
+            self.refresh_eraser_preview();
+            self.logger.event(&format!(
+                "지우개 제스처 시작: monitor={} mode={:?} owner={} diameter_px={:.2}",
+                self.monitor_key,
+                settings.mode,
+                owner.label(),
+                settings.diameter
+            ));
+            // 지우개 모드 HUD는 후속 팔레트 라운드 전까지 이 로그 한 줄로 대체한다.
+            self.logger
+                .event(&format!("지우개 모드 HUD 대체 로그: {:?}", settings.mode));
+            outcome.redraw = true;
+            if snapshot.canceled {
+                merge_outcome(
+                    &mut outcome,
+                    self.finish_owned("POINTER_FLAG_CANCELED", true),
+                );
+            }
+            return Ok(outcome);
+        }
+
+        if self.config.current_tool == InkTool::Laser
+            && laser_action(
+                PointerPhase::Down,
+                snapshot.device,
+                snapshot.in_range,
+                snapshot.in_contact,
+                snapshot.first_button,
+                false,
+            ) == LaserAction::Trail
+        {
+            self.owner = Some(owner);
+            let new_pointer = self.laser.begin_or_append(
+                snapshot.pointer_id,
+                snapshot.local_point,
+                monotonic_seconds()?,
+            );
+            if new_pointer {
+                self.logger.event(&format!(
+                    "레이저 상태: 새 pointerId={}, 이전 꼬리와 분리",
+                    snapshot.pointer_id
+                ));
             }
             self.logger.event(&format!(
-                "무시한 입력 복구: 누락 up, pointerId={pointer_id}; 기존 획 확정 후 새 획 시작"
+                "레이저 상태: 꼬리 시작 pointerId={} owner={}",
+                snapshot.pointer_id,
+                owner.label()
             ));
-            if let Some(stroke) = self.take_active("누락 up 복구") {
-                outcome.finished.push(stroke);
-                outcome.redraw = true;
-            }
+            outcome.redraw = true;
+            return Ok(outcome);
         }
 
         let (stroke_tool, uses_pressure) = match self.config.current_tool {
@@ -201,18 +581,19 @@ impl InkInputController {
             return Ok(outcome);
         };
 
-        let device = pointer_device(pointer_id)?;
-        let history = pointer_history(pointer_id, device, monitor.rect)?;
+        let history = pointer_history(snapshot.pointer_id, snapshot.device, monitor.rect)?;
         if history.points.is_empty() {
             self.logger.event(&format!(
-                "무시한 입력: 포인터 이력 점 없음, pointerId={pointer_id}"
+                "무시한 입력: 포인터 이력 점 없음, pointerId={}",
+                snapshot.pointer_id
             ));
             return Ok(outcome);
         }
-        let uses_pressure = uses_pressure && device == PointerDevice::Pen;
+        let uses_pressure = uses_pressure && snapshot.device == PointerDevice::Pen;
         let identifier = format!(
-            "win-{}-{pointer_id}-{}",
+            "win-{}-{}-{}",
             history.points[0].timestamp,
+            snapshot.pointer_id,
             STROKE_SEQUENCE.fetch_add(1, AtomicOrdering::Relaxed)
         );
         let stroke = InkStroke::new(
@@ -225,22 +606,22 @@ impl InkInputController {
             InkStrokeContent::Freehand,
         );
         self.logger.event(&format!(
-            "획 시작: monitor={} pointerId={pointer_id} device={device:?} tool={:?} colorIndex={} width={}",
+            "획 시작: monitor={} pointerId={} device={:?} tool={:?} colorIndex={} width={}",
             self.monitor_key,
+            snapshot.pointer_id,
+            snapshot.device,
             self.config.current_tool,
             self.config.current_color_index.unwrap_or(-1),
             width
         ));
-        self.active = Some(ActiveStroke {
-            pointer_id,
-            device,
-            stroke,
-        });
+        self.owner = Some(owner);
+        self.active_stroke = Some(ActiveStroke { stroke });
         outcome.redraw = true;
-        if history.canceled {
-            if let Some(stroke) = self.take_active("POINTER_FLAG_CANCELED") {
-                outcome.finished.push(stroke);
-            }
+        if history.canceled || snapshot.canceled {
+            merge_outcome(
+                &mut outcome,
+                self.finish_owned("POINTER_FLAG_CANCELED", true),
+            );
         }
         Ok(outcome)
     }
@@ -248,43 +629,195 @@ impl InkInputController {
     fn handle_update_or_up(
         &mut self,
         message: u32,
-        pointer_id: u32,
+        snapshot: PointerSnapshot,
         monitor: &Monitor,
     ) -> Result<InputOutcome> {
         let mut outcome = InputOutcome::default();
-        let Some(active) = self.active.as_ref() else {
-            return Ok(outcome);
+        let Some(owner) = self.owner else {
+            return self.handle_hover(message, snapshot);
         };
-        if active.pointer_id != pointer_id {
+        if owner.pointer_id != snapshot.pointer_id {
             self.logger.event(&format!(
-                "무시한 입력: 다른 포인터, owner={} incoming={pointer_id}",
-                active.pointer_id
+                "무시한 입력: 다른 포인터, owner={} incoming={}",
+                owner.pointer_id, snapshot.pointer_id
+            ));
+            return Ok(outcome);
+        }
+        if message == WM_POINTERUP && !snapshot.release_matches(owner) {
+            self.logger.event(&format!(
+                "무시한 입력: 소유하지 않은 버튼 up, owner={} pointerId={}",
+                owner.label(),
+                owner.pointer_id
             ));
             return Ok(outcome);
         }
 
-        let device = pointer_device(pointer_id)?;
-        let history = pointer_history(pointer_id, device, monitor.rect)?;
-        if let Some(active) = self.active.as_mut() {
-            debug_assert_eq!(active.device, device);
+        if self.active_eraser.is_some() {
+            let points = pointer_screen_points(snapshot.pointer_id, snapshot.device, monitor.rect)?;
+            if let Some(active) = self.active_eraser.as_mut() {
+                append_unique_points(&mut active.points, points);
+            }
+            self.eraser_cursor = Some(snapshot.local_point);
+            self.refresh_eraser_preview();
+            outcome.redraw = true;
+        } else if let Some(active) = self.active_stroke.as_mut() {
+            let history = pointer_history(snapshot.pointer_id, snapshot.device, monitor.rect)?;
             merge_points(&mut active.stroke.points, history.points);
+            outcome.redraw = true;
+        } else if self.laser.trailing {
+            if snapshot_uses_eraser(self.config.current_tool, &snapshot) {
+                if self.laser.break_trail(true) {
+                    self.logger
+                        .event("레이저 상태: 지우개 끝/측면 버튼으로 점 숨김/꼬리 끊김");
+                }
+                self.eraser_cursor = Some(snapshot.local_point);
+                outcome.redraw = true;
+            } else if message != WM_POINTERUP && snapshot.contact_for_laser() {
+                let new_pointer = self.laser.begin_or_append(
+                    snapshot.pointer_id,
+                    snapshot.local_point,
+                    monotonic_seconds()?,
+                );
+                debug_assert!(!new_pointer);
+                outcome.redraw = true;
+            } else {
+                self.laser.point = snapshot.in_range.then_some(snapshot.local_point);
+            }
         }
-        outcome.redraw = true;
-        if message == WM_POINTERUP || history.canceled {
-            let reason = if history.canceled {
+
+        if message == WM_POINTERUP || snapshot.canceled {
+            let reason = if snapshot.canceled {
                 "POINTER_FLAG_CANCELED"
             } else {
                 "WM_POINTERUP"
             };
-            if let Some(stroke) = self.take_active(reason) {
-                outcome.finished.push(stroke);
-            }
+            merge_outcome(&mut outcome, self.finish_owned(reason, snapshot.canceled));
         }
         Ok(outcome)
     }
 
-    fn take_active(&mut self, reason: &str) -> Option<InkStroke> {
-        let active = self.active.take()?;
+    fn handle_hover(&mut self, message: u32, snapshot: PointerSnapshot) -> Result<InputOutcome> {
+        let mut redraw = false;
+        if snapshot_uses_eraser(self.config.current_tool, &snapshot) {
+            redraw |= self.eraser_cursor != Some(snapshot.local_point);
+            self.eraser_cursor = Some(snapshot.local_point);
+            if self.laser.break_trail(true) {
+                self.logger
+                    .event("레이저 상태: 지우개 사용 가능, 점 숨김/꼬리 끊김");
+                redraw = true;
+            }
+        } else {
+            redraw |= self.eraser_cursor.take().is_some();
+            if self.config.current_tool == InkTool::Laser {
+                match laser_action(
+                    if message == WM_POINTERUP {
+                        PointerPhase::Up
+                    } else {
+                        PointerPhase::Update
+                    },
+                    snapshot.device,
+                    snapshot.in_range,
+                    snapshot.in_contact,
+                    snapshot.first_button,
+                    false,
+                ) {
+                    LaserAction::Hover | LaserAction::Release if snapshot.in_range => {
+                        let new_pointer =
+                            is_new_laser_pointer(self.laser.last_pointer_id, snapshot.pointer_id);
+                        let became_visible = self
+                            .laser
+                            .show_point(snapshot.pointer_id, snapshot.local_point);
+                        if new_pointer {
+                            self.logger.event(&format!(
+                                "레이저 상태: 새 pointerId={}, 이전 꼬리와 분리",
+                                snapshot.pointer_id
+                            ));
+                        } else if became_visible {
+                            self.logger.event(&format!(
+                                "레이저 상태: 점 표시 pointerId={}",
+                                snapshot.pointer_id
+                            ));
+                        }
+                        redraw = true;
+                    }
+                    _ => {}
+                }
+            } else if self.laser.break_trail(true) {
+                redraw = true;
+            }
+        }
+        Ok(InputOutcome {
+            redraw,
+            ..InputOutcome::default()
+        })
+    }
+
+    fn owner_is_pressed(&self, owner: InputOwner) -> bool {
+        match owner.button {
+            OwnerButton::MousePrimary => {
+                (unsafe { GetAsyncKeyState(VK_LBUTTON.0.into()) } as u16 & 0x8000) != 0
+            }
+            OwnerButton::MouseSecondary => {
+                (unsafe { GetAsyncKeyState(VK_RBUTTON.0.into()) } as u16 & 0x8000) != 0
+            }
+            OwnerButton::PointerContact => {
+                if owner.device == PointerDevice::Pen {
+                    let mut pen = POINTER_PEN_INFO::default();
+                    // Only queried while handling a new WM_POINTERDOWN to recover a lost up.
+                    return match unsafe { GetPointerPenInfo(owner.pointer_id, &mut pen) } {
+                        Ok(()) => {
+                            pen.pointerInfo
+                                .pointerFlags
+                                .contains(POINTER_FLAG_INCONTACT)
+                                || pen.penFlags & PEN_FLAG_BARREL != 0
+                        }
+                        Err(error) => {
+                            self.logger.event(&format!(
+                                "누락 up 복구 펜 상태 조회 실패: pointerId={} error={error}; released로 처리",
+                                owner.pointer_id
+                            ));
+                            false
+                        }
+                    };
+                }
+                let mut info = POINTER_INFO::default();
+                // Only queried while handling a new WM_POINTERDOWN to recover a lost up.
+                match unsafe { GetPointerInfo(owner.pointer_id, &mut info) } {
+                    Ok(()) => info.pointerFlags.contains(POINTER_FLAG_INCONTACT),
+                    Err(error) => {
+                        self.logger.event(&format!(
+                            "누락 up 복구 상태 조회 실패: pointerId={} error={error}; released로 처리",
+                            owner.pointer_id
+                        ));
+                        false
+                    }
+                }
+            }
+        }
+    }
+
+    fn finish_owned(&mut self, reason: &str, hide_laser_point: bool) -> InputOutcome {
+        let owner = self.owner.take();
+        let mut outcome = InputOutcome::default();
+        if let Some(stroke) = self.take_active_stroke(reason, owner) {
+            outcome.finished.push(stroke);
+            outcome.redraw = true;
+        }
+        let had_eraser = self.active_eraser.is_some();
+        outcome.replacement = self.take_active_eraser(reason, owner);
+        outcome.redraw |= had_eraser;
+        if owner.is_some() && self.laser.trailing && self.laser.break_trail(hide_laser_point) {
+            self.logger.event(&format!(
+                "레이저 상태: {reason}, 꼬리 끊김{}",
+                if hide_laser_point { "/점 숨김" } else { "" }
+            ));
+            outcome.redraw = true;
+        }
+        outcome
+    }
+
+    fn take_active_stroke(&mut self, reason: &str, owner: Option<InputOwner>) -> Option<InkStroke> {
+        let active = self.active_stroke.take()?;
         let (minimum, maximum) = active
             .stroke
             .points
@@ -297,7 +830,7 @@ impl InkInputController {
         self.logger.event(&format!(
             "획 확정: monitor={} pointerId={} reason={reason} points={} uses_pressure={} pressure={minimum:.3}..{maximum:.3}",
             self.monitor_key,
-            active.pointer_id,
+            owner.map_or(0, |owner| owner.pointer_id),
             active.stroke.points.len(),
             active.stroke.uses_pressure
         ));
@@ -312,6 +845,334 @@ impl InkInputController {
         }
         Some(active.stroke)
     }
+
+    fn take_active_eraser(
+        &mut self,
+        reason: &str,
+        owner: Option<InputOwner>,
+    ) -> Option<StrokeReplacement> {
+        let active = self.active_eraser.take()?;
+        let gesture = eraser_gesture(&active)?;
+        let after = EraserEngine::erase(
+            &active.before,
+            &gesture,
+            &active.settings,
+            active.canvas_size,
+            self.config.pressure_minimum_width_ratio,
+        );
+        let erased_strokes = removed_original_count(&active.before, &after);
+        let undo_units = usize::from(active.before != after);
+        self.logger.event(&format!(
+            "지우개 제스처 종료: monitor={} mode={:?} owner={} reason={reason} erased={} Undo={undo_units}",
+            self.monitor_key,
+            active.settings.mode,
+            owner.map_or("unknown", InputOwner::label),
+            erased_strokes
+        ));
+        self.eraser_cursor = owner
+            .filter(|_| reason == "WM_POINTERUP")
+            .and_then(|_| active.points.last().copied());
+        (active.before != after).then_some(StrokeReplacement {
+            before: active.before,
+            after,
+            erased_strokes,
+        })
+    }
+
+    fn refresh_eraser_preview(&mut self) {
+        let Some(active) = self.active_eraser.as_mut() else {
+            return;
+        };
+        let Some(gesture) = eraser_gesture(active) else {
+            return;
+        };
+        let after = EraserEngine::erase(
+            &active.before,
+            &gesture,
+            &active.settings,
+            active.canvas_size,
+            self.config.pressure_minimum_width_ratio,
+        );
+        match active.settings.mode {
+            EraserMode::Partial => {
+                active.preview_strokes = Some(after);
+                active.highlighted_strokes.clear();
+            }
+            EraserMode::Stroke => {
+                active.highlighted_strokes = active
+                    .before
+                    .iter()
+                    .filter(|stroke| {
+                        !after
+                            .iter()
+                            .any(|candidate| candidate.identifier == stroke.identifier)
+                    })
+                    .cloned()
+                    .collect();
+                active.preview_strokes = None;
+            }
+            EraserMode::Area => {
+                active.preview_strokes = None;
+                active.highlighted_strokes.clear();
+            }
+        }
+    }
+
+    fn scaled_eraser_settings(&self) -> Option<EraserSettings> {
+        self.config.eraser_settings.map(|mut settings| {
+            settings.diameter *= px_per_dip(self.dpi);
+            settings
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PointerSnapshot {
+    pointer_id: u32,
+    device: PointerDevice,
+    local_point: Point,
+    in_range: bool,
+    in_contact: bool,
+    first_button: bool,
+    second_button: bool,
+    first_button_change: bool,
+    second_button_change: bool,
+    barrel: bool,
+    eraser: bool,
+    inverted: bool,
+    canceled: bool,
+}
+
+impl PointerSnapshot {
+    fn read(pointer_id: u32, monitor: MonitorRect) -> Result<Self> {
+        let mut info = POINTER_INFO::default();
+        // Device type and pen flags are read from this WM_POINTER event only.
+        unsafe { GetPointerInfo(pointer_id, &mut info) }?;
+        let device = PointerDevice::from_win32(info.pointerType);
+        let pen_flags = if device == PointerDevice::Pen {
+            let mut pen = POINTER_PEN_INFO::default();
+            unsafe { GetPointerPenInfo(pointer_id, &mut pen) }?;
+            info = pen.pointerInfo;
+            pen.penFlags
+        } else {
+            0
+        };
+        Ok(Self {
+            pointer_id,
+            device,
+            local_point: screen_point(info.ptPixelLocationRaw, monitor),
+            in_range: info.pointerFlags.contains(POINTER_FLAG_INRANGE),
+            in_contact: info.pointerFlags.contains(POINTER_FLAG_INCONTACT),
+            first_button: info.pointerFlags.contains(POINTER_FLAG_FIRSTBUTTON),
+            second_button: info.pointerFlags.contains(POINTER_FLAG_SECONDBUTTON),
+            first_button_change: info.ButtonChangeType == POINTER_CHANGE_FIRSTBUTTON_DOWN
+                || info.ButtonChangeType == POINTER_CHANGE_FIRSTBUTTON_UP,
+            second_button_change: info.ButtonChangeType == POINTER_CHANGE_SECONDBUTTON_DOWN
+                || info.ButtonChangeType == POINTER_CHANGE_SECONDBUTTON_UP,
+            barrel: pen_flags & PEN_FLAG_BARREL != 0,
+            eraser: pen_flags & PEN_FLAG_ERASER != 0,
+            inverted: pen_flags & PEN_FLAG_INVERTED != 0,
+            canceled: info.pointerFlags.contains(POINTER_FLAG_CANCELED),
+        })
+    }
+
+    fn owner(self) -> InputOwner {
+        let button = if self.device == PointerDevice::Mouse
+            && (self.second_button || self.second_button_change)
+        {
+            OwnerButton::MouseSecondary
+        } else if self.device == PointerDevice::Mouse {
+            OwnerButton::MousePrimary
+        } else {
+            OwnerButton::PointerContact
+        };
+        InputOwner {
+            pointer_id: self.pointer_id,
+            device: self.device,
+            button,
+        }
+    }
+
+    fn release_matches(self, owner: InputOwner) -> bool {
+        match owner.button {
+            OwnerButton::MousePrimary => {
+                self.first_button_change || (!self.first_button && !self.second_button_change)
+            }
+            OwnerButton::MouseSecondary => {
+                self.second_button_change || (!self.second_button && !self.first_button_change)
+            }
+            OwnerButton::PointerContact => true,
+        }
+    }
+
+    fn contact_for_laser(self) -> bool {
+        match self.device {
+            PointerDevice::Mouse => self.first_button,
+            PointerDevice::Pen | PointerDevice::Touch => self.in_contact,
+            _ => false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OwnershipTransition {
+    Accept,
+    Ignore,
+    RecoverAndAccept,
+}
+
+fn ownership_on_down(has_owner: bool, owner_pressed: bool) -> OwnershipTransition {
+    match (has_owner, owner_pressed) {
+        (false, _) => OwnershipTransition::Accept,
+        (true, true) => OwnershipTransition::Ignore,
+        (true, false) => OwnershipTransition::RecoverAndAccept,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))]
+enum PointerPhase {
+    Down,
+    Update,
+    Up,
+    Leave,
+    CaptureChanged,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LaserAction {
+    None,
+    Hover,
+    Trail,
+    Release,
+    Break,
+}
+
+fn laser_action(
+    phase: PointerPhase,
+    device: PointerDevice,
+    in_range: bool,
+    in_contact: bool,
+    first_button: bool,
+    uses_eraser: bool,
+) -> LaserAction {
+    if matches!(phase, PointerPhase::Leave | PointerPhase::CaptureChanged) {
+        return LaserAction::Break;
+    }
+    if uses_eraser {
+        return LaserAction::None;
+    }
+    if phase == PointerPhase::Up {
+        return LaserAction::Release;
+    }
+    if !in_range {
+        return LaserAction::Break;
+    }
+    let pressed = match device {
+        PointerDevice::Mouse => first_button,
+        PointerDevice::Pen | PointerDevice::Touch => in_contact,
+        _ => false,
+    };
+    if pressed {
+        LaserAction::Trail
+    } else if phase == PointerPhase::Update {
+        LaserAction::Hover
+    } else {
+        LaserAction::None
+    }
+}
+
+fn is_new_laser_pointer(previous: Option<u32>, incoming: u32) -> bool {
+    previous.is_some_and(|previous| previous != incoming)
+}
+
+fn uses_eraser(
+    current_tool: InkTool,
+    device: PointerDevice,
+    mouse_secondary: bool,
+    barrel: bool,
+    eraser: bool,
+    inverted: bool,
+) -> bool {
+    current_tool == InkTool::Eraser
+        || (device == PointerDevice::Mouse && mouse_secondary)
+        || (device == PointerDevice::Pen && (barrel || eraser || inverted))
+}
+
+fn snapshot_uses_eraser(current_tool: InkTool, snapshot: &PointerSnapshot) -> bool {
+    uses_eraser(
+        current_tool,
+        snapshot.device,
+        snapshot.second_button || snapshot.second_button_change,
+        snapshot.barrel,
+        snapshot.eraser,
+        snapshot.inverted,
+    )
+}
+
+fn eraser_settings_from_core(settings: &AppSettings) -> Option<EraserSettings> {
+    Some(EraserSettings {
+        diameter: settings.eraser.diameter,
+        mode: match settings.eraser.mode.as_str() {
+            "partial" => EraserMode::Partial,
+            "stroke" => EraserMode::Stroke,
+            "area" => EraserMode::Area,
+            _ => return None,
+        },
+        hit_rule: match settings.eraser.hit_rule.as_str() {
+            "touching" => EraserHitRule::Touching,
+            "contained" => EraserHitRule::Contained,
+            _ => return None,
+        },
+        target_filter: match settings.eraser.target_filter.as_str() {
+            "all" => EraserTargetFilter::All,
+            "penOnly" => EraserTargetFilter::PenOnly,
+            "highlighterOnly" => EraserTargetFilter::HighlighterOnly,
+            _ => return None,
+        },
+        area_shape: match settings.eraser.area_shape.as_str() {
+            "rectangle" => EraserAreaShape::Rectangle,
+            "lasso" => EraserAreaShape::Lasso,
+            _ => return None,
+        },
+    })
+}
+
+fn eraser_gesture(active: &ActiveEraser) -> Option<EraserGesture> {
+    let first = *active.points.first()?;
+    Some(match active.settings.mode {
+        EraserMode::Partial | EraserMode::Stroke => EraserGesture::Sweep(active.points.clone()),
+        EraserMode::Area if active.settings.area_shape == EraserAreaShape::Rectangle => {
+            let last = active.points.last().copied().unwrap_or(first);
+            EraserGesture::Area(Rect {
+                x: first.x,
+                y: first.y,
+                width: last.x - first.x,
+                height: last.y - first.y,
+            })
+        }
+        EraserMode::Area => EraserGesture::Lasso(active.points.clone()),
+    })
+}
+
+fn removed_original_count(before: &[InkStroke], after: &[InkStroke]) -> usize {
+    before
+        .iter()
+        .filter(|stroke| {
+            !after
+                .iter()
+                .any(|candidate| candidate.identifier == stroke.identifier)
+        })
+        .count()
+}
+
+fn merge_outcome(target: &mut InputOutcome, mut incoming: InputOutcome) {
+    target.finished.append(&mut incoming.finished);
+    if incoming.replacement.is_some() {
+        debug_assert!(target.replacement.is_none());
+        target.replacement = incoming.replacement;
+    }
+    target.redraw |= incoming.redraw;
 }
 
 struct PointerHistory {
@@ -326,13 +1187,6 @@ struct HistorySample {
     timestamp_ms: u32,
     performance_count: u64,
     canceled: bool,
-}
-
-fn pointer_device(pointer_id: u32) -> Result<PointerDevice> {
-    let mut pointer_type = POINTER_INPUT_TYPE::default();
-    // SAFETY: pointer_type is writable and pointer_id comes from this WM_POINTER event.
-    unsafe { GetPointerType(pointer_id, &mut pointer_type) }?;
-    Ok(PointerDevice::from_win32(pointer_type))
 }
 
 fn pointer_history(
@@ -360,12 +1214,26 @@ fn pointer_history(
     Ok(PointerHistory { points, canceled })
 }
 
+fn pointer_screen_points(
+    pointer_id: u32,
+    device: PointerDevice,
+    monitor: MonitorRect,
+) -> Result<Vec<Point>> {
+    let size = Size {
+        width: f64::from(monitor.width()),
+        height: f64::from(monitor.height()),
+    };
+    Ok(pointer_history(pointer_id, device, monitor)?
+        .points
+        .into_iter()
+        .map(|point| InkGeometry::screen_point(point.location, size))
+        .collect())
+}
+
 fn pen_history(pointer_id: u32) -> Result<Vec<HistorySample>> {
     let mut count = 0;
-    // SAFETY: a null output requests the required history count for this event pointer.
     unsafe { GetPointerPenInfoHistory(pointer_id, &mut count, None) }?;
     let mut history = vec![POINTER_PEN_INFO::default(); count as usize];
-    // SAFETY: history has count writable entries and the API updates count to the number written.
     unsafe { GetPointerPenInfoHistory(pointer_id, &mut count, Some(history.as_mut_ptr())) }?;
     history.truncate(count as usize);
     Ok(history
@@ -379,17 +1247,15 @@ fn pen_history(pointer_id: u32) -> Result<Vec<HistorySample>> {
             },
             timestamp_ms: pen.pointerInfo.dwTime,
             performance_count: pen.pointerInfo.PerformanceCount,
-            canceled: pen.pointerInfo.pointerFlags & POINTER_FLAG_CANCELED == POINTER_FLAG_CANCELED,
+            canceled: pen.pointerInfo.pointerFlags.contains(POINTER_FLAG_CANCELED),
         })
         .collect())
 }
 
 fn info_history(pointer_id: u32) -> Result<Vec<HistorySample>> {
     let mut count = 0;
-    // SAFETY: a null output requests the required history count for this event pointer.
     unsafe { GetPointerInfoHistory(pointer_id, &mut count, None) }?;
     let mut history = vec![POINTER_INFO::default(); count as usize];
-    // SAFETY: history has count writable entries and the API updates count to the number written.
     unsafe { GetPointerInfoHistory(pointer_id, &mut count, Some(history.as_mut_ptr())) }?;
     history.truncate(count as usize);
     Ok(history
@@ -399,7 +1265,7 @@ fn info_history(pointer_id: u32) -> Result<Vec<HistorySample>> {
             pressure: 1.0,
             timestamp_ms: info.dwTime,
             performance_count: info.PerformanceCount,
-            canceled: info.pointerFlags & POINTER_FLAG_CANCELED == POINTER_FLAG_CANCELED,
+            canceled: info.pointerFlags.contains(POINTER_FLAG_CANCELED),
         })
         .collect())
 }
@@ -432,21 +1298,47 @@ fn merge_points(existing: &mut Vec<InkPoint>, incoming: Vec<InkPoint>) {
     *existing = deduplicated;
 }
 
+fn append_unique_points(existing: &mut Vec<Point>, incoming: Vec<Point>) {
+    for point in incoming {
+        if existing.last() != Some(&point) {
+            existing.push(point);
+        }
+    }
+}
+
 fn normalized_pressure(pressure: u32) -> f64 {
     (f64::from(pressure) / 1_024.0).clamp(0.0, 1.0)
 }
 
+fn screen_point(point: POINT, monitor: MonitorRect) -> Point {
+    Point {
+        x: f64::from(point.x - monitor.left).clamp(0.0, f64::from(monitor.width())),
+        y: f64::from(point.y - monitor.top).clamp(0.0, f64::from(monitor.height())),
+    }
+}
+
 fn normalized_monitor_point(point: POINT, monitor: MonitorRect) -> Point {
     InkGeometry::normalized_point(
-        Point {
-            x: f64::from(point.x - monitor.left),
-            y: f64::from(point.y - monitor.top),
-        },
+        screen_point(point, monitor),
         Size {
             width: f64::from(monitor.width()),
             height: f64::from(monitor.height()),
         },
     )
+}
+
+pub fn monotonic_seconds() -> Result<f64> {
+    let frequency = if let Some(frequency) = QPC_FREQUENCY.get() {
+        *frequency
+    } else {
+        let mut frequency = 0;
+        unsafe { QueryPerformanceFrequency(&mut frequency) }?;
+        let _ = QPC_FREQUENCY.set(frequency);
+        frequency
+    };
+    let mut counter = 0;
+    unsafe { QueryPerformanceCounter(&mut counter) }?;
+    Ok(counter as f64 / frequency as f64)
 }
 
 pub fn pointer_id_from_wparam(wparam: usize) -> u32 {
@@ -456,10 +1348,221 @@ pub fn pointer_id_from_wparam(wparam: usize) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        history_order, normalized_monitor_point, normalized_pressure, HistorySample, MonitorRect,
+        history_order, laser_action, normalized_monitor_point, normalized_pressure,
+        ownership_on_down, uses_eraser, HistorySample, LaserAction, MonitorRect,
+        OwnershipTransition, PointerDevice, PointerPhase,
     };
-    use edutools_core::ink::{InkGeometry, Size};
+    use edutools_core::ink::{InkGeometry, InkTool, Size};
     use windows::Win32::Foundation::POINT;
+
+    #[test]
+    fn uses_eraser_decision_table() {
+        let cases = [
+            (
+                "mouse-left",
+                InkTool::Pen,
+                PointerDevice::Mouse,
+                false,
+                false,
+                false,
+                false,
+                false,
+            ),
+            (
+                "mouse-right",
+                InkTool::Pen,
+                PointerDevice::Mouse,
+                true,
+                false,
+                false,
+                false,
+                true,
+            ),
+            (
+                "pen-contact",
+                InkTool::Pen,
+                PointerDevice::Pen,
+                false,
+                false,
+                false,
+                false,
+                false,
+            ),
+            (
+                "pen-barrel",
+                InkTool::Pen,
+                PointerDevice::Pen,
+                false,
+                true,
+                false,
+                false,
+                true,
+            ),
+            (
+                "pen-eraser",
+                InkTool::Laser,
+                PointerDevice::Pen,
+                false,
+                false,
+                true,
+                false,
+                true,
+            ),
+            (
+                "pen-inverted",
+                InkTool::Laser,
+                PointerDevice::Pen,
+                false,
+                false,
+                false,
+                true,
+                true,
+            ),
+            (
+                "eraser-tool",
+                InkTool::Eraser,
+                PointerDevice::Mouse,
+                false,
+                false,
+                false,
+                false,
+                true,
+            ),
+        ];
+        for (name, tool, device, secondary, barrel, eraser, inverted, expected) in cases {
+            assert_eq!(
+                uses_eraser(tool, device, secondary, barrel, eraser, inverted),
+                expected,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn ownership_transition_table() {
+        let cases = [
+            ("free-to-owner", false, false, OwnershipTransition::Accept),
+            (
+                "owner-ignores-other",
+                true,
+                true,
+                OwnershipTransition::Ignore,
+            ),
+            (
+                "missing-up-recovers",
+                true,
+                false,
+                OwnershipTransition::RecoverAndAccept,
+            ),
+        ];
+        for (name, has_owner, pressed, expected) in cases {
+            assert_eq!(ownership_on_down(has_owner, pressed), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn laser_input_mapping_table() {
+        let cases = [
+            (
+                "pen-hover",
+                PointerPhase::Update,
+                PointerDevice::Pen,
+                true,
+                false,
+                false,
+                false,
+                LaserAction::Hover,
+            ),
+            (
+                "pen-contact",
+                PointerPhase::Down,
+                PointerDevice::Pen,
+                true,
+                true,
+                false,
+                false,
+                LaserAction::Trail,
+            ),
+            (
+                "touch-contact",
+                PointerPhase::Update,
+                PointerDevice::Touch,
+                true,
+                true,
+                false,
+                false,
+                LaserAction::Trail,
+            ),
+            (
+                "mouse-left",
+                PointerPhase::Down,
+                PointerDevice::Mouse,
+                true,
+                true,
+                true,
+                false,
+                LaserAction::Trail,
+            ),
+            (
+                "mouse-right-not-laser",
+                PointerPhase::Down,
+                PointerDevice::Mouse,
+                true,
+                true,
+                false,
+                true,
+                LaserAction::None,
+            ),
+            (
+                "up",
+                PointerPhase::Up,
+                PointerDevice::Pen,
+                true,
+                false,
+                false,
+                false,
+                LaserAction::Release,
+            ),
+            (
+                "leave",
+                PointerPhase::Leave,
+                PointerDevice::Pen,
+                false,
+                false,
+                false,
+                false,
+                LaserAction::Break,
+            ),
+            (
+                "capture",
+                PointerPhase::CaptureChanged,
+                PointerDevice::Pen,
+                true,
+                true,
+                false,
+                false,
+                LaserAction::Break,
+            ),
+        ];
+        for (name, phase, device, range, contact, first, eraser, expected) in cases {
+            assert_eq!(
+                laser_action(phase, device, range, contact, first, eraser),
+                expected,
+                "{name}"
+            );
+        }
+        for (name, previous, incoming, expected) in [
+            ("first-pointer", None, 7, false),
+            ("same-pointer", Some(7), 7, false),
+            ("new-pointer", Some(7), 8, true),
+        ] {
+            assert_eq!(
+                super::is_new_laser_pointer(previous, incoming),
+                expected,
+                "{name}"
+            );
+        }
+    }
 
     #[test]
     fn pointer_conversion_pressure_and_history_table() {
