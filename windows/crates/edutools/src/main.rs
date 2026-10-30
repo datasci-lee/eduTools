@@ -1,0 +1,21 @@
+#[cfg(windows)]
+mod app;
+#[cfg(windows)]
+mod hotkey;
+#[cfg(windows)]
+mod keymap;
+#[cfg(windows)]
+mod log;
+#[cfg(windows)]
+mod tray;
+
+#[cfg(windows)]
+fn main() {
+    std::process::exit(app::run());
+}
+
+#[cfg(not(windows))]
+fn main() {
+    eprintln!("EduTools 앱은 Windows 전용입니다");
+    std::process::exit(1);
+}
