@@ -63,11 +63,17 @@ enum PaletteStyle: String, Codable, CaseIterable, Hashable {
 
 enum RadialPaletteGlassStyle {
     static let defaultOpacity = 0.86
-    static let minimumOpacity = 0.55
+    // 옛 설정·골든의 낮은 값은 허용하며, 설정 스키마 버전을 올려 이행할 때 제거한다.
+    static let storedMinimumOpacity = 0.55
+    static let minimumOpacity = 0.70
     static let maximumOpacity = 0.90
 
     static let disabledContentOpacity = 0.55
     static let selectedTintOpacity = 0.72
+
+    static func effectiveOpacity(stored: Double) -> Double {
+        max(stored, minimumOpacity)
+    }
 }
 
 enum RadialPaletteArcStyle {
@@ -731,7 +737,7 @@ enum SettingsValidator {
                 ),
               SettingsRanges.laserSize.contains(settings.tools.laserSize),
               SettingsRanges.laserTrailDuration.contains(settings.tools.laserTrailDuration),
-              (RadialPaletteGlassStyle.minimumOpacity...RadialPaletteGlassStyle.maximumOpacity).contains(
+              (RadialPaletteGlassStyle.storedMinimumOpacity...RadialPaletteGlassStyle.maximumOpacity).contains(
                     settings.tools.paletteGlassOpacity
                 )
         else {

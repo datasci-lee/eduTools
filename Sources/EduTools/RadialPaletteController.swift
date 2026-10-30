@@ -890,7 +890,9 @@ final class RadialPaletteController: NSObject {
         )
         self.openSettings = openSettings
         tooltip = RadialPaletteTooltip(
-            glassOpacity: settingsStore.settings.tools.paletteGlassOpacity
+            glassOpacity: RadialPaletteGlassStyle.effectiveOpacity(
+                stored: settingsStore.settings.tools.paletteGlassOpacity
+            )
         )
         panel = RadialPalettePanel(
             contentRect: .zero,
@@ -964,7 +966,9 @@ final class RadialPaletteController: NSObject {
         settingsObserverIdentifier = settingsStore.addObserver { [weak self] settings in
             guard let self else { return }
             self.tooltip.updateAppearance(
-                glassOpacity: settings.tools.paletteGlassOpacity
+                glassOpacity: RadialPaletteGlassStyle.effectiveOpacity(
+                    stored: settings.tools.paletteGlassOpacity
+                )
             )
             self.updateVisibility()
             self.paletteView.redraw()
@@ -1996,7 +2000,9 @@ final class RadialPaletteController: NSObject {
         _ model: RadialPaletteRenderModel,
         hoveredIdentifier: String?
     ) {
-        let glassOpacity = settingsStore.settings.tools.paletteGlassOpacity
+        let glassOpacity = RadialPaletteGlassStyle.effectiveOpacity(
+            stored: settingsStore.settings.tools.paletteGlassOpacity
+        )
         if model.glassOpacity != glassOpacity {
             model.glassOpacity = glassOpacity
         }
@@ -2085,7 +2091,9 @@ final class RadialPaletteController: NSObject {
 
     private func updateTooltipAppearance() {
         tooltip.updateAppearance(
-            glassOpacity: settingsStore.settings.tools.paletteGlassOpacity
+            glassOpacity: RadialPaletteGlassStyle.effectiveOpacity(
+                stored: settingsStore.settings.tools.paletteGlassOpacity
+            )
         )
     }
 
