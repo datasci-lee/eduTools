@@ -44,8 +44,9 @@ use crate::radial_palette::{
 use crate::render::GraphicsDevice;
 use crate::settings_file::FileSettingsStorage;
 use crate::settings_ui::{
-    apply_change as apply_settings_window_change, SettingsChangeRequest, SettingsTab,
-    SettingsWindow, WM_APP_SETTINGS_CHANGE,
+    apply_change as apply_settings_window_change, choose_settings_export_path,
+    choose_settings_import_path, SettingsAction, SettingsChangeRequest, SettingsTab,
+    SettingsWindow, WM_APP_SETTINGS_ACTION, WM_APP_SETTINGS_CHANGE,
 };
 use crate::text_entry::{
     cancel_reason, TextEntryRequest, TextEntryWindow, WM_APP_TEXT_ENTRY_CANCEL,
@@ -80,6 +81,7 @@ use edutools_core::settings::{
 use edutools_core::settings_store::{
     SettingsBackupStore, SettingsStore, SettingsStoreIssue, SettingsStoreIssueKind,
 };
+use edutools_core::settings_transfer::{SettingsBundle, SettingsTransfer};
 use edutools_core::shortcut::{
     ShortcutCatalog, ShortcutCommand, ShortcutDefinition, ShortcutModifiers, ShortcutScope,
 };
@@ -90,7 +92,8 @@ use edutools_core::zoom::{
     ZoomSessionState, ZoomStopAction,
 };
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
+use std::fs;
 use std::mem::size_of;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -111,14 +114,15 @@ use windows::Win32::UI::Input::Pointer::EnableMouseInPointer;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow, DispatchMessageW, GetCursorPos,
     GetForegroundWindow, GetMessageW, GetWindowLongPtrW, IsWindow, KillTimer, LoadImageW,
-    PostQuitMessage, RegisterClassW, RegisterDeviceNotificationW, RegisterWindowMessageW,
-    SetCursorPos, SetForegroundWindow, SetTimer, SetWindowLongPtrW, TranslateMessage,
-    UnregisterDeviceNotification, DBT_DEVICEARRIVAL, DBT_DEVICEREMOVECOMPLETE,
+    MessageBoxW, PostQuitMessage, RegisterClassW, RegisterDeviceNotificationW,
+    RegisterWindowMessageW, SetCursorPos, SetForegroundWindow, SetTimer, SetWindowLongPtrW,
+    TranslateMessage, UnregisterDeviceNotification, DBT_DEVICEARRIVAL, DBT_DEVICEREMOVECOMPLETE,
     DBT_DEVTYP_DEVICEINTERFACE, DEVICE_NOTIFY_WINDOW_HANDLE, DEV_BROADCAST_DEVICEINTERFACE_W,
-    GDI_IMAGE_TYPE, GWLP_USERDATA, HDEVNOTIFY, HICON, IMAGE_ICON, LR_DEFAULTCOLOR, MSG,
-    WM_CONTEXTMENU, WM_DESTROY, WM_DEVICECHANGE, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_HOTKEY,
-    WM_KEYDOWN, WM_POWERBROADCAST, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMECHANGE, WM_TIMER,
-    WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
+    GDI_IMAGE_TYPE, GWLP_USERDATA, HDEVNOTIFY, HICON, IDYES, IMAGE_ICON, LR_DEFAULTCOLOR,
+    MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_YESNO, MSG, WM_CONTEXTMENU,
+    WM_DESTROY, WM_DEVICECHANGE, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_HOTKEY, WM_KEYDOWN,
+    WM_POWERBROADCAST, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMECHANGE, WM_TIMER, WNDCLASSW,
+    WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
 const WINDOW_CLASS: PCWSTR = w!("EduToolsMain");
@@ -273,6 +277,7 @@ struct App {
     settings_window: Option<SettingsWindow>,
     tray: Option<Tray>,
     hotkeys: Option<HotkeyCenter>,
+    shortcut_recording: bool,
     keyboard_hook: Option<KeyboardHook>,
     pressed_shortcuts: PressedShortcuts,
     radial_key_cap_state: RadialKeyCapState,
@@ -426,6 +431,13 @@ impl App {
         }
     }
 
+    fn runtime_shortcut_warnings(&self) -> BTreeMap<String, String> {
+        self.hotkeys
+            .as_ref()
+            .map(|hotkeys| hotkeys.runtime_warnings().clone())
+            .unwrap_or_default()
+    }
+
     fn update_settings<F>(&mut self, source: &str, change: F) -> bool
     where
         F: FnOnce(&mut AppSettings),
@@ -450,8 +462,9 @@ impl App {
                 self.logger
                     .event(&format!("설정 갱신: source={source} changed={names}"));
                 self.settings_changed(&previous, &current, &changed);
+                let warnings = self.runtime_shortcut_warnings();
                 if let Some(window) = self.settings_window.as_mut() {
-                    window.refresh_external(&current, source);
+                    window.refresh_external(&current, &warnings, source);
                 }
                 true
             }
@@ -475,23 +488,27 @@ impl App {
         let mut targets = Vec::new();
 
         if previous.shortcuts != current.shortcuts {
-            if let Some(hotkeys) = self.hotkeys.as_mut() {
-                hotkeys.shutdown();
+            if self.shortcut_recording {
+                targets.push("shortcut-registration-deferred");
+            } else {
+                if let Some(hotkeys) = self.hotkeys.as_mut() {
+                    hotkeys.shutdown();
+                }
+                if let Some(tray) = self.tray.as_mut() {
+                    self.hotkeys = Some(HotkeyCenter::register(
+                        self.hwnd,
+                        tray,
+                        self.logger.clone(),
+                        current,
+                    ));
+                }
+                // 훅은 설치 시점의 바인딩을 읽으므로 단축키가 바뀌면 내렸다가 현재 스코프로 다시 올린다.
+                if self.keyboard_hook.is_some() {
+                    self.uninstall_keyboard_hook_for_shutdown();
+                    self.synchronize_keyboard_hook();
+                }
+                targets.push("global-hotkeys+keyboard-hook");
             }
-            if let Some(tray) = self.tray.as_mut() {
-                self.hotkeys = Some(HotkeyCenter::register(
-                    self.hwnd,
-                    tray,
-                    self.logger.clone(),
-                    current,
-                ));
-            }
-            // 훅은 설치 시점의 바인딩을 읽으므로 단축키가 바뀌면 내렸다가 현재 스코프로 다시 올린다.
-            if self.keyboard_hook.is_some() {
-                self.uninstall_keyboard_hook_for_shutdown();
-                self.synchronize_keyboard_hook();
-            }
-            targets.push("global-hotkeys+keyboard-hook");
         }
 
         let ink_input_changed =
@@ -588,11 +605,13 @@ impl App {
     }
 
     fn show_settings(&mut self, tab: SettingsTab, source: &str) {
+        let warnings = self.runtime_shortcut_warnings();
         if self.settings_window.is_none() {
             match SettingsWindow::new(
                 self.hwnd,
                 self.hinstance,
                 &self.settings,
+                &warnings,
                 self.logger.clone(),
             ) {
                 Ok(window) => self.settings_window = Some(window),
@@ -607,7 +626,7 @@ impl App {
             }
         }
         if let Some(window) = self.settings_window.as_mut() {
-            window.show(tab, &self.settings);
+            window.show(tab, &self.settings, &warnings);
         }
     }
 
@@ -623,8 +642,9 @@ impl App {
             SettingsValidator::validate(&candidate).map_err(|error| error.to_string())
         });
         if let Err(reason) = validation {
+            let warnings = self.runtime_shortcut_warnings();
             if let Some(window) = self.settings_window.as_mut() {
-                window.reject_change(field_id, &reason, &self.settings);
+                window.reject_change(field_id, &reason, &self.settings, &warnings);
             }
             return;
         }
@@ -633,9 +653,296 @@ impl App {
         self.update_settings("settings-window", move |settings| {
             let _ = apply_settings_window_change(settings, &request_for_update);
         });
+        let warnings = self.runtime_shortcut_warnings();
         if let Some(window) = self.settings_window.as_mut() {
-            window.accept_change(field_id, &self.settings);
+            window.accept_change(field_id, &self.settings, &warnings);
         }
+    }
+
+    fn handle_settings_action(&mut self, action: SettingsAction) {
+        match action {
+            SettingsAction::BeginShortcutRecording { key } => self.begin_shortcut_recording(&key),
+            SettingsAction::CancelShortcutRecording { key } => {
+                self.logger
+                    .event(&format!("단축키 기록 종료: id={key} result=취소"));
+                self.finish_shortcut_recording();
+            }
+            SettingsAction::RecordShortcut { key, portable } => {
+                let result = portable.clone().unwrap_or_else(|| "해제".to_owned());
+                let update_key = key.clone();
+                self.update_settings("shortcut-recorder", move |settings| {
+                    if let Some(portable) = portable {
+                        settings.shortcuts.overrides.insert(update_key, portable);
+                    } else {
+                        settings.shortcuts.overrides.remove(&update_key);
+                    }
+                });
+                self.logger
+                    .event(&format!("단축키 기록 종료: id={key} result={result}"));
+                self.finish_shortcut_recording();
+            }
+            SettingsAction::ResetShortcuts => {
+                self.update_settings("shortcut-reset", |settings| {
+                    settings.shortcuts.overrides.clear();
+                });
+                self.logger.event("단축키 전체 기본값 복원");
+            }
+            SettingsAction::SetAppModifier(value) => {
+                self.update_settings("shortcut-app-modifier", move |settings| {
+                    settings.shortcuts.app_modifier = value;
+                });
+            }
+            SettingsAction::Export {
+                bundles,
+                include_computer_specific,
+            } => self.export_settings(bundles, include_computer_specific),
+            SettingsAction::Import => self.import_settings(),
+            SettingsAction::ApplyImport { document, bundles } => {
+                self.apply_imported_settings(document, bundles)
+            }
+            SettingsAction::ResetAll => self.reset_all_settings(),
+            SettingsAction::RestoreBackup => {
+                self.logger.event("이전 설정 복원 요청");
+                self.restore_latest_backup();
+            }
+        }
+    }
+
+    fn begin_shortcut_recording(&mut self, key: &str) {
+        if !self.shortcut_recording {
+            self.shortcut_recording = true;
+            if let Some(hotkeys) = self.hotkeys.as_mut() {
+                hotkeys.shutdown();
+            }
+            self.uninstall_keyboard_hook_for_shutdown();
+        }
+        self.logger
+            .event(&format!("단축키 기록 시작: id={key} hooks=paused"));
+    }
+
+    fn finish_shortcut_recording(&mut self) {
+        if !self.shortcut_recording {
+            return;
+        }
+        self.shortcut_recording = false;
+        if let Some(tray) = self.tray.as_mut() {
+            self.hotkeys = Some(HotkeyCenter::register(
+                self.hwnd,
+                tray,
+                self.logger.clone(),
+                &self.settings,
+            ));
+        }
+        self.synchronize_keyboard_hook();
+        let warnings = self.runtime_shortcut_warnings();
+        if let Some(window) = self.settings_window.as_mut() {
+            window.update_runtime_shortcut_warnings(&warnings);
+        }
+        self.logger.event("단축키 기록 훅·전역 핫키 재등록 완료");
+    }
+
+    fn settings_dialog_owner(&self) -> HWND {
+        self.settings_window
+            .as_ref()
+            .map(SettingsWindow::hwnd)
+            .unwrap_or(self.hwnd)
+    }
+
+    fn settings_message(
+        &self,
+        title: &str,
+        message: &str,
+        style: windows::Win32::UI::WindowsAndMessaging::MESSAGEBOX_STYLE,
+    ) {
+        let title = title
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let message = message
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        unsafe {
+            MessageBoxW(
+                Some(self.settings_dialog_owner()),
+                PCWSTR(message.as_ptr()),
+                PCWSTR(title.as_ptr()),
+                style,
+            )
+        };
+    }
+
+    fn export_settings(
+        &mut self,
+        bundles: std::collections::BTreeSet<SettingsBundle>,
+        include_computer_specific: bool,
+    ) {
+        if bundles.contains(&SettingsBundle::Timer) && !self.settings.timer.playlist_urls.is_empty()
+        {
+            let answer = unsafe {
+                MessageBoxW(
+                    Some(self.settings_dialog_owner()),
+                    w!("설정 파일을 공유하면 YouTube Music 재생목록 URL도 함께 전달됩니다."),
+                    w!("재생목록 주소가 포함됩니다"),
+                    MB_YESNO | MB_ICONWARNING,
+                )
+            };
+            if answer != IDYES {
+                self.logger.event("설정 내보내기 취소: 재생목록 주소 경고");
+                return;
+            }
+        }
+        let path = match choose_settings_export_path(self.settings_dialog_owner()) {
+            Ok(Some(path)) => path,
+            Ok(None) => {
+                self.logger.event("설정 내보내기 취소: 저장 대화상자");
+                return;
+            }
+            Err(error) => {
+                self.logger.event("설정 내보내기 실패: 저장 대화상자");
+                self.settings_message(
+                    "설정 내보내기 실패",
+                    &error.to_string(),
+                    MB_OK | MB_ICONERROR,
+                );
+                return;
+            }
+        };
+        let file_name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "EduTools-settings.pansetting".to_owned());
+        let result = SettingsTransfer::export_document(
+            &self.settings,
+            &bundles,
+            include_computer_specific,
+            env!("CARGO_PKG_VERSION"),
+            "Windows",
+        )
+        .and_then(|document| SettingsTransfer::encode(&document))
+        .map_err(|error| error.to_string())
+        .and_then(|data| {
+            FileSettingsStorage::atomic_write(&path, &data).map_err(|error| error.to_string())
+        });
+        match result {
+            Ok(()) => {
+                let bundle_names = bundles
+                    .iter()
+                    .map(|bundle| settings_bundle_name(*bundle))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                self.logger.event(&format!(
+                    "설정 내보내기 성공: bundles={bundle_names} computerSpecific={include_computer_specific} file={file_name}"
+                ));
+            }
+            Err(error) => {
+                self.logger
+                    .event(&format!("설정 내보내기 실패: file={file_name}"));
+                self.settings_message("설정 내보내기 실패", &error, MB_OK | MB_ICONERROR);
+            }
+        }
+    }
+
+    fn import_settings(&mut self) {
+        let path = match choose_settings_import_path(self.settings_dialog_owner()) {
+            Ok(Some(path)) => path,
+            Ok(None) => {
+                self.logger.event("설정 가져오기 취소: 열기 대화상자");
+                return;
+            }
+            Err(error) => {
+                self.logger.event("설정 가져오기 실패: 열기 대화상자");
+                self.settings_message(
+                    "설정 가져오기 실패",
+                    &error.to_string(),
+                    MB_OK | MB_ICONERROR,
+                );
+                return;
+            }
+        };
+        let file_name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "설정 파일".to_owned());
+        let document = fs::read(&path)
+            .map_err(|error| error.to_string())
+            .and_then(|data| SettingsTransfer::decode(&data).map_err(|error| error.to_string()));
+        let document = match document {
+            Ok(document) => document,
+            Err(error) => {
+                self.logger
+                    .event(&format!("설정 가져오기 디코드 실패: file={file_name}"));
+                self.settings_message("설정 가져오기 실패", &error, MB_OK | MB_ICONERROR);
+                return;
+            }
+        };
+        let changes =
+            SettingsTransfer::changes(&self.settings, &document, document.included_bundles.iter())
+                .map(|changes| changes.len())
+                .unwrap_or(0);
+        self.logger.event(&format!(
+            "설정 가져오기 디코드 성공: file={file_name} includedBundles={} changes={changes}",
+            document.included_bundles.len()
+        ));
+        if let Some(window) = self.settings_window.as_mut() {
+            if let Err(error) = window.show_import_preview(&self.settings, document) {
+                self.logger.event("설정 가져오기 미리보기 창 생성 실패");
+                self.settings_message(
+                    "설정 가져오기 실패",
+                    &error.to_string(),
+                    MB_OK | MB_ICONERROR,
+                );
+            }
+        }
+    }
+
+    fn apply_imported_settings(
+        &mut self,
+        document: edutools_core::settings_transfer::SettingsDocument,
+        bundles: std::collections::BTreeSet<SettingsBundle>,
+    ) {
+        let imported = match SettingsTransfer::applied_settings(&self.settings, &document, &bundles)
+        {
+            Ok(imported) => imported,
+            Err(error) => {
+                self.logger
+                    .event("설정 가져오기 적용 거부: applied_settings 검증 실패");
+                self.settings_message(
+                    "설정을 적용할 수 없습니다",
+                    &error.to_string(),
+                    MB_OK | MB_ICONERROR,
+                );
+                return;
+            }
+        };
+        if !self.backup_current() {
+            return;
+        }
+        let changes = SettingsTransfer::changes(&self.settings, &document, &bundles)
+            .map(|changes| changes.len())
+            .unwrap_or(0);
+        let candidate = imported.clone();
+        self.update_settings("settings-import", move |settings| *settings = candidate);
+        if self.settings == imported {
+            if let Some(window) = self.settings_window.as_mut() {
+                window.close_import_preview();
+            }
+            self.logger.event(&format!(
+                "설정 가져오기 적용 성공: bundles={} changes={changes} backup=true",
+                bundles.len()
+            ));
+        } else {
+            self.logger.event("설정 가져오기 적용 실패: 저장 경로 거부");
+        }
+    }
+
+    fn reset_all_settings(&mut self) {
+        if !self.backup_current() {
+            return;
+        }
+        let defaults = AppSettings::default();
+        self.update_settings("settings-reset", move |settings| *settings = defaults);
+        self.logger.event("모든 설정 초기화 완료: backup=true");
     }
 
     fn report_settings_store_issue(&mut self) {
@@ -703,10 +1010,25 @@ impl App {
             .and_then(|backups| backups.pop_latest().map_err(|error| error.to_string()));
         match restored {
             Ok(Some(settings)) => {
-                self.update_settings("latest-backup-restore", move |current| *current = settings)
+                let restored = self
+                    .update_settings("latest-backup-restore", move |current| *current = settings);
+                self.logger.event(&format!(
+                    "설정 백업 복원 {}",
+                    if restored {
+                        "성공"
+                    } else {
+                        "변경 없음 또는 실패"
+                    }
+                ));
+                restored
             }
             Ok(None) => {
                 self.logger.event("설정 백업 복원 생략: 백업 없음");
+                self.settings_message(
+                    "이전 설정 복원",
+                    "되돌릴 이전 설정이 없습니다.",
+                    MB_OK | MB_ICONINFORMATION,
+                );
                 false
             }
             Err(error) => {
@@ -3471,6 +3793,7 @@ fn run_message_loop(logger: Logger) -> Result<i32> {
         settings_window: None,
         tray: None,
         hotkeys: None,
+        shortcut_recording: false,
         keyboard_hook: None,
         pressed_shortcuts: PressedShortcuts::new(),
         radial_key_cap_state: RadialKeyCapState::Idle,
@@ -3623,6 +3946,16 @@ unsafe extern "system" fn window_proc(
                 } else {
                     let request = unsafe { Box::from_raw(request) };
                     app.handle_settings_change(*request);
+                }
+                return LRESULT(0);
+            }
+            WM_APP_SETTINGS_ACTION => {
+                let action = lparam.0 as *mut SettingsAction;
+                if action.is_null() {
+                    app.logger.event("설정 창 작업 요청 포인터가 null임");
+                } else {
+                    let action = unsafe { Box::from_raw(action) };
+                    app.handle_settings_action(*action);
                 }
                 return LRESULT(0);
             }
@@ -4111,6 +4444,20 @@ fn eraser_mode_name(mode: EraserMode) -> &'static str {
         EraserMode::Partial => "partial",
         EraserMode::Stroke => "stroke",
         EraserMode::Area => "area",
+    }
+}
+
+fn settings_bundle_name(bundle: SettingsBundle) -> &'static str {
+    match bundle {
+        SettingsBundle::General => "general",
+        SettingsBundle::Tools => "tools",
+        SettingsBundle::Eraser => "eraser",
+        SettingsBundle::Zoom => "zoom",
+        SettingsBundle::Board => "board",
+        SettingsBundle::Timer => "timer",
+        SettingsBundle::Display => "display",
+        SettingsBundle::Shortcuts => "shortcuts",
+        SettingsBundle::Help => "help",
     }
 }
 

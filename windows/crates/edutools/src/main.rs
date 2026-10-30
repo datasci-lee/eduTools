@@ -22,7 +22,7 @@ mod icon_assets;
 mod ink_view;
 #[cfg(windows)]
 mod kbhook;
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 mod keymap;
 #[cfg(any(windows, test))]
 mod lesson_badge;
