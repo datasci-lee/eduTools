@@ -621,6 +621,105 @@ pub enum PathCommand {
 pub struct InkGeometry;
 
 impl InkGeometry {
+    /// Swift: InkView.variableWidthPath(for:samples:)
+    pub fn variable_width_path(
+        stroke: &InkStroke,
+        samples: &[(Point, f64)],
+        minimum_ratio: f64,
+    ) -> Vec<PathCommand> {
+        if samples.len() <= 1 {
+            return Vec::new();
+        }
+
+        let mut left_edge = Vec::with_capacity(samples.len());
+        let mut right_edge = Vec::with_capacity(samples.len());
+        for index in 0..samples.len() {
+            let previous = samples[index.saturating_sub(1)].0;
+            let next = samples[(index + 1).min(samples.len() - 1)].0;
+            let tangent = Point {
+                x: next.x - previous.x,
+                y: next.y - previous.y,
+            };
+            let length = tangent.x.hypot(tangent.y);
+            let normal = if length > 0.0 {
+                Point {
+                    x: -tangent.y / length,
+                    y: tangent.x / length,
+                }
+            } else {
+                Point::ZERO
+            };
+            let half_width = stroke.effective_width(samples[index].1, minimum_ratio) / 2.0;
+            left_edge.push(Point {
+                x: samples[index].0.x + normal.x * half_width,
+                y: samples[index].0.y + normal.y * half_width,
+            });
+            right_edge.push(Point {
+                x: samples[index].0.x - normal.x * half_width,
+                y: samples[index].0.y - normal.y * half_width,
+            });
+        }
+
+        let mut path = Vec::with_capacity(samples.len() * 2 + 11);
+        path.push(PathCommand::MoveTo(left_edge[0]));
+        path.extend(left_edge.iter().skip(1).copied().map(PathCommand::LineTo));
+        path.extend(right_edge.iter().rev().copied().map(PathCommand::LineTo));
+        path.push(PathCommand::LineTo(left_edge[0]));
+        for sample in [samples[0], samples[samples.len() - 1]] {
+            let center = sample.0;
+            let radius = stroke.effective_width(sample.1, minimum_ratio) / 2.0;
+            path.push(PathCommand::MoveTo(Point {
+                x: center.x + radius,
+                y: center.y,
+            }));
+            for (control, to) in [
+                (
+                    Point {
+                        x: center.x + radius,
+                        y: center.y + radius,
+                    },
+                    Point {
+                        x: center.x,
+                        y: center.y + radius,
+                    },
+                ),
+                (
+                    Point {
+                        x: center.x - radius,
+                        y: center.y + radius,
+                    },
+                    Point {
+                        x: center.x - radius,
+                        y: center.y,
+                    },
+                ),
+                (
+                    Point {
+                        x: center.x - radius,
+                        y: center.y - radius,
+                    },
+                    Point {
+                        x: center.x,
+                        y: center.y - radius,
+                    },
+                ),
+                (
+                    Point {
+                        x: center.x + radius,
+                        y: center.y - radius,
+                    },
+                    Point {
+                        x: center.x + radius,
+                        y: center.y,
+                    },
+                ),
+            ] {
+                path.push(PathCommand::QuadTo { control, to });
+            }
+        }
+        path
+    }
+
     /// Swift: InkGeometry.laserTrailPath(_:)
     pub fn laser_trail_path(points: &[Point]) -> Vec<PathCommand> {
         if points.len() <= 1 {

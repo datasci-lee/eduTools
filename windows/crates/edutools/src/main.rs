@@ -3,6 +3,8 @@ mod app;
 #[cfg(windows)]
 mod hotkey;
 #[cfg(windows)]
+mod ink_view;
+#[cfg(windows)]
 mod keymap;
 #[cfg(windows)]
 mod log;
@@ -10,6 +12,8 @@ mod log;
 mod monitor;
 #[cfg(windows)]
 mod overlay;
+#[cfg(windows)]
+mod render;
 #[cfg(windows)]
 mod tray;
 
