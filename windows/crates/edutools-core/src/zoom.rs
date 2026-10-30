@@ -341,10 +341,6 @@ impl ZoomGeometry {
         inside.then(|| Point::new(monitor_rect.x + view_point.x, monitor_rect.y + view_point.y))
     }
 
-    pub fn cursor_bitmap_origin(pointer: Point, hotspot: Point, scale: f64) -> Point {
-        Point::new(pointer.x - hotspot.x * scale, pointer.y - hotspot.y * scale)
-    }
-
     // Swift: ZoomGeometry.presentationTransform(sourceRect:destinationSize:)
     pub fn presentation_transform(source_rect: Rect, destination_size: Size) -> AffineTransform {
         if source_rect.width <= 0.0 || source_rect.height <= 0.0 {
@@ -434,30 +430,6 @@ mod tests {
                     "gesture={gesture} control={control:?}"
                 );
             }
-        }
-    }
-
-    #[test]
-    fn cursor_hotspot_origin_table() {
-        let cases = [
-            (
-                Point::new(100.0, 80.0),
-                Point::new(3.0, 5.0),
-                1.0,
-                Point::new(97.0, 75.0),
-            ),
-            (
-                Point::new(100.0, 80.0),
-                Point::new(3.0, 5.0),
-                2.0,
-                Point::new(94.0, 70.0),
-            ),
-        ];
-        for (pointer, hotspot, scale, expected) in cases {
-            assert_eq!(
-                ZoomGeometry::cursor_bitmap_origin(pointer, hotspot, scale),
-                expected
-            );
         }
     }
 
