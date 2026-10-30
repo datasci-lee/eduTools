@@ -285,8 +285,15 @@ impl OverlayManager {
                 }
             }
 
-            if let Err(error) = overlay.selftest_render_path() {
-                failures.push(format!("overlay {key}: 가짜 획 렌더 실패: {error}"));
+            match overlay.selftest_render_path() {
+                Ok(pixel_failures) => failures.extend(
+                    pixel_failures
+                        .into_iter()
+                        .map(|failure| format!("overlay {key}: {failure}")),
+                ),
+                Err(error) => {
+                    failures.push(format!("overlay {key}: 가짜 획/픽셀 렌더 실패: {error}"))
+                }
             }
             match overlay.set_click_through(true) {
                 Ok(()) => {
@@ -590,7 +597,7 @@ impl OverlayWindow {
             )
     }
 
-    fn selftest_render_path(&mut self) -> Result<()> {
+    fn selftest_render_path(&mut self) -> Result<Vec<String>> {
         let mut fake_layer = InkLayerState::new();
         let fake = InkStroke::new(
             "selftest-five-point-stroke",
@@ -620,10 +627,12 @@ impl OverlayWindow {
             .as_ref()
             .expect("renderer lives until OverlayWindow::drop");
         let highlighter_opacity = self.state.input.highlighter_opacity();
+        let pixel_failures = renderer.selftest_pixel_failures(ratio, highlighter_opacity)?;
         renderer.rebuild_completed(fake_layer.strokes(), ratio, highlighter_opacity)?;
         renderer.draw_frame(None, ratio, highlighter_opacity, false)?;
         renderer.rebuild_completed(&self.strokes(), ratio, highlighter_opacity)?;
-        self.state.draw()
+        self.state.draw()?;
+        Ok(pixel_failures)
     }
 }
 

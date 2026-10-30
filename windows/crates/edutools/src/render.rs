@@ -1,7 +1,9 @@
 use crate::log::Logger;
-use edutools_core::ink::{InkGeometry, InkStroke, InkStrokeTool, PathCommand, Size};
+use edutools_core::ink::{
+    InkGeometry, InkPoint, InkStroke, InkStrokeContent, InkStrokeTool, PathCommand, Point, Size,
+};
 use windows::core::{Error, Interface, Result};
-use windows::Win32::Foundation::{HMODULE, HWND, RECT};
+use windows::Win32::Foundation::{E_FAIL, E_INVALIDARG, HMODULE, HWND, RECT};
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_FIGURE_BEGIN_FILLED,
     D2D1_FIGURE_BEGIN_HOLLOW, D2D1_FIGURE_END_CLOSED, D2D1_FIGURE_END_OPEN, D2D1_PIXEL_FORMAT,
@@ -10,11 +12,12 @@ use windows::Win32::Graphics::Direct2D::Common::{
 use windows::Win32::Graphics::Direct2D::{
     D2D1CreateDevice, ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext, ID2D1Factory, ID2D1Image,
     ID2D1Layer, ID2D1StrokeStyle, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
-    D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
-    D2D1_CAP_STYLE_FLAT, D2D1_CAP_STYLE_ROUND, D2D1_DASH_STYLE_SOLID,
+    D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_CPU_READ, D2D1_BITMAP_OPTIONS_TARGET,
+    D2D1_BITMAP_PROPERTIES1, D2D1_CAP_STYLE_FLAT, D2D1_CAP_STYLE_ROUND, D2D1_DASH_STYLE_SOLID,
     D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_ELLIPSE, D2D1_INTERPOLATION_MODE_LINEAR,
-    D2D1_LAYER_OPTIONS1_NONE, D2D1_LAYER_PARAMETERS1, D2D1_LINE_JOIN_ROUND,
-    D2D1_QUADRATIC_BEZIER_SEGMENT, D2D1_STROKE_STYLE_PROPERTIES,
+    D2D1_LAYER_OPTIONS1_NONE, D2D1_LAYER_PARAMETERS1, D2D1_LINE_JOIN_ROUND, D2D1_MAP_OPTIONS_READ,
+    D2D1_PRIMITIVE_BLEND_COPY, D2D1_PRIMITIVE_BLEND_SOURCE_OVER, D2D1_QUADRATIC_BEZIER_SEGMENT,
+    D2D1_STROKE_STYLE_PROPERTIES,
 };
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
 use windows::Win32::Graphics::Direct3D11::{
@@ -34,6 +37,13 @@ use windows::Win32::Graphics::Dxgi::{
 use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
 
 const TARGET_DPI: f32 = 96.0;
+
+#[derive(Clone, Copy, Debug)]
+struct PixelSample {
+    x: u32,
+    y: u32,
+    bgra: [u8; 4],
+}
 
 macro_rules! d2d_point {
     ($point:expr) => {{
@@ -227,18 +237,103 @@ impl OverlayRenderer {
         Ok((description.Width, description.Height))
     }
 
+    pub fn selftest_pixel_failures(
+        &self,
+        minimum_ratio: f64,
+        highlighter_opacity: f64,
+    ) -> Result<Vec<String>> {
+        let result = self.selftest_pixel_failures_inner(minimum_ratio, highlighter_opacity);
+        self.finish_offscreen_draw(result)
+    }
+
+    fn selftest_pixel_failures_inner(
+        &self,
+        minimum_ratio: f64,
+        highlighter_opacity: f64,
+    ) -> Result<Vec<String>> {
+        let completed = create_completed_bitmap(&self.context, self.width, self.height)?;
+        let frame = create_completed_bitmap(&self.context, self.width, self.height)?;
+        let opaque_black = D2D1_COLOR_F {
+            a: 1.0,
+            ..Default::default()
+        };
+        let transparent_points = transparency_probe_points(self.width, self.height);
+        let mut failures = Vec::new();
+
+        self.clear_bitmap(&completed, &opaque_black)?;
+        self.clear_bitmap(&frame, &opaque_black)?;
+        self.draw_strokes_to_bitmap(&completed, &[], minimum_ratio, highlighter_opacity, true)?;
+        self.draw_frame_to_bitmap(
+            &frame,
+            &completed,
+            None,
+            minimum_ratio,
+            highlighter_opacity,
+            false,
+        )?;
+        self.restore_swap_target()?;
+        check_transparent_samples(
+            "빈 판서 프레임",
+            &read_pixel_samples(&self.context, &frame, &transparent_points)?,
+            &mut failures,
+        );
+
+        for (name, tool, width) in [
+            ("펜 획", InkStrokeTool::Pen, 12.0),
+            ("형광펜 획", InkStrokeTool::Highlighter, 24.0),
+        ] {
+            let stroke = selftest_stroke(name, tool, width);
+            self.clear_bitmap(&completed, &opaque_black)?;
+            self.clear_bitmap(&frame, &opaque_black)?;
+            self.draw_strokes_to_bitmap(
+                &completed,
+                std::slice::from_ref(&stroke),
+                minimum_ratio,
+                highlighter_opacity,
+                true,
+            )?;
+            self.draw_frame_to_bitmap(
+                &frame,
+                &completed,
+                None,
+                minimum_ratio,
+                highlighter_opacity,
+                false,
+            )?;
+            self.restore_swap_target()?;
+            check_transparent_samples(
+                name,
+                &read_pixel_samples(&self.context, &frame, &transparent_points)?,
+                &mut failures,
+            );
+
+            let stroke_point = [(self.width / 2, self.height / 4)];
+            let sample = read_pixel_samples(&self.context, &frame, &stroke_point)?[0];
+            if sample.bgra[3] == 0 {
+                failures.push(format!(
+                    "{name}: 획 위 ({}, {}) BGRA={:?}, alpha가 0임",
+                    sample.x, sample.y, sample.bgra
+                ));
+            }
+        }
+
+        Ok(failures)
+    }
+
     pub fn append_completed(
         &self,
         stroke: &InkStroke,
         minimum_ratio: f64,
         highlighter_opacity: f64,
     ) -> Result<()> {
-        self.begin_completed_draw();
-        let draw_result = self.draw_stroke(stroke, minimum_ratio, highlighter_opacity);
-        let end_result = unsafe { self.context.EndDraw(None, None) };
-        self.restore_swap_target()?;
-        draw_result?;
-        end_result
+        let result = self.draw_strokes_to_bitmap(
+            self.completed_bitmap(),
+            std::slice::from_ref(stroke),
+            minimum_ratio,
+            highlighter_opacity,
+            false,
+        );
+        self.finish_offscreen_draw(result)
     }
 
     pub fn rebuild_completed(
@@ -247,18 +342,14 @@ impl OverlayRenderer {
         minimum_ratio: f64,
         highlighter_opacity: f64,
     ) -> Result<()> {
-        self.begin_completed_draw();
-        unsafe { self.context.Clear(Some(&D2D1_COLOR_F::default())) };
-        let draw_result: Result<()> = (|| {
-            for stroke in strokes {
-                self.draw_stroke(stroke, minimum_ratio, highlighter_opacity)?;
-            }
-            Ok(())
-        })();
-        let end_result = unsafe { self.context.EndDraw(None, None) };
-        self.restore_swap_target()?;
-        draw_result?;
-        end_result
+        let result = self.draw_strokes_to_bitmap(
+            self.completed_bitmap(),
+            strokes,
+            minimum_ratio,
+            highlighter_opacity,
+            true,
+        );
+        self.finish_offscreen_draw(result)
     }
 
     pub fn draw_frame(
@@ -268,7 +359,31 @@ impl OverlayRenderer {
         highlighter_opacity: f64,
         debug_visible: bool,
     ) -> Result<()> {
-        self.restore_swap_target()?;
+        let swap_target = self
+            .swap_target
+            .as_ref()
+            .expect("swap target exists outside resize");
+        self.draw_frame_to_bitmap(
+            swap_target,
+            self.completed_bitmap(),
+            active_stroke,
+            minimum_ratio,
+            highlighter_opacity,
+            debug_visible,
+        )?;
+        unsafe { self.swap_chain.Present(1, Default::default()).ok() }
+    }
+
+    fn draw_frame_to_bitmap(
+        &self,
+        target: &ID2D1Bitmap1,
+        completed: &ID2D1Bitmap1,
+        active_stroke: Option<&InkStroke>,
+        minimum_ratio: f64,
+        highlighter_opacity: f64,
+        debug_visible: bool,
+    ) -> Result<()> {
+        self.set_target(target)?;
         let clear = if debug_visible {
             D2D1_COLOR_F {
                 r: 0.12,
@@ -290,19 +405,25 @@ impl OverlayRenderer {
         } else {
             None
         };
+        let bounds = frame_bounds(self.width, self.height);
         unsafe {
             self.context.BeginDraw();
-            self.context.Clear(Some(&clear));
+            if debug_visible {
+                self.context.Clear(Some(&clear));
+            } else {
+                // Transparent source-over cannot erase stale flip-buffer alpha; copy exact bounds.
+                self.context.SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_COPY);
+            }
             self.context.DrawBitmap(
-                self.completed_bitmap
-                    .as_ref()
-                    .expect("completed bitmap exists outside resize"),
-                None,
+                completed,
+                Some(&bounds),
                 1.0,
                 D2D1_INTERPOLATION_MODE_LINEAR,
-                None,
+                Some(&bounds),
                 None,
             );
+            self.context
+                .SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_SOURCE_OVER);
         }
         let draw_result = if let Some(stroke) = active_stroke {
             self.draw_stroke(stroke, minimum_ratio, highlighter_opacity)
@@ -325,8 +446,7 @@ impl OverlayRenderer {
         }
         let end_result = unsafe { self.context.EndDraw(None, None) };
         draw_result?;
-        end_result?;
-        unsafe { self.swap_chain.Present(1, Default::default()).ok() }
+        end_result
     }
 
     fn draw_stroke(
@@ -340,12 +460,7 @@ impl OverlayRenderer {
         }
 
         let mut parameters = D2D1_LAYER_PARAMETERS1 {
-            contentBounds: D2D_RECT_F {
-                left: -f32::MAX,
-                top: -f32::MAX,
-                right: f32::MAX,
-                bottom: f32::MAX,
-            },
+            contentBounds: frame_bounds(self.width, self.height),
             maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
             opacity: highlighter_opacity as f32,
             layerOptions: D2D1_LAYER_OPTIONS1_NONE,
@@ -476,16 +591,59 @@ impl OverlayRenderer {
         self.rebuild_completed(&[], 0.2, 1.0)
     }
 
-    fn begin_completed_draw(&self) {
-        let image: ID2D1Image = self
-            .completed_bitmap
+    fn completed_bitmap(&self) -> &ID2D1Bitmap1 {
+        self.completed_bitmap
             .as_ref()
             .expect("completed bitmap exists outside resize")
-            .cast()
-            .expect("ID2D1Bitmap1 implements ID2D1Image");
+    }
+
+    fn set_target(&self, bitmap: &ID2D1Bitmap1) -> Result<()> {
+        let image: ID2D1Image = bitmap.cast()?;
+        unsafe { self.context.SetTarget(&image) };
+        Ok(())
+    }
+
+    fn draw_strokes_to_bitmap(
+        &self,
+        bitmap: &ID2D1Bitmap1,
+        strokes: &[InkStroke],
+        minimum_ratio: f64,
+        highlighter_opacity: f64,
+        clear: bool,
+    ) -> Result<()> {
+        self.set_target(bitmap)?;
         unsafe {
-            self.context.SetTarget(&image);
             self.context.BeginDraw();
+            if clear {
+                self.context.Clear(Some(&D2D1_COLOR_F::default()));
+            }
+        }
+        let draw_result: Result<()> = (|| {
+            for stroke in strokes {
+                self.draw_stroke(stroke, minimum_ratio, highlighter_opacity)?;
+            }
+            Ok(())
+        })();
+        let end_result = unsafe { self.context.EndDraw(None, None) };
+        draw_result?;
+        end_result
+    }
+
+    fn finish_offscreen_draw<T>(&self, result: Result<T>) -> Result<T> {
+        let restore_result = self.restore_swap_target();
+        match (result, restore_result) {
+            (Err(error), _) => Err(error),
+            (Ok(value), Ok(())) => Ok(value),
+            (Ok(_), Err(error)) => Err(error),
+        }
+    }
+
+    fn clear_bitmap(&self, bitmap: &ID2D1Bitmap1, color: &D2D1_COLOR_F) -> Result<()> {
+        self.set_target(bitmap)?;
+        unsafe {
+            self.context.BeginDraw();
+            self.context.Clear(Some(color));
+            self.context.EndDraw(None, None)
         }
     }
 
@@ -524,6 +682,91 @@ impl OverlayRenderer {
             target_size.height
         ));
         Ok(())
+    }
+}
+
+fn frame_bounds(width: u32, height: u32) -> D2D_RECT_F {
+    D2D_RECT_F {
+        left: 0.0,
+        top: 0.0,
+        right: width as f32,
+        bottom: height as f32,
+    }
+}
+
+fn transparency_probe_points(width: u32, height: u32) -> [(u32, u32); 6] {
+    [
+        (0, 0),
+        (width - 1, 0),
+        (0, height - 1),
+        (width - 1, height - 1),
+        (width / 2, height - 1),
+        (width / 2, height / 2),
+    ]
+}
+
+fn selftest_stroke(name: &str, tool: InkStrokeTool, width: f64) -> InkStroke {
+    InkStroke::new(
+        format!("selftest-{name}"),
+        tool,
+        [1.0, 0.8, 0.1, 1.0],
+        width,
+        false,
+        vec![
+            InkPoint::new(Point { x: 0.25, y: 0.25 }, 1.0, 0.0),
+            InkPoint::new(Point { x: 0.75, y: 0.25 }, 1.0, 1.0),
+        ],
+        InkStrokeContent::Freehand,
+    )
+}
+
+fn read_pixel_samples(
+    context: &ID2D1DeviceContext,
+    bitmap: &ID2D1Bitmap1,
+    points: &[(u32, u32)],
+) -> Result<Vec<PixelSample>> {
+    let size = unsafe { bitmap.GetPixelSize() };
+    if points
+        .iter()
+        .any(|(x, y)| *x >= size.width || *y >= size.height)
+    {
+        return Err(Error::new(
+            E_INVALIDARG,
+            "pixel sample is outside the bitmap",
+        ));
+    }
+    let staging = create_cpu_read_bitmap(context, size.width, size.height)?;
+    unsafe { staging.CopyFromBitmap(None, bitmap, None) }?;
+    let mapped = unsafe { staging.Map(D2D1_MAP_OPTIONS_READ) }?;
+    if mapped.bits.is_null() {
+        let _ = unsafe { staging.Unmap() };
+        return Err(Error::new(E_FAIL, "mapped bitmap returned a null pointer"));
+    }
+
+    let samples = points
+        .iter()
+        .map(|&(x, y)| {
+            let offset = y as usize * mapped.pitch as usize + x as usize * 4;
+            let pixel = unsafe { std::slice::from_raw_parts(mapped.bits.add(offset), 4) };
+            PixelSample {
+                x,
+                y,
+                bgra: [pixel[0], pixel[1], pixel[2], pixel[3]],
+            }
+        })
+        .collect();
+    unsafe { staging.Unmap() }?;
+    Ok(samples)
+}
+
+fn check_transparent_samples(name: &str, samples: &[PixelSample], failures: &mut Vec<String>) {
+    for sample in samples {
+        if sample.bgra[3] != 0 {
+            failures.push(format!(
+                "{name}: 획 밖 ({}, {}) BGRA={:?}, alpha가 0이 아님",
+                sample.x, sample.y, sample.bgra
+            ));
+        }
     }
 }
 
@@ -589,6 +832,21 @@ fn create_completed_bitmap(
         dpiX: TARGET_DPI,
         dpiY: TARGET_DPI,
         bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET,
+        ..Default::default()
+    };
+    unsafe { context.CreateBitmap(D2D_SIZE_U { width, height }, None, 0, &properties) }
+}
+
+fn create_cpu_read_bitmap(
+    context: &ID2D1DeviceContext,
+    width: u32,
+    height: u32,
+) -> Result<ID2D1Bitmap1> {
+    let properties = D2D1_BITMAP_PROPERTIES1 {
+        pixelFormat: pixel_format(),
+        dpiX: TARGET_DPI,
+        dpiY: TARGET_DPI,
+        bitmapOptions: D2D1_BITMAP_OPTIONS_CPU_READ | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
         ..Default::default()
     };
     unsafe { context.CreateBitmap(D2D_SIZE_U { width, height }, None, 0, &properties) }
