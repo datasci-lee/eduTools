@@ -2,6 +2,7 @@
 
 pub mod attr_icon;
 pub mod board;
+pub mod dispatch;
 pub mod display_operations;
 pub mod display_preset;
 pub mod eraser;
@@ -15,6 +16,7 @@ pub mod settings_store;
 pub mod settings_transfer;
 pub mod shape;
 pub mod shortcut;
+pub mod state;
 pub mod timer;
 pub mod zoom;
 
