@@ -633,7 +633,7 @@ mod windows_impl {
         })
     }
 
-    fn query_active_display_config(
+    pub(crate) fn query_active_display_config(
     ) -> Result<(Vec<DISPLAYCONFIG_PATH_INFO>, Vec<DISPLAYCONFIG_MODE_INFO>)> {
         let flags = QDC_ONLY_ACTIVE_PATHS | QDC_VIRTUAL_MODE_AWARE;
         for _ in 0..DISPLAY_CONFIG_RETRY_LIMIT {
@@ -1036,6 +1036,8 @@ mod windows_impl {
 #[cfg(windows)]
 #[allow(unused_imports)]
 pub use windows_impl::monitor_at_point;
+#[cfg(windows)]
+pub(crate) use windows_impl::query_active_display_config;
 #[cfg(windows)]
 pub use windows_impl::{
     current_display_configuration, enumerate_monitors, monitor_by_key, DisplayConfiguration,

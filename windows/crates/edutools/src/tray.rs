@@ -1,3 +1,4 @@
+use crate::display_apply::DisplayPresetMenuEntry;
 use crate::log::Logger;
 use std::ffi::c_void;
 use std::mem::size_of;
@@ -12,13 +13,15 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, DestroyIcon, DestroyMenu, GetCursorPos, LoadImageW, MessageBoxW,
     PostMessageW, SetForegroundWindow, TrackPopupMenu, GDI_IMAGE_TYPE, HICON, IMAGE_ICON,
-    LR_DEFAULTCOLOR, MB_ICONWARNING, MB_OK, MENU_ITEM_FLAGS, MF_CHECKED, MF_SEPARATOR, MF_STRING,
-    SM_CXSMICON, TPM_RETURNCMD, TPM_RIGHTBUTTON, TRACK_POPUP_MENU_FLAGS, WM_NULL,
+    LR_DEFAULTCOLOR, MB_ICONWARNING, MB_OK, MENU_ITEM_FLAGS, MF_CHECKED, MF_GRAYED, MF_POPUP,
+    MF_SEPARATOR, MF_STRING, SM_CXSMICON, TPM_RETURNCMD, TPM_RIGHTBUTTON, TRACK_POPUP_MENU_FLAGS,
+    WM_NULL,
 };
 
 pub const CALLBACK_MESSAGE: u32 = 0x8000 + 1;
 pub const MENU_TOGGLE_ANNOTATION: u16 = 1;
 pub const MENU_EXIT: u16 = 2;
+pub const MENU_DISPLAY_PRESET_BASE: u16 = 100;
 pub const ALL_ICON_RESOURCE_IDS: [u16; 5] = [1, 101, 102, 103, 104];
 
 const TRAY_ID: u32 = 1;
@@ -95,7 +98,7 @@ impl Tray {
         }
     }
 
-    pub fn show_menu(&self) -> Option<u16> {
+    pub fn show_menu(&self, display_entries: &[DisplayPresetMenuEntry]) -> Option<u16> {
         // SAFETY: CreatePopupMenu creates an owned menu handle checked below.
         let menu = match unsafe { CreatePopupMenu() } {
             Ok(menu) => menu,
@@ -105,6 +108,22 @@ impl Tray {
                 return None;
             }
         };
+        let display_menu = match unsafe { CreatePopupMenu() } {
+            Ok(menu) => menu,
+            Err(error) => {
+                self.logger
+                    .event(&format!("화면 구성 하위 메뉴 생성 실패: {error}"));
+                let _ = unsafe { DestroyMenu(menu) };
+                return None;
+            }
+        };
+        if let Err(error) = populate_display_menu(display_menu, display_entries) {
+            self.logger
+                .event(&format!("화면 구성 하위 메뉴 항목 생성 실패: {error}"));
+            let _ = unsafe { DestroyMenu(display_menu) };
+            let _ = unsafe { DestroyMenu(menu) };
+            return None;
+        }
         let checked = if self.annotation_enabled {
             MF_CHECKED.0
         } else {
@@ -118,6 +137,7 @@ impl Tray {
                 usize::from(MENU_TOGGLE_ANNOTATION),
                 w!("판서 모드"),
             )
+            .and_then(|_| AppendMenuW(menu, MF_POPUP, display_menu.0 as usize, w!("화면 구성")))
             .and_then(|_| AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null()))
             .and_then(|_| AppendMenuW(menu, MF_STRING, usize::from(MENU_EXIT), w!("EduTools 종료")))
         };
@@ -318,6 +338,55 @@ impl Tray {
             "판서 모드 꺼짐"
         }
     }
+}
+
+pub fn display_preset_index(command: u16) -> Option<usize> {
+    let index = command.checked_sub(MENU_DISPLAY_PRESET_BASE)? as usize;
+    (index < edutools_core::display_preset::DisplayPresetDefaults::MAXIMUM_PRESET_COUNT)
+        .then_some(index)
+}
+
+fn populate_display_menu(
+    menu: windows::Win32::UI::WindowsAndMessaging::HMENU,
+    entries: &[DisplayPresetMenuEntry],
+) -> Result<()> {
+    if entries.is_empty() {
+        return unsafe {
+            AppendMenuW(
+                menu,
+                MENU_ITEM_FLAGS(MF_STRING.0 | MF_GRAYED.0),
+                0,
+                w!("프리셋 없음 — 설정에서 추가"),
+            )
+        };
+    }
+    for entry in entries {
+        let mut flags = MF_STRING.0;
+        if entry.is_current {
+            flags |= MF_CHECKED.0;
+        }
+        if !entry.is_enabled {
+            flags |= MF_GRAYED.0;
+        }
+        let title = entry
+            .disabled_reason
+            .as_ref()
+            .map(|reason| format!("{} — {reason}", entry.title))
+            .unwrap_or_else(|| entry.title.clone());
+        let title = wide(&title);
+        let command = usize::from(MENU_DISPLAY_PRESET_BASE)
+            .checked_add(entry.index)
+            .expect("display preset command fits usize");
+        unsafe {
+            AppendMenuW(
+                menu,
+                MENU_ITEM_FLAGS(flags),
+                command,
+                PCWSTR(title.as_ptr()),
+            )
+        }?;
+    }
+    Ok(())
 }
 
 pub fn load_resource_icon(hinstance: HINSTANCE, id: u16, size: i32) -> Result<HICON> {

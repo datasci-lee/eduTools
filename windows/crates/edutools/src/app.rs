@@ -4,6 +4,12 @@ use crate::break_screen::{
 use crate::capture::{
     CapturedFrame, ZoomCapture, WM_APP_ZOOM_CAPTURE_FAILED, WM_APP_ZOOM_FRAME, WM_APP_ZOOM_RECREATE,
 };
+use crate::display_apply::{
+    decision_from_command, is_console_session, recover_pending_display_configuration,
+    run_display_apply_dry_run, ConfirmationDecision, ConfirmationResolution, DisplayApplier,
+    DisplayApplySource, DisplayApplyState, ExpectedDisplayConfiguration, WM_APP_DISPLAY_DECISION,
+    WM_APP_DISPLAY_EXPIRED,
+};
 use crate::help::{
     monotonic_millis, monotonic_seconds, HelpManager, HELP_RELEASE_TIMER_ID, WM_APP_HELP_ACTION,
     WM_APP_HELP_CLOSE, WM_APP_HELP_REFRESH,
@@ -38,7 +44,9 @@ use crate::text_entry::{
     cancel_reason, TextEntryRequest, TextEntryWindow, WM_APP_TEXT_ENTRY_CANCEL,
     WM_APP_TEXT_ENTRY_COMMIT, WM_APP_TEXT_ENTRY_OPEN,
 };
-use crate::tray::{self, Tray, CALLBACK_MESSAGE, MENU_EXIT, MENU_TOGGLE_ANNOTATION};
+use crate::tray::{
+    self, display_preset_index, Tray, CALLBACK_MESSAGE, MENU_EXIT, MENU_TOGGLE_ANNOTATION,
+};
 use crate::zoom_view::{
     decode_pointer, decode_wheel, ZoomView, WM_APP_ZOOM_POINTER, WM_APP_ZOOM_REDRAW,
     WM_APP_ZOOM_WHEEL,
@@ -46,7 +54,7 @@ use crate::zoom_view::{
 use edutools_core::board::BoardPresentation;
 use edutools_core::dispatch::{dispatch, DispatchContext, Effect, PressedShortcuts};
 use edutools_core::display_preset::{
-    DisplayAutoSwitchDecision, DisplayAutoSwitchPolicy, DisplayPresetDefaults,
+    DisplayAutoSwitchDecision, DisplayAutoSwitchPolicy, DisplayPlanner, DisplayPresetDefaults,
 };
 use edutools_core::eraser::EraserMode;
 use edutools_core::ink::{
@@ -79,8 +87,7 @@ use windows::Win32::Foundation::{
     LRESULT, POINT, WPARAM,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::RemoteDesktop::{ProcessIdToSessionId, WTSGetActiveConsoleSessionId};
-use windows::Win32::System::Threading::{CreateMutexW, GetCurrentProcessId};
+use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::HiDpi::{
     GetAwarenessFromDpiAwarenessContext, GetThreadDpiAwarenessContext,
     DPI_AWARENESS_PER_MONITOR_AWARE,
@@ -147,6 +154,26 @@ pub fn run() -> i32 {
                 1
             }
         };
+    }
+
+    if arguments
+        .first()
+        .is_some_and(|value| value == "--display-apply-dry-run")
+    {
+        if arguments.len() != 2 {
+            eprintln!("사용법: edutools --display-apply-dry-run <1-based-index>");
+            return 2;
+        }
+        let index = arguments[1]
+            .to_string_lossy()
+            .parse::<usize>()
+            .ok()
+            .filter(|index| *index > 0);
+        let Some(index) = index else {
+            eprintln!("--display-apply-dry-run index는 1 이상의 정수여야 합니다");
+            return 2;
+        };
+        return run_display_apply_dry_run(index - 1, &logger);
     }
 
     // SAFETY: this process-wide opt-in is called exactly once, before any app windows are created.
@@ -249,8 +276,9 @@ struct App {
     last_judged_uuids: Option<HashSet<String>>,
     last_auto_apply_at: Option<f64>,
     pending_display_apply: Option<usize>,
-    #[allow(dead_code)]
-    expected_after_apply: Option<HashSet<String>>, // 121b fills this after applying a plan.
+    expected_after_apply: Option<ExpectedDisplayConfiguration>,
+    display_applier: DisplayApplier,
+    pending_archived_display_uuids: HashSet<String>,
     logger: Logger,
     shutting_down: bool,
 }
@@ -276,6 +304,13 @@ impl App {
     fn initialize(&mut self) -> Result<()> {
         self.music = Some(BreakMusicManager::new(self.hwnd, self.logger.clone())?);
         self.tray = Some(Tray::add(self.hwnd, self.hinstance, self.logger.clone())?);
+        if let Err(error) = recover_pending_display_configuration(&self.logger) {
+            self.logger
+                .event(&format!("시작 시 미확정 화면 구성 복구 실패: {error}"));
+            if let Some(tray) = self.tray.as_ref() {
+                tray.show_warning("화면 구성 복구 실패", &error);
+            }
+        }
         self.report_startup_settings_state();
         let hotkeys = HotkeyCenter::register(
             self.hwnd,
@@ -656,6 +691,12 @@ impl App {
         } else if definition.command == ShortcutCommand::ToggleZoom {
             self.logger.event("전역 키 zoom.toggle 눌림");
             self.apply_effects(vec![Effect::ToggleZoom], "전역 키 zoom.toggle");
+        } else if let ShortcutCommand::ApplyDisplayPreset(index) = &definition.command {
+            self.logger.event(&format!(
+                "전역 키 {} 눌림: 화면 구성 index={index}",
+                definition.id
+            ));
+            self.apply_display_preset(*index, DisplayApplySource::Manual);
         } else if definition.command == ShortcutCommand::ToggleLessonTimer
             || definition.command == ShortcutCommand::ShowBreakTimerSetup
         {
@@ -1138,6 +1179,9 @@ impl App {
                 Effect::BeginZoomPreview => self.begin_zoom_preview(),
                 Effect::FinishZoomPreview => self.finish_zoom_preview(false),
                 Effect::CycleZoomFollowMode => self.cycle_zoom_follow_mode(),
+                Effect::ApplyDisplayPreset(index) => {
+                    self.apply_display_preset(index, DisplayApplySource::Manual);
+                }
                 Effect::ToggleLessonTimer => {
                     let result = self
                         .lesson_badge
@@ -1675,6 +1719,177 @@ impl App {
         Ok(())
     }
 
+    fn apply_display_preset(
+        &mut self,
+        index: usize,
+        source: DisplayApplySource,
+    ) -> Option<HashSet<String>> {
+        if self.display_applier.state() != DisplayApplyState::Idle {
+            let reason = match self.display_applier.state() {
+                DisplayApplyState::Applying => "다른 화면 구성을 적용하는 중입니다",
+                DisplayApplyState::AwaitingConfirmation => {
+                    "현재 화면 구성을 먼저 유지하거나 되돌리세요"
+                }
+                DisplayApplyState::Idle => unreachable!(),
+            };
+            self.logger.event(&format!(
+                "화면 구성 적용 요청 거부: source={} index={} reason={reason}",
+                source.log_name(),
+                index
+            ));
+            if source == DisplayApplySource::Manual {
+                self.show_display_apply_warning("화면 구성을 적용할 수 없습니다", reason);
+            }
+            return None;
+        }
+        let Some(preset) = self.settings.display.presets.get(index).cloned() else {
+            let reason = format!("프리셋 {}이 없습니다", index + 1);
+            self.logger.event(&format!(
+                "화면 구성 적용 요청 거부: source={} index={} reason={reason}",
+                source.log_name(),
+                index
+            ));
+            if source == DisplayApplySource::Manual {
+                self.show_display_apply_warning("화면 구성을 적용할 수 없습니다", &reason);
+            }
+            return None;
+        };
+        let configuration = match current_display_configuration() {
+            Ok(configuration) => configuration,
+            Err(error) => {
+                let reason = format!("현재 화면 구성을 읽지 못했습니다: {error}");
+                self.logger.event(&reason);
+                if source == DisplayApplySource::Manual {
+                    self.show_display_apply_warning("화면 구성을 적용할 수 없습니다", &reason);
+                }
+                return None;
+            }
+        };
+        let plan = DisplayPlanner::plan(&preset, &configuration.online);
+        let desired_mirror_ids = plan
+            .mirrors
+            .iter()
+            .map(|mirror| mirror.slave_id)
+            .collect::<HashSet<_>>();
+        let disappearing = configuration
+            .online
+            .iter()
+            .filter(|display| {
+                display.current_mirror_master_id.is_none()
+                    && desired_mirror_ids.contains(&display.id)
+            })
+            .map(|display| display.uuid.clone())
+            .collect::<HashSet<_>>();
+        let archived = self
+            .overlays
+            .as_mut()
+            .map(|overlays| overlays.archive_disconnected_displays_for_preset(&disappearing))
+            .unwrap_or_default();
+        if let Some(overlays) = self.overlays.as_mut() {
+            overlays.set_display_preset_restoration_deferred(true, true);
+        }
+
+        match self.display_applier.apply_preset(&preset, index, source) {
+            Ok(completion) => {
+                let active_uuids = completion.expected.active_uuids();
+                self.expected_after_apply = Some(completion.expected);
+                if completion.awaiting_confirmation {
+                    self.pending_archived_display_uuids = archived;
+                } else {
+                    if let Some(overlays) = self.overlays.as_mut() {
+                        overlays.set_display_preset_restoration_deferred(false, true);
+                    }
+                    self.pending_archived_display_uuids.clear();
+                }
+                Some(active_uuids)
+            }
+            Err(error) => {
+                if let Some(overlays) = self.overlays.as_mut() {
+                    overlays.restore_displays_archived_for_failed_preset(&archived);
+                    overlays.set_display_preset_restoration_deferred(false, true);
+                }
+                self.pending_archived_display_uuids.clear();
+                self.expected_after_apply =
+                    current_display_configuration().ok().map(|configuration| {
+                        ExpectedDisplayConfiguration::capture(&configuration.online)
+                    });
+                self.logger.event(&format!(
+                    "화면 구성 적용 실패: source={} {error}",
+                    source.log_name()
+                ));
+                if source == DisplayApplySource::Manual {
+                    self.show_display_apply_warning("화면 구성을 적용하지 못했습니다", &error);
+                }
+                None
+            }
+        }
+    }
+
+    fn handle_display_confirmation(&mut self, decision: ConfirmationDecision) {
+        let Some(resolution) = self.display_applier.resolve_confirmation(decision) else {
+            self.logger
+                .event("화면 구성 확인 결정 무시: 확인 대기 상태가 아님");
+            return;
+        };
+        self.finish_display_resolution(resolution, true);
+    }
+
+    fn handle_display_expiration(&mut self, resolution: ConfirmationResolution) {
+        let Some(resolution) = self.display_applier.finish_expiration(resolution) else {
+            self.logger
+                .event("화면 구성 만료 결과 무시: 확인 대기 상태가 아님");
+            return;
+        };
+        self.finish_display_resolution(resolution, true);
+    }
+
+    fn finish_display_resolution(
+        &mut self,
+        resolution: ConfirmationResolution,
+        resume_pending: bool,
+    ) {
+        self.logger.event(&format!(
+            "화면 구성 확인 결과 반영: decision={:?} success={} restoredPrevious={}",
+            resolution.decision, resolution.success, resolution.restored_previous
+        ));
+        if resolution.restored_previous || !resolution.success {
+            if let Some(overlays) = self.overlays.as_mut() {
+                overlays.restore_displays_archived_for_failed_preset(
+                    &self.pending_archived_display_uuids,
+                );
+            }
+        }
+        if let Some(overlays) = self.overlays.as_mut() {
+            overlays.set_display_preset_restoration_deferred(false, resume_pending);
+        }
+        self.pending_archived_display_uuids.clear();
+        self.expected_after_apply = resolution.expected;
+        if let Some(message) = resolution.message.as_deref() {
+            let rollback_failed = resolution
+                .message
+                .as_deref()
+                .is_some_and(|value| value.contains("복구 실패"));
+            if rollback_failed {
+                if !self.display_applier.present_rollback_failure(message) {
+                    self.show_display_apply_warning(
+                        "직전 화면 구성으로 되돌리지 못했습니다",
+                        message,
+                    );
+                }
+            } else {
+                self.show_display_apply_warning("화면 구성 확인을 완료하지 못했습니다", message);
+            }
+        }
+    }
+
+    fn show_display_apply_warning(&self, title: &str, message: &str) {
+        if let Some(tray) = self.tray.as_ref() {
+            tray.show_warning(title, message);
+        } else {
+            self.logger.event(&format!("{title}: {message}"));
+        }
+    }
+
     fn initialize_display_change_state(&mut self) {
         match current_display_configuration() {
             Ok(configuration) => {
@@ -1814,6 +2029,19 @@ impl App {
             self.restart_display_stability_timer("targetAvailable=FALSE");
             return;
         }
+        if let Some(expected) = self.expected_after_apply.take() {
+            if expected.matches(&configuration.online) {
+                let outcome = self
+                    .display_change
+                    .settle(generation, &configuration.connected_uuids);
+                self.logger.event(&format!(
+                    "디스플레이 자체 변경 무시: 기대 상태와 일치 generation={generation} settle={outcome:?}"
+                ));
+                return;
+            }
+            self.logger
+                .event("디스플레이 변경은 적용 기대 상태와 다름: 사용자/외부 변경으로 계속 판정");
+        }
         match self
             .display_change
             .settle(generation, &configuration.connected_uuids)
@@ -1867,19 +2095,30 @@ impl App {
                 ));
             }
             DisplayAutoSwitchDecision::Apply(index) => {
-                self.last_judged_uuids = Some(current_uuids);
                 let replaced = self.pending_display_apply.replace(index);
                 if let Some(preset) = self.settings.display.presets.get(index) {
                     self.logger.event(&format!(
-                        "디스플레이 자동 전환 판단=Apply 자동 전환 대상: presetHash={} index={} replacedPending={:?} — 적용은 121b",
+                        "디스플레이 자동 전환 판단=Apply 자동 전환 대상: presetHash={} index={} replacedPending={:?}",
                         hash_prefix8(&preset.name),
                         index,
                         replaced,
                     ));
                 } else {
                     self.logger.event(&format!(
-                        "디스플레이 자동 전환 판단=Apply 인덱스 범위 오류: index={index} — 적용은 121b"
+                        "디스플레이 자동 전환 판단=Apply 인덱스 범위 오류: index={index}"
                     ));
+                }
+                let pending = self.pending_display_apply.take();
+                if let Some(index) = pending {
+                    if let Some(applied_uuids) =
+                        self.apply_display_preset(index, DisplayApplySource::Automatic)
+                    {
+                        self.last_auto_apply_at = Some(monotonic_seconds());
+                        self.last_judged_uuids = Some(applied_uuids);
+                        self.logger.event(&format!(
+                            "디스플레이 자동 전환 적용 성공: index={index} lastAutoApplyAt/lastJudgedUUIDs 갱신"
+                        ));
+                    }
                 }
             }
             DisplayAutoSwitchDecision::Retry(after) => {
@@ -2688,7 +2927,13 @@ impl App {
         if event != WM_CONTEXTMENU && event != WM_RBUTTONUP {
             return;
         }
-        let selected = self.tray.as_ref().and_then(Tray::show_menu);
+        let display_entries = self
+            .display_applier
+            .menu_entries(&self.settings.display.presets);
+        let selected = self
+            .tray
+            .as_ref()
+            .and_then(|tray| tray.show_menu(&display_entries));
         match selected {
             Some(MENU_TOGGLE_ANNOTATION) => {
                 self.logger.event("트레이 메뉴 선택: 판서 모드");
@@ -2700,6 +2945,14 @@ impl App {
                 if let Err(error) = unsafe { DestroyWindow(self.hwnd) } {
                     self.logger.event(&format!("메인 창 종료 실패: {error}"));
                 }
+            }
+            Some(command) if display_preset_index(command).is_some() => {
+                let index = display_preset_index(command).expect("guarded display preset index");
+                self.logger.event(&format!(
+                    "트레이 메뉴 선택: 화면 구성 index={} source=manual",
+                    index
+                ));
+                self.apply_display_preset(index, DisplayApplySource::Manual);
             }
             Some(command) => self
                 .logger
@@ -2713,6 +2966,9 @@ impl App {
             return;
         }
         self.shutting_down = true;
+        if let Some(resolution) = self.display_applier.rollback_for_termination() {
+            self.finish_display_resolution(resolution, false);
+        }
         let _ = unsafe { KillTimer(Some(self.hwnd), DISPLAY_SYNC_TIMER_ID) };
         let _ = unsafe { KillTimer(Some(self.hwnd), DISPLAY_STABILITY_TIMER_ID) };
         let _ = unsafe { KillTimer(Some(self.hwnd), DISPLAY_RETRY_TIMER_ID) };
@@ -2757,15 +3013,6 @@ fn active_display_uuids(configuration: &DisplayConfiguration) -> HashSet<String>
         .iter()
         .filter_map(|display| (!display.uuid.is_empty()).then(|| display.uuid.clone()))
         .collect()
-}
-
-fn is_console_session() -> Result<bool> {
-    let mut process_session = 0;
-    // SAFETY: process_session is writable and the process ID is for the current process.
-    unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut process_session) }?;
-    // SAFETY: this function has no preconditions and returns u32::MAX when no console is attached.
-    let console_session = unsafe { WTSGetActiveConsoleSessionId() };
-    Ok(console_session != u32::MAX && process_session == console_session)
 }
 
 fn run_message_loop(logger: Logger) -> Result<i32> {
@@ -2818,6 +3065,7 @@ fn run_message_loop(logger: Logger) -> Result<i32> {
         },
         Err(error) => (None, Some(error.to_string())),
     };
+    let display_applier = DisplayApplier::new(hwnd, hinstance, logger.clone())?;
 
     let mut app = Box::new(App {
         hwnd,
@@ -2853,6 +3101,8 @@ fn run_message_loop(logger: Logger) -> Result<i32> {
         last_auto_apply_at: None,
         pending_display_apply: None,
         expected_after_apply: None,
+        display_applier,
+        pending_archived_display_uuids: HashSet::new(),
         logger,
         shutting_down: false,
     });
@@ -2880,6 +3130,9 @@ fn run_message_loop(logger: Logger) -> Result<i32> {
             break Ok(i32::try_from(message.wParam.0).unwrap_or(1));
         }
         if app.collapse_radial_for_external_pointer_down(message.hwnd, message.message) {
+            continue;
+        }
+        if app.display_applier.pretranslate_message(&message) {
             continue;
         }
         if app.break_timer.as_mut().is_some_and(|timer| {
@@ -2936,6 +3189,24 @@ unsafe extern "system" fn window_proc(
             }
             WM_APP_KEY => {
                 app.handle_mode_key(HookKeyEvent::decode(wparam, lparam));
+                return LRESULT(0);
+            }
+            WM_APP_DISPLAY_DECISION => {
+                if let Some(decision) = decision_from_command(wparam.0) {
+                    app.handle_display_confirmation(decision);
+                } else {
+                    app.logger
+                        .event(&format!("알 수 없는 화면 구성 확인 명령: {}", wparam.0));
+                }
+                return LRESULT(0);
+            }
+            WM_APP_DISPLAY_EXPIRED => {
+                let pointer = lparam.0 as *mut ConfirmationResolution;
+                if !pointer.is_null() {
+                    // SAFETY: the expiration worker transfers one Box through this message.
+                    let resolution = unsafe { *Box::from_raw(pointer) };
+                    app.handle_display_expiration(resolution);
+                }
                 return LRESULT(0);
             }
             WM_APP_ZOOM_FRAME => {
@@ -3181,6 +3452,7 @@ unsafe extern "system" fn window_proc(
 
 fn run_selftest(logger: &Logger) -> bool {
     let mut failures = Vec::new();
+    failures.extend(crate::display_apply::selftest_failures());
     failures.extend(crate::monitor::online_display_selftest_failures());
     failures.extend(crate::music::selftest_failures());
     failures.extend(crate::settings_file::selftest_failures());
