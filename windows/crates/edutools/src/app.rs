@@ -16,7 +16,10 @@ use crate::help::{
 };
 use crate::hotkey::HotkeyCenter;
 use crate::ink_view::InkInputConfig;
-use crate::kbhook::{HookKeyEvent, HookScope, KeyboardHook, WM_APP_KEY};
+use crate::kbhook::{
+    current_modifiers, HookKeyEvent, HookScope, KeyboardHook, RadialKeyCapHookEvent,
+    RadialPaletteKeyEvent, WM_APP_KEY, WM_APP_RADIAL_KEY, WM_APP_RADIAL_KEY_CAP,
+};
 use crate::keymap;
 use crate::lesson_badge::{
     play_completion_sound, LessonBadgeManager, SettingsMutation as LessonSettingsMutation,
@@ -61,13 +64,17 @@ use edutools_core::ink::{
     InkGeometry, InkPoint, InkStroke, InkStrokeContent, InkStrokeTool, InkTool, PathCommand, Point,
     Size,
 };
-use edutools_core::radial::RadialPaletteIntent;
+use edutools_core::radial::{
+    next_radial_key_cap_state, RadialKeyCapAction, RadialKeyCapEvent, RadialKeyCapState,
+    RadialPaletteIntent, RadialPaletteKeyPassReason, RadialPaletteKeyboardInput,
+    KEY_CAP_HOLD_DURATION_MS,
+};
 use edutools_core::settings::{changed_settings_groups, AppSettings, SettingsGroup};
 use edutools_core::settings_store::{
     SettingsBackupStore, SettingsStore, SettingsStoreIssue, SettingsStoreIssueKind,
 };
 use edutools_core::shortcut::{
-    ShortcutCatalog, ShortcutCommand, ShortcutDefinition, ShortcutScope,
+    ShortcutCatalog, ShortcutCommand, ShortcutDefinition, ShortcutModifiers, ShortcutScope,
 };
 use edutools_core::state::{AppState, FavoriteSaveResult, SettingsMutation};
 use edutools_core::zoom::{
@@ -110,6 +117,7 @@ const WINDOW_CLASS: PCWSTR = w!("EduToolsMain");
 const DISPLAY_SYNC_TIMER_ID: usize = 0xED31;
 const DISPLAY_STABILITY_TIMER_ID: usize = 0xED32;
 const DISPLAY_RETRY_TIMER_ID: usize = 0xED33;
+const RADIAL_KEY_CAP_TIMER_ID: usize = 0xE118;
 const DISPLAY_SYNC_INTERVAL_MS: u32 = 300;
 
 pub fn run() -> i32 {
@@ -258,6 +266,7 @@ struct App {
     hotkeys: Option<HotkeyCenter>,
     keyboard_hook: Option<KeyboardHook>,
     pressed_shortcuts: PressedShortcuts,
+    radial_key_cap_state: RadialKeyCapState,
     overlays: Option<OverlayManager>,
     palette: Option<PaletteManager>,
     radial_palette: Option<RadialPaletteManager>,
@@ -843,6 +852,155 @@ impl App {
         }
     }
 
+    fn handle_radial_key(&mut self, event: RadialPaletteKeyEvent) {
+        let reason = event
+            .pass_reason
+            .map(|reason| match reason {
+                RadialPaletteKeyPassReason::Hidden => "숨김",
+                RadialPaletteKeyPassReason::Collapsed => "접힘",
+                RadialPaletteKeyPassReason::TextInput => "텍스트 입력",
+                RadialPaletteKeyPassReason::Modifiers => "수정키",
+                RadialPaletteKeyPassReason::Unsupported => "대상 키 아님",
+            })
+            .unwrap_or("조건 충족");
+        self.logger.event(&format!(
+            "원형 팔레트 키 {}: vk={:#x} consumed={} repeat={} reason={reason}",
+            if event.is_key_up { "up" } else { "down" },
+            event.key_code,
+            event.consumed,
+            event.is_repeat,
+        ));
+        if event.is_key_up {
+            self.synchronize_keyboard_hook();
+            return;
+        }
+        if !event.consumed {
+            return;
+        }
+        let Some(input) = event.input() else {
+            self.logger.event(&format!(
+                "원형 팔레트 키 매핑 실패: vk={:#x}",
+                event.key_code
+            ));
+            return;
+        };
+        match input {
+            RadialPaletteKeyboardInput::Navigate(key) => {
+                let preselection = self
+                    .radial_palette
+                    .as_ref()
+                    .and_then(|radial| radial.keyboard_preselection(key));
+                if let Some((target, intent)) = preselection {
+                    self.execute_radial_intent(intent, &target);
+                }
+                let result = self
+                    .radial_palette
+                    .as_mut()
+                    .map(|radial| radial.navigate_keyboard(key));
+                match result {
+                    Some(Ok(Some((target, intent)))) => self.execute_radial_intent(intent, &target),
+                    Some(Ok(None)) | None => {}
+                    Some(Err(error)) => self.report_radial_palette_error("키보드 이동", &error),
+                }
+            }
+            RadialPaletteKeyboardInput::Activate => {
+                let result = self
+                    .radial_palette
+                    .as_mut()
+                    .map(RadialPaletteManager::activate_keyboard_focus);
+                match result {
+                    Some(Ok(Some((target, intent)))) => self.execute_radial_intent(intent, &target),
+                    Some(Ok(None)) | None => {}
+                    Some(Err(error)) => self.report_radial_palette_error("키보드 활성화", &error),
+                }
+            }
+        }
+    }
+
+    fn handle_radial_key_cap_hook(&mut self, event: RadialKeyCapHookEvent) {
+        let event = match event {
+            RadialKeyCapHookEvent::ControlAloneDown => RadialKeyCapEvent::ControlAloneDown,
+            RadialKeyCapHookEvent::OtherKeyDown => RadialKeyCapEvent::OtherKeyDown,
+            RadialKeyCapHookEvent::ModifierAdded => RadialKeyCapEvent::ModifierAdded,
+            RadialKeyCapHookEvent::ControlReleased => RadialKeyCapEvent::ControlReleased,
+        };
+        self.apply_radial_key_cap_event(event, "키보드 훅");
+    }
+
+    fn radial_key_cap_timer_elapsed(&mut self) {
+        let _ = unsafe { KillTimer(Some(self.hwnd), RADIAL_KEY_CAP_TIMER_ID) };
+        let control_only = current_modifiers() == ShortcutModifiers::CONTROL;
+        self.apply_radial_key_cap_event(
+            RadialKeyCapEvent::TimerElapsed { control_only },
+            "0.5초 타이머",
+        );
+    }
+
+    fn apply_radial_key_cap_event(&mut self, event: RadialKeyCapEvent, source: &str) {
+        let (state, action) = next_radial_key_cap_state(self.radial_key_cap_state, event);
+        self.radial_key_cap_state = state;
+        match action {
+            RadialKeyCapAction::None => {}
+            RadialKeyCapAction::Schedule => {
+                if unsafe {
+                    SetTimer(
+                        Some(self.hwnd),
+                        RADIAL_KEY_CAP_TIMER_ID,
+                        KEY_CAP_HOLD_DURATION_MS,
+                        None,
+                    )
+                } == 0
+                {
+                    self.radial_key_cap_state = RadialKeyCapState::Idle;
+                    self.logger.event("원형 팔레트 키캡 타이머 시작 실패");
+                } else {
+                    self.logger
+                        .event(&format!("원형 팔레트 키캡 타이머 시작: {source}"));
+                }
+            }
+            RadialKeyCapAction::Cancel => {
+                let _ = unsafe { KillTimer(Some(self.hwnd), RADIAL_KEY_CAP_TIMER_ID) };
+                let result = self
+                    .radial_palette
+                    .as_mut()
+                    .map(|radial| radial.set_key_caps(false));
+                if let Some(Err(error)) = result {
+                    self.report_radial_palette_error("키캡 취소", &error);
+                }
+                self.logger
+                    .event(&format!("원형 팔레트 키캡 취소: {source}"));
+            }
+            RadialKeyCapAction::Show => {
+                let result = self
+                    .radial_palette
+                    .as_mut()
+                    .map(|radial| radial.set_key_caps(true));
+                if let Some(Err(error)) = result {
+                    self.report_radial_palette_error("키캡 표시", &error);
+                }
+                self.logger
+                    .event(&format!("원형 팔레트 키캡 표시: {source}"));
+            }
+        }
+    }
+
+    fn reset_radial_key_caps(&mut self, reason: &str) {
+        let was_active = self.radial_key_cap_state != RadialKeyCapState::Idle;
+        self.radial_key_cap_state = RadialKeyCapState::Idle;
+        let _ = unsafe { KillTimer(Some(self.hwnd), RADIAL_KEY_CAP_TIMER_ID) };
+        let result = self
+            .radial_palette
+            .as_mut()
+            .map(|radial| radial.set_key_caps(false));
+        if let Some(Err(error)) = result {
+            self.report_radial_palette_error("키캡 초기화", &error);
+        }
+        if was_active {
+            self.logger
+                .event(&format!("원형 팔레트 키캡 취소: {reason}"));
+        }
+    }
+
     fn synchronize_keyboard_hook(&mut self) {
         let annotation_active = self.state.borrow().is_annotation_mode_enabled();
         let zoom_active = self.zoom.is_some();
@@ -872,7 +1030,11 @@ impl App {
             return;
         }
 
-        if !self.pressed_shortcuts.is_empty() {
+        let hook_has_pressed_keys = self
+            .keyboard_hook
+            .as_ref()
+            .is_some_and(KeyboardHook::has_pressed_keys);
+        if !self.pressed_shortcuts.is_empty() || hook_has_pressed_keys {
             if let Some(hook) = self.keyboard_hook.as_ref() {
                 hook.set_scopes(false, false);
                 self.logger
@@ -882,8 +1044,10 @@ impl App {
         }
 
         let Some(mut hook) = self.keyboard_hook.take() else {
+            self.reset_radial_key_caps("훅 비활성");
             return;
         };
+        self.reset_radial_key_caps("훅 해제");
         match hook.uninstall() {
             Ok(()) => {
                 self.pressed_shortcuts = PressedShortcuts::new();
@@ -902,8 +1066,10 @@ impl App {
 
     fn uninstall_keyboard_hook_for_shutdown(&mut self) {
         let Some(mut hook) = self.keyboard_hook.take() else {
+            self.reset_radial_key_caps("훅 비활성");
             return;
         };
+        self.reset_radial_key_caps("훅 해제");
         if let Err(error) = hook.uninstall() {
             self.logger
                 .event(&format!("앱 종료 중 키보드 훅 해제 실패: {error}"));
@@ -927,6 +1093,7 @@ impl App {
                 Effect::AnnotationModeChanged(enabled) => {
                     if !enabled {
                         self.cancel_text_entry("판서 끔");
+                        self.reset_radial_key_caps("판서 끔");
                     }
                     self.synchronize_keyboard_hook();
                     if let Some(tray) = self.tray.as_mut() {
@@ -1128,6 +1295,21 @@ impl App {
                 Effect::PaletteVisibilityChanged(visible) => self
                     .logger
                     .event(&format!("효과 ({source}): 선형 팔레트 표시 상태 {visible}")),
+                Effect::ToggleRadialPalette => {
+                    if !self.state.borrow().is_palette_visible() {
+                        self.state.borrow_mut().toggle_palette_visibility();
+                        self.logger
+                            .event(&format!("효과 ({source}): 원형 팔레트 숨김 해제 후 펼침"));
+                        self.refresh_radial_palette("M 키 숨김 해제");
+                    }
+                    let result = self
+                        .radial_palette
+                        .as_mut()
+                        .map(RadialPaletteManager::toggle_expansion_from_keyboard);
+                    if let Some(Err(error)) = result {
+                        self.report_radial_palette_error("M 키 토글", &error);
+                    }
+                }
                 Effect::CollapseRadialPalette => {
                     if let Some(radial) = self.radial_palette.as_mut() {
                         if let Err(error) = radial.collapse("stepBack") {
@@ -2472,9 +2654,11 @@ impl App {
                 let result = self.state.borrow().save_current_favorite(&self.settings);
                 match result {
                     Ok(FavoriteSaveResult::Saved(mutation)) => {
-                        self.update_settings("radial-favorite-save", move |settings| {
+                        if self.update_settings("radial-favorite-save", move |settings| {
                             mutation.apply(settings);
-                        });
+                        }) {
+                            self.logger.event("원형 팔레트 즐겨찾기 저장 완료");
+                        }
                     }
                     Ok(FavoriteSaveResult::UnsupportedTool) => {
                         self.logger.event("즐겨찾기 저장 거부: 지원하지 않는 도구");
@@ -2490,7 +2674,7 @@ impl App {
                         .event(&format!("즐겨찾기 저장 상태 판정 실패: {error}")),
                 }
             }
-            RadialPaletteIntent::ApplyFavorite { favorite, .. } => {
+            RadialPaletteIntent::ApplyFavorite { index, favorite } => {
                 let previous_state = self.state.borrow().clone();
                 let result = self
                     .state
@@ -2508,6 +2692,9 @@ impl App {
                         if state_changed && !settings_changed {
                             self.refresh_runtime_state("즐겨찾기 적용");
                         }
+                        self.logger.event(&format!(
+                            "원형 팔레트 즐겨찾기 적용: index={index} stateChanged={state_changed} settingsChanged={settings_changed}"
+                        ));
                     }
                     Ok(None) => self.logger.event("즐겨찾기 적용 거부: 잘못된 항목"),
                     Err(error) => self
@@ -2524,9 +2711,12 @@ impl App {
                 }
                 let mut favorites = self.settings.tools.favorites.clone();
                 favorites.remove(index);
-                self.update_settings("radial-favorite-remove", move |settings| {
+                if self.update_settings("radial-favorite-remove", move |settings| {
                     SettingsMutation::SetFavorites(favorites).apply(settings);
-                });
+                }) {
+                    self.logger
+                        .event(&format!("원형 팔레트 즐겨찾기 삭제 완료: index={index}"));
+                }
             }
         }
     }
@@ -2580,10 +2770,19 @@ impl App {
     }
 
     fn refresh_radial_palette(&mut self, reason: &str) {
-        if let Some(radial) = self.radial_palette.as_mut() {
-            if let Err(error) = radial.refresh(&self.state.borrow(), &self.settings, reason) {
-                self.report_radial_palette_error(reason, &error);
-            }
+        let (hidden, error) = if let Some(radial) = self.radial_palette.as_mut() {
+            let error = radial
+                .refresh(&self.state.borrow(), &self.settings, reason)
+                .err();
+            (!radial.is_visible(), error)
+        } else {
+            (true, None)
+        };
+        if let Some(error) = error {
+            self.report_radial_palette_error(reason, &error);
+        }
+        if hidden && self.radial_key_cap_state != RadialKeyCapState::Idle {
+            self.reset_radial_key_caps("팔레트 숨김");
         }
     }
 
@@ -3082,6 +3281,7 @@ fn run_message_loop(logger: Logger) -> Result<i32> {
         hotkeys: None,
         keyboard_hook: None,
         pressed_shortcuts: PressedShortcuts::new(),
+        radial_key_cap_state: RadialKeyCapState::Idle,
         overlays: None,
         palette: None,
         radial_palette: None,
@@ -3209,6 +3409,21 @@ unsafe extern "system" fn window_proc(
                 }
                 return LRESULT(0);
             }
+            WM_APP_RADIAL_KEY => {
+                app.handle_radial_key(RadialPaletteKeyEvent::decode(wparam, lparam));
+                return LRESULT(0);
+            }
+            WM_APP_RADIAL_KEY_CAP => {
+                if let Some(event) = RadialKeyCapHookEvent::decode(wparam) {
+                    app.handle_radial_key_cap_hook(event);
+                } else {
+                    app.logger.event(&format!(
+                        "원형 팔레트 키캡 훅 메시지 값 범위 밖: {}",
+                        wparam.0
+                    ));
+                }
+                return LRESULT(0);
+            }
             WM_APP_ZOOM_FRAME => {
                 app.handle_zoom_frame();
                 return LRESULT(0);
@@ -3285,6 +3500,10 @@ unsafe extern "system" fn window_proc(
             }
             WM_TIMER if wparam.0 == HELP_RELEASE_TIMER_ID => {
                 app.poll_help_release();
+                return LRESULT(0);
+            }
+            WM_TIMER if wparam.0 == RADIAL_KEY_CAP_TIMER_ID => {
+                app.radial_key_cap_timer_elapsed();
                 return LRESULT(0);
             }
             CALLBACK_MESSAGE => {

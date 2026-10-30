@@ -3,6 +3,7 @@
 #[cfg(windows)]
 mod windows_impl {
     use crate::app_icon::{AppIconRenderer, IconTint};
+    use crate::kbhook::{current_modifiers, set_radial_palette_hook_state};
     use crate::log::Logger;
     use crate::monitor::{enumerate_monitors, monitor_at_point, Monitor};
     use crate::palette::{app_data_file, load_positions, write_file};
@@ -14,10 +15,12 @@ mod windows_impl {
     use edutools_core::board::BoardKind;
     use edutools_core::ink::{InkTool, Point, Rect};
     use edutools_core::radial::{
-        group_definitions, hit_target, primary_intent, radial_drag_threshold_reached,
-        radial_palette_should_show, render_state, secondary_intent, RadialColor,
-        RadialPaletteArcStyle, RadialPaletteGroupId, RadialPaletteHitTarget, RadialPaletteIntent,
-        RadialPalettePreview, RadialPaletteRenderCell, RadialPaletteRenderState, RadialPaletteRing,
+        group_definitions, hit_target, layout_cells, next_radial_palette_focus, primary_intent,
+        radial_drag_threshold_reached, radial_palette_should_show, radial_tooltip_frame,
+        render_state, secondary_intent, RadialColor, RadialPaletteArcStyle,
+        RadialPaletteCellAction, RadialPaletteFocus, RadialPaletteGroupId, RadialPaletteHitTarget,
+        RadialPaletteIntent, RadialPaletteNavigationKey, RadialPalettePreview,
+        RadialPaletteRenderCell, RadialPaletteRenderState, RadialPaletteRing,
         RadialPaletteSectorGeometry, RadialPaletteSectorPath, RadialPaletteState, CENTER_RADIUS,
         COLLAPSED_DIAMETER, ENTRY_INNER_RADIUS, ENTRY_OUTER_RADIUS, EXPANDED_DIAMETER,
         GROUP_INNER_RADIUS, GROUP_OUTER_RADIUS, OPTION_INNER_RADIUS, OPTION_OUTER_RADIUS,
@@ -28,7 +31,7 @@ mod windows_impl {
         WindowOrigin, WindowSize,
     };
     use edutools_core::settings::{AppSettings, PaletteStyle};
-    use edutools_core::shortcut::ShortcutBoard;
+    use edutools_core::shortcut::{ShortcutBoard, ShortcutModifiers};
     use edutools_core::state::AppState;
     use std::f64::consts::PI;
     use std::ffi::c_void;
@@ -47,15 +50,16 @@ mod windows_impl {
         D2D1_ARC_SIZE_LARGE, D2D1_ARC_SIZE_SMALL, D2D1_BITMAP_OPTIONS_TARGET,
         D2D1_BITMAP_PROPERTIES1, D2D1_CAP_STYLE_ROUND, D2D1_DASH_STYLE_SOLID,
         D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ELLIPSE, D2D1_LINE_JOIN_ROUND, D2D1_PRIMITIVE_BLEND_COPY,
-        D2D1_PRIMITIVE_BLEND_SOURCE_OVER, D2D1_STROKE_STYLE_PROPERTIES,
+        D2D1_PRIMITIVE_BLEND_SOURCE_OVER, D2D1_ROUNDED_RECT, D2D1_STROKE_STYLE_PROPERTIES,
         D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE,
     };
     use windows::Win32::Graphics::DirectComposition::{IDCompositionTarget, IDCompositionVisual};
     use windows::Win32::Graphics::DirectWrite::{
-        DWriteCreateFactory, IDWriteFactory, IDWriteFontCollection, DWRITE_FACTORY_TYPE_SHARED,
-        DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_MEDIUM,
-        DWRITE_FONT_WEIGHT_NORMAL, DWRITE_MEASURING_MODE_NATURAL,
-        DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER,
+        DWriteCreateFactory, IDWriteFactory, IDWriteFontCollection, IDWriteTextFormat,
+        DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_MEASURING_MODE_NATURAL,
+        DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_METRICS,
+        DWRITE_WORD_WRAPPING_NO_WRAP,
     };
     use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_UNKNOWN;
     use windows::Win32::Graphics::Dxgi::IDXGISwapChain1;
@@ -67,13 +71,14 @@ mod windows_impl {
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, PostMessageW,
-        RegisterClassW, SetWindowLongPtrW, SetWindowPos, ShowWindow, CREATESTRUCTW, GWLP_USERDATA,
-        GWL_EXSTYLE, GWL_STYLE, HTCLIENT, MA_NOACTIVATE, PA_NOACTIVATE, SWP_NOACTIVATE,
-        SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE, WM_DPICHANGED, WM_ERASEBKGND, WM_MOUSEACTIVATE,
-        WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST, WM_POINTERACTIVATE, WM_POINTERCAPTURECHANGED,
-        WM_POINTERDOWN, WM_POINTERLEAVE, WM_POINTERUP, WM_POINTERUPDATE, WM_SETTINGCHANGE,
-        WM_SYSCOLORCHANGE, WM_THEMECHANGED, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
-        WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+        RegisterClassW, SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+        CREATESTRUCTW, GWLP_USERDATA, GWL_EXSTYLE, GWL_STYLE, HTCLIENT, HTTRANSPARENT,
+        MA_NOACTIVATE, PA_NOACTIVATE, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE,
+        WDA_EXCLUDEFROMCAPTURE, WM_DPICHANGED, WM_ERASEBKGND, WM_MOUSEACTIVATE, WM_NCCREATE,
+        WM_NCDESTROY, WM_NCHITTEST, WM_POINTERACTIVATE, WM_POINTERCAPTURECHANGED, WM_POINTERDOWN,
+        WM_POINTERLEAVE, WM_POINTERUP, WM_POINTERUPDATE, WM_SETTINGCHANGE, WM_SYSCOLORCHANGE,
+        WM_THEMECHANGED, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
+        WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
     };
 
     macro_rules! d2d_point {
@@ -91,6 +96,7 @@ mod windows_impl {
     pub const WM_APP_RADIAL_COLLAPSE: u32 = 0x8000 + 11;
 
     const WINDOW_CLASS: windows::core::PCWSTR = w!("EduToolsRadialPalette");
+    const HINT_WINDOW_CLASS: windows::core::PCWSTR = w!("EduToolsRadialPaletteHint");
     const DEFAULT_POSITION: PositionRatio = PositionRatio { x: 0.5, y: 0.15 };
     const STORAGE_PREFIX: &str = "radial::";
     const GROUP_ICON_SIZE: f64 = 13.0;
@@ -100,6 +106,9 @@ mod windows_impl {
     const OPTION_NODE_RADIUS: f64 = (OPTION_INNER_RADIUS + OPTION_OUTER_RADIUS) / 2.0;
     const ACTIVE_ARC_WIDTH: f64 = 3.0;
     const INACTIVE_ARC_WIDTH: f64 = 3.0;
+    const KEY_CAP_FONT_SIZE: f64 = 12.0;
+    const HINT_FONT_SIZE: f64 = 12.0;
+    const HINT_CORNER_RADIUS: f64 = 7.0;
 
     struct PendingAction {
         target: String,
@@ -123,6 +132,10 @@ mod windows_impl {
         dpi: u32,
         radial: RadialPaletteState,
         hover: Option<String>,
+        hover_screen: Option<POINT>,
+        keyboard_focus: Option<RadialPaletteFocus>,
+        shows_keyboard_focus: bool,
+        shows_key_caps: bool,
         press: Option<PointerPress>,
         pending_action: Option<PendingAction>,
         resting_center: POINT,
@@ -136,8 +149,17 @@ mod windows_impl {
         _band: BandRegistration,
     }
 
+    struct RadialPaletteHintWindow {
+        hwnd: HWND,
+        renderer: Option<RadialPaletteHintRenderer>,
+        _band: BandRegistration,
+        logger: Logger,
+        shown: Option<(String, &'static str)>,
+    }
+
     pub struct RadialPaletteManager {
         window: RadialPaletteWindow,
+        hint: RadialPaletteHintWindow,
         _graphics: GraphicsDevice,
         positions: ScreenPositionDocument,
         positions_path: Option<PathBuf>,
@@ -153,6 +175,7 @@ mod windows_impl {
             logger: Logger,
         ) -> Result<Self> {
             register_window_class(hinstance)?;
+            register_hint_window_class(hinstance)?;
             let positions_path = app_data_file("positions.json");
             let positions = load_positions(positions_path.as_deref(), &logger);
             let monitors = enumerate_monitors()?;
@@ -182,6 +205,10 @@ mod windows_impl {
                 dpi,
                 radial,
                 hover: None,
+                hover_screen: None,
+                keyboard_focus: None,
+                shows_keyboard_focus: false,
+                shows_key_caps: false,
                 press: None,
                 pending_action: None,
                 resting_center,
@@ -214,7 +241,12 @@ mod windows_impl {
                 }
             };
             let renderer = match RadialPaletteRenderer::new(
-                &graphics, hwnd, diameter, diameter, dpi, logger,
+                &graphics,
+                hwnd,
+                diameter,
+                diameter,
+                dpi,
+                logger.clone(),
             ) {
                 Ok(renderer) => renderer,
                 Err(error) => {
@@ -223,12 +255,22 @@ mod windows_impl {
                 }
             };
             window_state.renderer = Some(renderer);
+            let hint =
+                match RadialPaletteHintWindow::new(owner, hinstance, &graphics, logger.clone()) {
+                    Ok(hint) => hint,
+                    Err(error) => {
+                        window_state.renderer.take();
+                        let _ = unsafe { DestroyWindow(hwnd) };
+                        return Err(error);
+                    }
+                };
             Ok(Self {
                 window: RadialPaletteWindow {
                     hwnd,
                     state: window_state,
                     _band: band,
                 },
+                hint,
                 _graphics: graphics,
                 positions,
                 positions_path,
@@ -242,6 +284,10 @@ mod windows_impl {
 
         pub fn is_expanded(&self) -> bool {
             self.window.state.radial.is_expanded
+        }
+
+        pub fn is_visible(&self) -> bool {
+            self.visible
         }
 
         pub fn refresh(
@@ -265,13 +311,22 @@ mod windows_impl {
                 state.is_palette_visible(),
                 settings.tools.palette_style,
             );
+            let was_visible = self.visible;
+            self.visible = visible;
+            if !visible {
+                self.window.state.shows_key_caps = false;
+                self.window.state.hover = None;
+                self.window.state.hover_screen = None;
+                self.window.state.keyboard_focus = None;
+                self.window.state.shows_keyboard_focus = false;
+            }
             if !visible && self.is_expanded() {
                 self.set_expanded(false, visibility_reason)?;
             }
             self.redraw()?;
             if visible {
                 let _ = unsafe { ShowWindow(self.window.hwnd, SW_SHOWNOACTIVATE) };
-                if !self.visible {
+                if !was_visible {
                     raise_band_order()?;
                     self.window
                         .state
@@ -280,40 +335,72 @@ mod windows_impl {
                 }
             } else {
                 let _ = unsafe { ShowWindow(self.window.hwnd, SW_HIDE) };
-                if self.visible {
+                self.hint.hide("팔레트 숨김");
+                if was_visible {
                     self.window
                         .state
                         .logger
                         .event(&format!("원형 팔레트 숨김: {visibility_reason}"));
                 }
             }
-            self.visible = visible;
+            set_radial_palette_hook_state(self.is_expanded(), self.visible);
             Ok(())
         }
 
         pub fn redraw(&mut self) -> Result<()> {
+            let focused = self
+                .window
+                .state
+                .shows_keyboard_focus
+                .then_some(self.window.state.keyboard_focus.as_ref())
+                .flatten();
             let render = render_state(
                 &self.window.state.radial,
-                false,
+                self.window.state.shows_key_caps,
                 self.window.state.hover.as_deref(),
-                None,
+                focused,
             );
-            if self.window.state.last_render.as_ref() == Some(&render) {
-                return Ok(());
+            if self.window.state.last_render.as_ref() != Some(&render) {
+                self.window
+                    .state
+                    .renderer
+                    .as_mut()
+                    .expect("radial palette renderer exists")
+                    .render(&render)?;
+                self.window.state.last_render = Some(render.clone());
             }
-            self.window
-                .state
-                .renderer
-                .as_mut()
-                .expect("radial palette renderer exists")
-                .render(&render)?;
-            self.window.state.last_render = Some(render);
-            Ok(())
+            self.update_hint(&render)
         }
 
         pub fn toggle_expansion(&mut self, reason: &str) -> Result<()> {
             let expanded = !self.is_expanded();
             self.set_expanded(expanded, reason)
+        }
+
+        pub fn toggle_expansion_from_keyboard(&mut self) -> Result<()> {
+            if self.is_expanded() {
+                return self.set_expanded(false, "M 키");
+            }
+            self.set_expanded(true, "M 키")?;
+            let cells = layout_cells(&self.window.state.radial);
+            self.window.state.keyboard_focus = initial_keyboard_focus(
+                &cells,
+                self.window
+                    .state
+                    .radial
+                    .selected_entry_identifier
+                    .as_deref(),
+            );
+            self.window.state.shows_keyboard_focus = self.window.state.keyboard_focus.is_some();
+            self.redraw()
+        }
+
+        pub fn set_key_caps(&mut self, visible: bool) -> Result<()> {
+            if self.window.state.shows_key_caps == visible {
+                return Ok(());
+            }
+            self.window.state.shows_key_caps = visible;
+            self.redraw()
         }
 
         pub fn collapse(&mut self, reason: &str) -> Result<bool> {
@@ -328,6 +415,132 @@ mod windows_impl {
             self.window.state.radial.selected_group = group;
             self.window.state.radial.selected_entry_identifier = None;
             self.redraw()
+        }
+
+        pub fn keyboard_preselection(
+            &self,
+            key: RadialPaletteNavigationKey,
+        ) -> Option<(String, RadialPaletteIntent)> {
+            if key != RadialPaletteNavigationKey::Deeper {
+                return None;
+            }
+            let cells = layout_cells(&self.window.state.radial);
+            let current = valid_keyboard_focus(self.window.state.keyboard_focus.as_ref(), &cells)
+                .or_else(|| {
+                initial_keyboard_focus(
+                    &cells,
+                    self.window
+                        .state
+                        .radial
+                        .selected_entry_identifier
+                        .as_deref(),
+                )
+            })?;
+            let RadialPaletteFocus::Cell(identifier) = current else {
+                return None;
+            };
+            let cell = cells.iter().find(|cell| cell.identifier == identifier)?;
+            let RadialPaletteCellAction::Entry(entry) = &cell.action else {
+                return None;
+            };
+            if self
+                .window
+                .state
+                .radial
+                .selected_entry_identifier
+                .as_deref()
+                == Some(entry.identifier.as_str())
+            {
+                return None;
+            }
+            let mut preview = self.window.state.radial.clone();
+            preview.selected_entry_identifier = Some(entry.identifier.clone());
+            if !layout_cells(&preview)
+                .iter()
+                .any(|candidate| candidate.ring == RadialPaletteRing::Option)
+            {
+                return None;
+            }
+            let target = RadialPaletteHitTarget::Cell(cell.clone());
+            primary_intent(&target, &self.window.state.radial).map(|intent| (identifier, intent))
+        }
+
+        pub fn navigate_keyboard(
+            &mut self,
+            key: RadialPaletteNavigationKey,
+        ) -> Result<Option<(String, RadialPaletteIntent)>> {
+            let cells = layout_cells(&self.window.state.radial);
+            let Some(current) =
+                valid_keyboard_focus(self.window.state.keyboard_focus.as_ref(), &cells).or_else(
+                    || {
+                        initial_keyboard_focus(
+                            &cells,
+                            self.window
+                                .state
+                                .radial
+                                .selected_entry_identifier
+                                .as_deref(),
+                        )
+                    },
+                )
+            else {
+                return Ok(None);
+            };
+            let next = next_radial_palette_focus(
+                &cells,
+                &current,
+                key,
+                self.window
+                    .state
+                    .radial
+                    .selected_entry_identifier
+                    .as_deref(),
+            );
+            let group_intent = if matches!(
+                key,
+                RadialPaletteNavigationKey::Previous | RadialPaletteNavigationKey::Next
+            ) && next != current
+            {
+                focus_target(&next, &cells).and_then(|target| match target {
+                    RadialPaletteHitTarget::Cell(ref cell)
+                        if cell.ring == RadialPaletteRing::Group =>
+                    {
+                        primary_intent(&target, &self.window.state.radial)
+                            .map(|intent| (target.identifier().to_owned(), intent))
+                    }
+                    _ => None,
+                })
+            } else {
+                None
+            };
+            self.window.state.keyboard_focus = Some(next.clone());
+            self.window.state.shows_keyboard_focus = true;
+            self.window.state.hover = None;
+            self.window.state.hover_screen = None;
+            self.window
+                .state
+                .logger
+                .event(&format!("원형 팔레트 포커스 이동: {}", next.identifier()));
+            self.redraw()?;
+            Ok(group_intent)
+        }
+
+        pub fn activate_keyboard_focus(&mut self) -> Result<Option<(String, RadialPaletteIntent)>> {
+            let cells = layout_cells(&self.window.state.radial);
+            let Some(focus) =
+                valid_keyboard_focus(self.window.state.keyboard_focus.as_ref(), &cells)
+            else {
+                return Ok(None);
+            };
+            self.window.state.shows_keyboard_focus = true;
+            self.window.state.hover = None;
+            self.window.state.hover_screen = None;
+            let result = focus_target(&focus, &cells).and_then(|target| {
+                primary_intent(&target, &self.window.state.radial)
+                    .map(|intent| (target.identifier().to_owned(), intent))
+            });
+            self.redraw()?;
+            Ok(result)
         }
 
         pub fn take_pending_action(&mut self) -> Option<(String, RadialPaletteIntent, bool)> {
@@ -420,7 +633,100 @@ mod windows_impl {
                 Ok(pixel_failures) => failures.extend(pixel_failures),
                 Err(error) => failures.push(format!("radial palette: 픽셀 readback 실패: {error}")),
             }
+            failures.extend(
+                self.hint
+                    .selftest_failures(self.window.state.radial.palette_glass_opacity),
+            );
             failures
+        }
+
+        fn update_hint(&mut self, render: &RadialPaletteRenderState) -> Result<()> {
+            if !self.visible {
+                self.hint.hide("팔레트 숨김");
+                return Ok(());
+            }
+            let (identifier, source) = if self.window.state.shows_keyboard_focus {
+                let Some(focus) = self.window.state.keyboard_focus.as_ref() else {
+                    self.hint.hide("키보드 포커스 없음");
+                    return Ok(());
+                };
+                (focus.identifier(), "키보드")
+            } else {
+                let Some(identifier) = self.window.state.hover.as_deref() else {
+                    self.hint.hide("호버 종료");
+                    return Ok(());
+                };
+                (identifier, "호버")
+            };
+
+            let (name, shortcut, mut direction) = if identifier == "palette.center" {
+                (
+                    render
+                        .center_accessibility_label
+                        .as_deref()
+                        .unwrap_or("도구"),
+                    render.center_shortcut.as_str(),
+                    [1.0, 0.0],
+                )
+            } else {
+                let Some(cell) = render.cells.iter().find(|cell| cell.id == identifier) else {
+                    self.hint.hide("힌트 대상 사라짐");
+                    return Ok(());
+                };
+                if cell.ring == RadialPaletteRing::Group {
+                    self.hint.hide("그룹 칸");
+                    return Ok(());
+                }
+                let angle = (cell.geometry.start_angle + cell.geometry.end_angle) / 2.0;
+                (
+                    cell.accessibility_label.as_str(),
+                    cell.shortcut.as_str(),
+                    [angle.sin(), -angle.cos()],
+                )
+            };
+            let text = if shortcut.is_empty() {
+                name.to_owned()
+            } else {
+                format!("{name}  {shortcut}")
+            };
+            let monitors = enumerate_monitors()?;
+            let monitor = monitor_at_point(&monitors, self.window.state.resting_center)
+                .or_else(|| monitors.iter().find(|monitor| monitor.is_primary))
+                .or_else(|| monitors.first())
+                .ok_or_else(|| Error::new(E_FAIL, "radial hint has no monitor"))?;
+            let dpi = monitor.dpi.0.max(96);
+            let diameter = pixels(current_diameter(&self.window.state.radial), dpi);
+            let center = clamped_center(self.window.state.resting_center, diameter, monitor);
+            if identifier == "palette.center" && source == "호버" && self.is_expanded() {
+                direction = self
+                    .window
+                    .state
+                    .hover_screen
+                    .map(|point| [f64::from(point.x - center.x), f64::from(point.y - center.y)])
+                    .unwrap_or(direction);
+            }
+            let size = self.hint.measure(&text, dpi)?;
+            let frame = radial_tooltip_frame(
+                size,
+                Point {
+                    x: f64::from(center.x),
+                    y: f64::from(center.y),
+                },
+                direction,
+                if self.is_expanded() {
+                    EXPANDED_DIAMETER / 2.0 * px_per_dip(dpi)
+                } else {
+                    CENTER_RADIUS * px_per_dip(dpi)
+                },
+                Rect {
+                    x: f64::from(monitor.work_rect.left),
+                    y: f64::from(monitor.work_rect.top),
+                    width: f64::from(monitor.work_rect.width()),
+                    height: f64::from(monitor.work_rect.height()),
+                },
+            );
+            self.hint
+                .show(&text, frame, dpi, render.glass_opacity, identifier, source)
         }
 
         fn set_expanded(&mut self, expanded: bool, reason: &str) -> Result<()> {
@@ -432,9 +738,18 @@ mod windows_impl {
             }
             self.window.state.radial.is_expanded = expanded;
             self.window.state.hover = None;
+            self.window.state.hover_screen = None;
+            self.window.state.keyboard_focus = None;
+            self.window.state.shows_keyboard_focus = false;
             self.window.state.press = None;
+            self.hint.hide(if expanded {
+                "팔레트 펼침"
+            } else {
+                "팔레트 접힘"
+            });
             apply_window_frame(self.window.hwnd, &mut self.window.state)?;
             self.redraw()?;
+            set_radial_palette_hook_state(expanded, self.visible);
             self.window.state.logger.event(&format!(
                 "원형 팔레트 {}: {reason}",
                 if expanded { "펼침" } else { "접힘" }
@@ -481,6 +796,12 @@ mod windows_impl {
         }
     }
 
+    impl Drop for RadialPaletteManager {
+        fn drop(&mut self) {
+            set_radial_palette_hook_state(false, false);
+        }
+    }
+
     impl Drop for RadialPaletteWindow {
         fn drop(&mut self) {
             self.state.renderer.take();
@@ -489,6 +810,69 @@ mod windows_impl {
                     .logger
                     .event(&format!("원형 팔레트 창 제거 실패: {error}"));
             }
+        }
+    }
+
+    fn initial_keyboard_focus(
+        cells: &[edutools_core::radial::RadialPaletteCell],
+        selected_entry_identifier: Option<&str>,
+    ) -> Option<RadialPaletteFocus> {
+        if let Some(identifier) = selected_entry_identifier {
+            if let Some(cell) = cells.iter().find(|cell| {
+                cell.is_enabled
+                    && cell.ring == RadialPaletteRing::Entry
+                    && matches!(
+                        &cell.action,
+                        RadialPaletteCellAction::Entry(entry)
+                            if entry.identifier == identifier
+                    )
+            }) {
+                return Some(RadialPaletteFocus::Cell(cell.identifier.clone()));
+            }
+        }
+        cells
+            .iter()
+            .find(|cell| {
+                cell.is_enabled
+                    && cell.ring == RadialPaletteRing::Entry
+                    && cell.is_selected
+                    && matches!(
+                        &cell.action,
+                        RadialPaletteCellAction::Entry(entry) if entry.tool.is_some()
+                    )
+            })
+            .or_else(|| {
+                cells.iter().find(|cell| {
+                    cell.is_enabled && cell.ring == RadialPaletteRing::Group && cell.is_selected
+                })
+            })
+            .map(|cell| RadialPaletteFocus::Cell(cell.identifier.clone()))
+    }
+
+    fn valid_keyboard_focus(
+        focus: Option<&RadialPaletteFocus>,
+        cells: &[edutools_core::radial::RadialPaletteCell],
+    ) -> Option<RadialPaletteFocus> {
+        match focus? {
+            RadialPaletteFocus::Center => Some(RadialPaletteFocus::Center),
+            RadialPaletteFocus::Cell(identifier) => cells
+                .iter()
+                .any(|cell| cell.is_enabled && cell.identifier == *identifier)
+                .then(|| RadialPaletteFocus::Cell(identifier.clone())),
+        }
+    }
+
+    fn focus_target(
+        focus: &RadialPaletteFocus,
+        cells: &[edutools_core::radial::RadialPaletteCell],
+    ) -> Option<RadialPaletteHitTarget> {
+        match focus {
+            RadialPaletteFocus::Center => Some(RadialPaletteHitTarget::Center),
+            RadialPaletteFocus::Cell(identifier) => cells
+                .iter()
+                .find(|cell| cell.identifier == *identifier)
+                .cloned()
+                .map(RadialPaletteHitTarget::Cell),
         }
     }
 
@@ -558,6 +942,168 @@ mod windows_impl {
         Ok(())
     }
 
+    fn register_hint_window_class(hinstance: HINSTANCE) -> Result<()> {
+        let class = WNDCLASSW {
+            lpfnWndProc: Some(radial_hint_window_proc),
+            hInstance: hinstance,
+            lpszClassName: HINT_WINDOW_CLASS,
+            ..Default::default()
+        };
+        if unsafe { RegisterClassW(&class) } == 0 {
+            let error = unsafe { windows::Win32::Foundation::GetLastError() };
+            if error != ERROR_CLASS_ALREADY_EXISTS {
+                return Err(Error::from_thread());
+            }
+        }
+        Ok(())
+    }
+
+    impl RadialPaletteHintWindow {
+        fn new(
+            owner: HWND,
+            hinstance: HINSTANCE,
+            graphics: &GraphicsDevice,
+            logger: Logger,
+        ) -> Result<Self> {
+            let hwnd = unsafe {
+                CreateWindowExW(
+                    WS_EX_TOPMOST
+                        | WS_EX_TOOLWINDOW
+                        | WS_EX_NOACTIVATE
+                        | WS_EX_TRANSPARENT
+                        | WS_EX_LAYERED
+                        | WS_EX_NOREDIRECTIONBITMAP,
+                    HINT_WINDOW_CLASS,
+                    w!("EduTools Radial Palette Hint"),
+                    WS_POPUP,
+                    0,
+                    0,
+                    1,
+                    1,
+                    Some(owner),
+                    None,
+                    Some(hinstance),
+                    None,
+                )
+            }?;
+            if let Err(error) = unsafe { SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE) } {
+                let _ = unsafe { DestroyWindow(hwnd) };
+                return Err(error);
+            }
+            let band = BandRegistration::new(hwnd, Band::Guidance);
+            let renderer = match RadialPaletteHintRenderer::new(graphics, hwnd, 1, 1, 96) {
+                Ok(renderer) => renderer,
+                Err(error) => {
+                    let _ = unsafe { DestroyWindow(hwnd) };
+                    return Err(error);
+                }
+            };
+            Ok(Self {
+                hwnd,
+                renderer: Some(renderer),
+                _band: band,
+                logger,
+                shown: None,
+            })
+        }
+
+        fn measure(&self, text: &str, dpi: u32) -> Result<[f64; 2]> {
+            self.renderer
+                .as_ref()
+                .expect("radial hint renderer exists")
+                .measure(text, dpi)
+        }
+
+        fn show(
+            &mut self,
+            text: &str,
+            frame: Rect,
+            dpi: u32,
+            glass_opacity: f64,
+            identifier: &str,
+            source: &'static str,
+        ) -> Result<()> {
+            let width = frame.width.round().max(1.0) as i32;
+            let height = frame.height.round().max(1.0) as i32;
+            let renderer = self.renderer.as_mut().expect("radial hint renderer exists");
+            renderer.resize(width, height, dpi)?;
+            renderer.render(text, glass_opacity)?;
+            unsafe {
+                SetWindowPos(
+                    self.hwnd,
+                    None,
+                    frame.x.round() as i32,
+                    frame.y.round() as i32,
+                    width,
+                    height,
+                    SWP_NOACTIVATE | SWP_NOZORDER,
+                )
+            }?;
+            let _ = unsafe { ShowWindow(self.hwnd, SW_SHOWNOACTIVATE) };
+            raise_band_order()?;
+            if self.shown.as_ref().map(|(id, from)| (id.as_str(), *from))
+                != Some((identifier, source))
+            {
+                self.logger.event(&format!(
+                    "원형 팔레트 힌트 표시: id={identifier} source={source}"
+                ));
+            }
+            self.shown = Some((identifier.to_owned(), source));
+            Ok(())
+        }
+
+        fn hide(&mut self, reason: &str) {
+            if let Some((identifier, source)) = self.shown.take() {
+                let _ = unsafe { ShowWindow(self.hwnd, SW_HIDE) };
+                self.logger.event(&format!(
+                    "원형 팔레트 힌트 숨김: id={identifier} source={source} reason={reason}"
+                ));
+            }
+        }
+
+        fn selftest_failures(&mut self, glass_opacity: f64) -> Vec<String> {
+            let mut failures = Vec::new();
+            let required = (WS_EX_TOPMOST
+                | WS_EX_TOOLWINDOW
+                | WS_EX_NOACTIVATE
+                | WS_EX_TRANSPARENT
+                | WS_EX_LAYERED)
+                .0 as isize;
+            let actual = unsafe { GetWindowLongPtrW(self.hwnd, GWL_EXSTYLE) };
+            if actual & required != required {
+                failures.push(format!("radial hint: 필수 확장 스타일 누락 ({actual:#x})"));
+            }
+            let renderer = self.renderer.as_mut().expect("radial hint renderer exists");
+            match renderer.selftest_pixel_failures(glass_opacity) {
+                Ok(pixel_failures) => failures.extend(pixel_failures),
+                Err(error) => failures.push(format!("radial hint: 픽셀 readback 실패: {error}")),
+            }
+            failures
+        }
+    }
+
+    impl Drop for RadialPaletteHintWindow {
+        fn drop(&mut self) {
+            self.renderer.take();
+            let _ = unsafe { DestroyWindow(self.hwnd) };
+        }
+    }
+
+    unsafe extern "system" fn radial_hint_window_proc(
+        hwnd: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        match message {
+            WM_NCHITTEST => LRESULT(HTTRANSPARENT as isize),
+            WM_POINTERACTIVATE => LRESULT(PA_NOACTIVATE as isize),
+            WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
+            WM_ERASEBKGND => LRESULT(1),
+            _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
+        }
+    }
+
     unsafe extern "system" fn radial_window_proc(
         hwnd: HWND,
         message: u32,
@@ -584,6 +1130,7 @@ mod windows_impl {
                     return LRESULT(0);
                 }
                 WM_POINTERLEAVE => {
+                    state.hover_screen = None;
                     if state.press.is_none() && state.hover.take().is_some() {
                         post_owner(state, WM_APP_RADIAL_REDRAW);
                     }
@@ -660,8 +1207,20 @@ mod windows_impl {
             if state.press.is_some() {
                 return Ok(());
             }
-            let secondary =
-                info.pointerFlags & POINTER_FLAG_SECONDBUTTON == POINTER_FLAG_SECONDBUTTON;
+            let secondary = info.pointerFlags & POINTER_FLAG_SECONDBUTTON
+                == POINTER_FLAG_SECONDBUTTON
+                || current_modifiers().contains(ShortcutModifiers::ALT);
+            state.hover_screen = Some(info.ptPixelLocation);
+            let focus_cleared = if state.shows_keyboard_focus {
+                state.shows_keyboard_focus = false;
+                state.keyboard_focus = None;
+                state
+                    .logger
+                    .event("원형 팔레트 키보드 포커스 표시 해제: 마우스 입력");
+                true
+            } else {
+                false
+            };
             let Some(target) = hit else {
                 if state.radial.is_expanded {
                     post_owner(state, WM_APP_RADIAL_COLLAPSE);
@@ -681,6 +1240,8 @@ mod windows_impl {
             if state.hover.as_deref() != Some(target.identifier()) {
                 state.hover = Some(target.identifier().to_owned());
                 post_owner(state, WM_APP_RADIAL_REDRAW);
+            } else if focus_cleared {
+                post_owner(state, WM_APP_RADIAL_REDRAW);
             }
             return Ok(());
         }
@@ -688,9 +1249,24 @@ mod windows_impl {
         if message == WM_POINTERUPDATE {
             let in_range = info.pointerFlags & POINTER_FLAG_INRANGE == POINTER_FLAG_INRANGE;
             let in_contact = info.pointerFlags & POINTER_FLAG_INCONTACT == POINTER_FLAG_INCONTACT;
-            if !in_contact && in_range && state.hover != hit_identifier {
-                state.hover = hit_identifier;
-                post_owner(state, WM_APP_RADIAL_REDRAW);
+            if in_range {
+                state.hover_screen = Some(info.ptPixelLocation);
+                let focus_cleared = if state.shows_keyboard_focus {
+                    state.shows_keyboard_focus = false;
+                    state.keyboard_focus = None;
+                    state
+                        .logger
+                        .event("원형 팔레트 키보드 포커스 표시 해제: 마우스 이동");
+                    true
+                } else {
+                    false
+                };
+                if !in_contact && state.hover != hit_identifier {
+                    state.hover = hit_identifier.clone();
+                    post_owner(state, WM_APP_RADIAL_REDRAW);
+                } else if focus_cleared {
+                    post_owner(state, WM_APP_RADIAL_REDRAW);
+                }
             }
             if let Some(press) = state.press.as_mut() {
                 if press.pointer_id == pointer_id && press.center && !press.secondary {
@@ -745,6 +1321,7 @@ mod windows_impl {
         }
         if state.hover != hit_identifier {
             state.hover = hit_identifier;
+            state.hover_screen = Some(info.ptPixelLocation);
             post_owner(state, WM_APP_RADIAL_REDRAW);
         }
         Ok(())
@@ -850,6 +1427,206 @@ mod windows_impl {
             state.logger.event(&format!(
                 "원형 팔레트 owner 메시지 전송 실패: {message:#x}: {error}"
             ));
+        }
+    }
+
+    struct RadialPaletteHintRenderer {
+        swap_chain: IDXGISwapChain1,
+        context: ID2D1DeviceContext,
+        swap_target: Option<ID2D1Bitmap1>,
+        dwrite: IDWriteFactory,
+        _dcomp_target: IDCompositionTarget,
+        _visual: IDCompositionVisual,
+        width: u32,
+        height: u32,
+        dpi: u32,
+    }
+
+    impl RadialPaletteHintRenderer {
+        fn new(
+            graphics: &GraphicsDevice,
+            hwnd: HWND,
+            width: i32,
+            height: i32,
+            dpi: u32,
+        ) -> Result<Self> {
+            let width = positive_dimension(width)?;
+            let height = positive_dimension(height)?;
+            let swap_chain = create_swap_chain(graphics, width, height)?;
+            let context = graphics.create_d2d_context()?;
+            unsafe { context.SetDpi(96.0, 96.0) };
+            let swap_target = Some(create_swap_target(&context, &swap_chain)?);
+            set_context_target(
+                &context,
+                swap_target
+                    .as_ref()
+                    .expect("radial hint swap target exists"),
+            )?;
+            let (dcomp_target, visual) =
+                graphics.attach_composition_swap_chain(hwnd, &swap_chain)?;
+            let dwrite = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED) }?;
+            Ok(Self {
+                swap_chain,
+                context,
+                swap_target,
+                dwrite,
+                _dcomp_target: dcomp_target,
+                _visual: visual,
+                width,
+                height,
+                dpi,
+            })
+        }
+
+        fn resize(&mut self, width: i32, height: i32, dpi: u32) -> Result<()> {
+            let width = positive_dimension(width)?;
+            let height = positive_dimension(height)?;
+            if self.width == width && self.height == height && self.dpi == dpi {
+                return Ok(());
+            }
+            unsafe { self.context.SetTarget(None::<&ID2D1Image>) };
+            self.swap_target = None;
+            if self.width != width || self.height != height {
+                unsafe {
+                    self.swap_chain.ResizeBuffers(
+                        0,
+                        width,
+                        height,
+                        DXGI_FORMAT_UNKNOWN,
+                        Default::default(),
+                    )
+                }?;
+            }
+            self.swap_target = Some(create_swap_target(&self.context, &self.swap_chain)?);
+            set_context_target(
+                &self.context,
+                self.swap_target
+                    .as_ref()
+                    .expect("radial hint swap target recreated"),
+            )?;
+            self.width = width;
+            self.height = height;
+            self.dpi = dpi;
+            Ok(())
+        }
+
+        fn measure(&self, value: &str, dpi: u32) -> Result<[f64; 2]> {
+            let scale = px_per_dip(dpi);
+            let format = medium_text_format(&self.dwrite, HINT_FONT_SIZE * scale)?;
+            let text = value.encode_utf16().collect::<Vec<_>>();
+            let layout = unsafe { self.dwrite.CreateTextLayout(&text, &format, 2_000.0, 200.0) }?;
+            let mut metrics = DWRITE_TEXT_METRICS::default();
+            unsafe { layout.GetMetrics(&mut metrics) }?;
+            Ok([
+                f64::from(metrics.widthIncludingTrailingWhitespace).ceil() + 18.0 * scale,
+                f64::from(metrics.height).ceil() + 12.0 * scale,
+            ])
+        }
+
+        fn render(&mut self, text: &str, glass_opacity: f64) -> Result<()> {
+            let target = self
+                .swap_target
+                .as_ref()
+                .expect("radial hint swap target exists")
+                .clone();
+            self.render_to(&target, text, glass_opacity)?;
+            unsafe { self.swap_chain.Present(1, Default::default()).ok() }
+        }
+
+        fn render_to(&self, target: &ID2D1Bitmap1, text: &str, glass_opacity: f64) -> Result<()> {
+            set_context_target(&self.context, target)?;
+            unsafe {
+                self.context.BeginDraw();
+                self.context.SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_COPY);
+                self.context.Clear(Some(&D2D1_COLOR_F::default()));
+                self.context
+                    .SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_SOURCE_OVER);
+            }
+            let draw_result = (|| -> Result<()> {
+                let scale = px_per_dip(self.dpi);
+                let rect = D2D_RECT_F {
+                    left: (0.4 * scale) as f32,
+                    top: (0.4 * scale) as f32,
+                    right: self.width as f32 - (0.4 * scale) as f32,
+                    bottom: self.height as f32 - (0.4 * scale) as f32,
+                };
+                let rounded = D2D1_ROUNDED_RECT {
+                    rect,
+                    radiusX: (HINT_CORNER_RADIUS * scale) as f32,
+                    radiusY: (HINT_CORNER_RADIUS * scale) as f32,
+                };
+                let surface = unsafe {
+                    self.context.CreateSolidColorBrush(
+                        &color(RadialPaletteArcStyle::surface_color(glass_opacity)),
+                        None,
+                    )
+                }?;
+                let border = unsafe {
+                    self.context
+                        .CreateSolidColorBrush(&color(RadialPaletteArcStyle::OUTER_BORDER), None)
+                }?;
+                unsafe {
+                    self.context.FillRoundedRectangle(&rounded, &surface);
+                    self.context.DrawRoundedRectangle(
+                        &rounded,
+                        &border,
+                        (0.8 * scale) as f32,
+                        None::<&ID2D1StrokeStyle>,
+                    );
+                }
+                let format = medium_text_format(&self.dwrite, HINT_FONT_SIZE * scale)?;
+                let brush = unsafe {
+                    self.context
+                        .CreateSolidColorBrush(&color(RadialPaletteArcStyle::ACTIVE_ICON), None)
+                }?;
+                let target: ID2D1RenderTarget = self.context.cast()?;
+                let text = text.encode_utf16().collect::<Vec<_>>();
+                unsafe {
+                    target.DrawText(
+                        &text,
+                        &format,
+                        &D2D_RECT_F {
+                            left: (9.0 * scale) as f32,
+                            top: (6.0 * scale) as f32,
+                            right: self.width as f32 - (9.0 * scale) as f32,
+                            bottom: self.height as f32 - (6.0 * scale) as f32,
+                        },
+                        &brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                    )
+                };
+                Ok(())
+            })();
+            let end_result = unsafe { self.context.EndDraw(None, None) };
+            draw_result?;
+            end_result
+        }
+
+        fn selftest_pixel_failures(&mut self, glass_opacity: f64) -> Result<Vec<String>> {
+            let saved = (self.width, self.height, self.dpi);
+            self.width = 180;
+            self.height = 42;
+            self.dpi = 96;
+            let bitmap = create_target_bitmap(&self.context, self.width, self.height)?;
+            self.render_to(&bitmap, "도구  Ctrl+M", glass_opacity)?;
+            let (pixels, pitch) = read_bitmap_bgra(&self.context, &bitmap)?;
+            let alpha =
+                |x: u32, y: u32| -> u8 { pixels[y as usize * pitch as usize + x as usize * 4 + 3] };
+            let mut failures = Vec::new();
+            if alpha(self.width / 2, self.height / 2) == 0 {
+                failures.push("radial hint: 면 영역 alpha가 0".to_owned());
+            }
+            if alpha(0, 0) != 0 {
+                failures.push("radial hint: 면 밖 alpha가 0이 아님".to_owned());
+            }
+            (self.width, self.height, self.dpi) = saved;
+            let target = self
+                .swap_target
+                .as_ref()
+                .expect("radial hint swap target exists");
+            set_context_target(&self.context, target)?;
+            Ok(failures)
         }
     }
 
@@ -991,6 +1768,29 @@ mod windows_impl {
             if alpha_at(0, 0) != 0 {
                 failures.push("radial palette: 접힘 창 모서리 alpha가 0이 아님".to_owned());
             }
+            self.render_to(
+                &collapsed_bitmap,
+                &render_state(&collapsed, true, None, None),
+            )?;
+            let (key_cap_pixels, key_cap_pitch) =
+                read_bitmap_bgra(&self.context, &collapsed_bitmap)?;
+            let radius = (12.0 * scale).round() as u32;
+            let start = middle.saturating_sub(radius);
+            let end = (middle + radius).min(collapsed_size as u32 - 1);
+            let mut center_changed = false;
+            'pixels: for y in start..=end {
+                for x in start..=end {
+                    let base = y as usize * pitch as usize + x as usize * 4;
+                    let key_cap = y as usize * key_cap_pitch as usize + x as usize * 4;
+                    if collapsed_pixels[base..base + 4] != key_cap_pixels[key_cap..key_cap + 4] {
+                        center_changed = true;
+                        break 'pixels;
+                    }
+                }
+            }
+            if !center_changed {
+                failures.push("radial palette: 키캡 표시 전후 중심 칸 픽셀이 동일함".to_owned());
+            }
 
             let expanded_size = pixels(EXPANDED_DIAMETER, saved_dpi);
             let expanded_bitmap =
@@ -1106,7 +1906,15 @@ mod windows_impl {
                         cell.is_enabled,
                     )?;
                 }
-                self.draw_cell_icon(cell, radius / scale, GROUP_ICON_SIZE)?;
+                if state.shows_key_caps && !cell.shortcut.is_empty() {
+                    self.draw_key_cap(
+                        &cell.shortcut,
+                        self.cell_center(cell, radius / scale),
+                        state.glass_opacity,
+                    )?;
+                } else {
+                    self.draw_cell_icon(cell, radius / scale, GROUP_ICON_SIZE)?;
+                }
             }
             Ok(())
         }
@@ -1153,7 +1961,22 @@ mod windows_impl {
                         target.FillEllipse(&ellipse(node, diameter / 2.0 * self.scale()), &brush)
                     };
                 }
-                self.draw_cell_icon(cell, orbit, ENTRY_ICON_SIZE)?;
+                if cell.is_focused {
+                    let focus = self.brush(RadialPaletteArcStyle::ACTIVE)?;
+                    unsafe {
+                        target.DrawEllipse(
+                            &ellipse(node, diameter / 2.0 * self.scale()),
+                            &focus,
+                            (1.8 * self.scale()) as f32,
+                            None::<&ID2D1StrokeStyle>,
+                        )
+                    };
+                }
+                if state.shows_key_caps && !cell.shortcut.is_empty() {
+                    self.draw_key_cap(&cell.shortcut, node, state.glass_opacity)?;
+                } else {
+                    self.draw_cell_icon(cell, orbit, ENTRY_ICON_SIZE)?;
+                }
             }
             Ok(())
         }
@@ -1209,10 +2032,10 @@ mod windows_impl {
                 )?;
             }
             for cell in cells {
-                if cell.is_selected || cell.is_hovered {
+                if cell.is_selected || cell.is_hovered || cell.is_focused {
                     self.draw_active_arc(cell.geometry, OPTION_TRACK_RADIUS, cell.is_enabled)?;
                 }
-                self.draw_option_node(cell, state.glass_opacity)?;
+                self.draw_option_node(cell, state.glass_opacity, state.shows_key_caps)?;
             }
             Ok(())
         }
@@ -1221,15 +2044,19 @@ mod windows_impl {
             &mut self,
             cell: &RadialPaletteRenderCell,
             glass_opacity: f64,
+            shows_key_caps: bool,
         ) -> Result<()> {
             let target: ID2D1RenderTarget = self.context.cast()?;
             let scale = self.scale();
             let center = self.cell_center(cell, OPTION_NODE_RADIUS);
             let content = content_color(cell);
+            if shows_key_caps && !cell.shortcut.is_empty() {
+                return self.draw_key_cap(&cell.shortcut, center, glass_opacity);
+            }
             if let Some(fill) = cell.color {
                 let brush = self.brush(fill)?;
                 unsafe { target.FillEllipse(&ellipse(center, 10.0 * scale), &brush) };
-                let outline = self.brush(if cell.is_selected {
+                let outline = self.brush(if cell.is_selected || cell.is_focused {
                     RadialPaletteArcStyle::ACTIVE_ICON
                 } else {
                     RadialPaletteArcStyle::OUTER_BORDER
@@ -1238,7 +2065,11 @@ mod windows_impl {
                     target.DrawEllipse(
                         &ellipse(center, 10.0 * scale),
                         &outline,
-                        (if cell.is_selected { 2.0 } else { 1.0 } * scale) as f32,
+                        (if cell.is_selected || cell.is_focused {
+                            2.0
+                        } else {
+                            1.0
+                        } * scale) as f32,
                         None::<&ID2D1StrokeStyle>,
                     )
                 };
@@ -1260,6 +2091,17 @@ mod windows_impl {
                     None::<&ID2D1StrokeStyle>,
                 )
             };
+            if cell.is_focused {
+                let focus = self.brush(RadialPaletteArcStyle::ACTIVE_ICON)?;
+                unsafe {
+                    target.DrawEllipse(
+                        &ellipse(center, 13.0 * scale),
+                        &focus,
+                        (2.0 * scale) as f32,
+                        None::<&ID2D1StrokeStyle>,
+                    )
+                };
+            }
             if let Some(preview) = cell.preview {
                 self.draw_preview(preview, &cell.short_label, center, content)?;
             } else if let Some(icon_key) = cell.icon_key.as_deref() {
@@ -1381,6 +2223,17 @@ mod windows_impl {
                     None::<&ID2D1StrokeStyle>,
                 )
             };
+            if state.center_is_focused {
+                let focus = self.brush(RadialPaletteArcStyle::ACTIVE_ICON)?;
+                unsafe {
+                    target.DrawEllipse(
+                        &ellipse(center, radius - 1.0 * scale),
+                        &focus,
+                        (2.0 * scale) as f32,
+                        None::<&ID2D1StrokeStyle>,
+                    )
+                };
+            }
             let stroke = self.brush(state.center_color)?;
             unsafe {
                 target.DrawEllipse(
@@ -1390,7 +2243,9 @@ mod windows_impl {
                     None::<&ID2D1StrokeStyle>,
                 )
             };
-            if let Some(icon_key) = state.center_icon_key.as_deref() {
+            if state.shows_key_caps && !state.center_shortcut.is_empty() {
+                self.draw_key_cap(&state.center_shortcut, center, state.glass_opacity)?;
+            } else if let Some(icon_key) = state.center_icon_key.as_deref() {
                 let tint = if state.center_is_pass_through_enabled {
                     RadialPaletteArcStyle::ACTIVE_ICON
                 } else {
@@ -1415,6 +2270,49 @@ mod windows_impl {
                 self.cell_center(cell, orbit),
                 size,
                 content_color(cell),
+            )
+        }
+
+        fn draw_key_cap(&self, label: &str, center: [f32; 2], glass_opacity: f64) -> Result<()> {
+            let scale = self.scale();
+            let format = medium_text_format(&self.dwrite, KEY_CAP_FONT_SIZE * scale)?;
+            let text = label.encode_utf16().collect::<Vec<_>>();
+            let layout = unsafe {
+                self.dwrite.CreateTextLayout(
+                    &text,
+                    &format,
+                    240.0 * scale as f32,
+                    40.0 * scale as f32,
+                )
+            }?;
+            let mut metrics = DWRITE_TEXT_METRICS::default();
+            unsafe { layout.GetMetrics(&mut metrics) }?;
+            let width = (f64::from(metrics.widthIncludingTrailingWhitespace) + 10.0 * scale)
+                .max(18.0 * scale);
+            let height = (f64::from(metrics.height) + 6.0 * scale).max(18.0 * scale);
+            let rounded = D2D1_ROUNDED_RECT {
+                rect: rect_around(center, width, height),
+                radiusX: (5.0 * scale) as f32,
+                radiusY: (5.0 * scale) as f32,
+            };
+            let target: ID2D1RenderTarget = self.context.cast()?;
+            let surface = self.brush(RadialPaletteArcStyle::surface_color(glass_opacity))?;
+            let border = self.brush(RadialPaletteArcStyle::OUTER_BORDER)?;
+            unsafe {
+                target.FillRoundedRectangle(&rounded, &surface);
+                target.DrawRoundedRectangle(
+                    &rounded,
+                    &border,
+                    (0.8 * scale) as f32,
+                    None::<&ID2D1StrokeStyle>,
+                );
+            }
+            self.draw_label(
+                label,
+                rounded.rect,
+                KEY_CAP_FONT_SIZE,
+                RadialPaletteArcStyle::ACTIVE_ICON,
+                true,
             )
         }
 
@@ -1743,6 +2641,29 @@ mod windows_impl {
         let image: ID2D1Image = bitmap.cast()?;
         unsafe { context.SetTarget(&image) };
         Ok(())
+    }
+
+    fn medium_text_format(
+        factory: &IDWriteFactory,
+        font_size_px: f64,
+    ) -> Result<IDWriteTextFormat> {
+        let format = unsafe {
+            factory.CreateTextFormat(
+                w!("Segoe UI"),
+                None::<&IDWriteFontCollection>,
+                DWRITE_FONT_WEIGHT_MEDIUM,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                font_size_px as f32,
+                w!("ko-KR"),
+            )
+        }?;
+        unsafe {
+            format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+            format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+            format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+        }
+        Ok(format)
     }
 
     fn ellipse(center: [f32; 2], radius: f64) -> D2D1_ELLIPSE {
