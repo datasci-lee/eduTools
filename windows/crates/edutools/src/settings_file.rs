@@ -1,5 +1,7 @@
 use crate::palette::app_data_file;
+use edutools_core::settings::AppSettings;
 use edutools_core::settings_store::{SettingsStorage, SettingsStorageError, SettingsStore};
+use edutools_core::settings_transfer::{SettingsBundle, SettingsTransfer};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::windows::ffi::OsStrExt;
@@ -66,7 +68,7 @@ impl FileSettingsStorage {
         }
     }
 
-    fn atomic_write(path: &Path, data: &[u8]) -> Result<(), SettingsStorageError> {
+    pub(crate) fn atomic_write(path: &Path, data: &[u8]) -> Result<(), SettingsStorageError> {
         let parent = path.parent().ok_or_else(|| {
             SettingsStorageError::new(format!(
                 "설정 경로에 상위 폴더가 없습니다: {}",
@@ -171,6 +173,31 @@ pub fn selftest_failures() -> Vec<String> {
     }
     if reloaded.settings() != &expected {
         failures.push("settings storage: 임시 경로 저장/재로드 결과 불일치".to_owned());
+    }
+    let transfer_path = directory.join("selftest.pansetting");
+    let transfer_result = SettingsTransfer::export_all(
+        &AppSettings::default(),
+        env!("CARGO_PKG_VERSION"),
+        "Windows selftest",
+    )
+    .and_then(|document| SettingsTransfer::encode(&document))
+    .map_err(|error| error.to_string())
+    .and_then(|data| {
+        FileSettingsStorage::atomic_write(&transfer_path, &data)
+            .map_err(|error| error.to_string())?;
+        let written = fs::read(&transfer_path).map_err(|error| error.to_string())?;
+        let decoded = SettingsTransfer::decode(&written).map_err(|error| error.to_string())?;
+        SettingsTransfer::applied_settings(&AppSettings::default(), &decoded, SettingsBundle::ALL)
+            .map_err(|error| error.to_string())
+    });
+    match transfer_result {
+        Ok(applied) if applied == AppSettings::default() => {}
+        Ok(_) => {
+            failures.push("settings transfer: export/decode/apply 왕복 결과 불일치".to_owned())
+        }
+        Err(error) => failures.push(format!(
+            "settings transfer: export/decode/apply 왕복 실패: {error}"
+        )),
     }
     if let Err(error) = fs::remove_dir_all(&directory) {
         failures.push(format!(

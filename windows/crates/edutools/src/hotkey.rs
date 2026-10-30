@@ -5,6 +5,7 @@ use edutools_core::settings::AppSettings;
 use edutools_core::shortcut::{
     ShortcutCatalog, ShortcutDefinition, ShortcutModifiers, ShortcutScope,
 };
+use std::collections::BTreeMap;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT,
@@ -20,6 +21,7 @@ struct RegisteredHotkey {
 pub struct HotkeyCenter {
     hwnd: HWND,
     registered: Vec<RegisteredHotkey>,
+    runtime_warnings: BTreeMap<String, String>,
     logger: Logger,
 }
 
@@ -29,6 +31,7 @@ impl HotkeyCenter {
             .into_iter()
             .filter(|definition| definition.binding(ShortcutScope::Global).is_some());
         let mut registered = Vec::new();
+        let mut runtime_warnings = BTreeMap::new();
         for (index, definition) in definitions.enumerate() {
             let id = i32::try_from(index + 1).expect("global shortcut count must fit in i32");
             let binding = definition
@@ -41,6 +44,13 @@ impl HotkeyCenter {
                 );
                 logger.event(&message);
                 tray.show_hotkey_failure(&definition.name, &binding.key_cap);
+                runtime_warnings.insert(
+                    ShortcutCatalog::override_key(&definition.id, ShortcutScope::Global),
+                    format!(
+                        "전역 단축키를 등록하지 못했습니다: 지원하지 않는 키 {}",
+                        binding.key
+                    ),
+                );
                 continue;
             };
             let modifiers = windows_modifiers(binding.modifiers);
@@ -60,12 +70,17 @@ impl HotkeyCenter {
                         definition.id, binding.portable_string
                     ));
                     tray.show_hotkey_failure(&definition.name, &binding.key_cap);
+                    runtime_warnings.insert(
+                        ShortcutCatalog::override_key(&definition.id, ShortcutScope::Global),
+                        format!("전역 단축키를 등록하지 못했습니다: {error}"),
+                    );
                 }
             }
         }
         Self {
             hwnd,
             registered,
+            runtime_warnings,
             logger,
         }
     }
@@ -75,6 +90,10 @@ impl HotkeyCenter {
             .iter()
             .find(|entry| entry.id == id)
             .map(|entry| entry.definition.clone())
+    }
+
+    pub fn runtime_warnings(&self) -> &BTreeMap<String, String> {
+        &self.runtime_warnings
     }
 
     pub fn shutdown(&mut self) {

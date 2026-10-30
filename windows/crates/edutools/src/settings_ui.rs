@@ -1,24 +1,38 @@
-//! Win32 설정 창. Swift `SettingsController`의 6개 비-단축키 탭을 선언형 표로 옮긴다.
+//! Win32 설정 창. Swift `SettingsController`의 설정 탭과 전송 흐름을 옮긴다.
 
+#[cfg(windows)]
+use crate::keymap::{self, RecorderOutcome};
 #[cfg(windows)]
 use crate::log::Logger;
 #[cfg(windows)]
 use crate::z_bands::{raise_band_order, Band, BandRegistration};
 use edutools_core::settings::{
-    AppSettings, PaletteStyle, RadialPaletteGlassStyle, SettingsColor, SettingsRanges,
-    SettingsValidator,
+    AppModifierSetting, AppSettings, PaletteStyle, RadialPaletteGlassStyle, SettingsColor,
+    SettingsRanges, SettingsValidator,
 };
+#[cfg(windows)]
+use edutools_core::settings_transfer::SettingsDocument;
+use edutools_core::settings_transfer::{SettingsBundle, SettingsTransfer};
+use edutools_core::shortcut::{
+    ShortcutCatalog, ShortcutConflictDetector, ShortcutConflictTable, ShortcutGroup, ShortcutScope,
+};
+#[cfg(windows)]
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 #[cfg(windows)]
-use std::ffi::c_void;
+use std::ffi::{c_void, OsString};
 #[cfg(windows)]
 use std::mem::size_of;
 use std::ops::RangeInclusive;
 #[cfg(windows)]
+use std::os::windows::ffi::OsStringExt;
+#[cfg(windows)]
+use std::path::PathBuf;
+#[cfg(windows)]
 use windows::core::{w, Error, Result, PCWSTR, PWSTR};
 #[cfg(windows)]
 use windows::Win32::Foundation::{
-    COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
+    COLORREF, ERROR_CANCELLED, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
 };
 #[cfg(windows)]
 use windows::Win32::Graphics::Gdi::{
@@ -27,15 +41,20 @@ use windows::Win32::Graphics::Gdi::{
     ReleaseDC, SelectObject, COLOR_WINDOW, HFONT, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
 #[cfg(windows)]
-use windows::Win32::System::Com::CoTaskMemFree;
+use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_INPROC_SERVER};
+#[cfg(windows)]
+use windows::Win32::System::Diagnostics::Debug::MessageBeep;
 #[cfg(windows)]
 use windows::Win32::UI::Controls::Dialogs::{ChooseColorW, CC_FULLOPEN, CC_RGBINIT, CHOOSECOLORW};
 #[cfg(windows)]
 use windows::Win32::UI::Controls::{
     InitCommonControlsEx, SetScrollInfo, BST_CHECKED, BST_UNCHECKED, DRAWITEMSTRUCT,
-    ICC_BAR_CLASSES, ICC_TAB_CLASSES, INITCOMMONCONTROLSEX, NMHDR, NM_RELEASEDCAPTURE, TBM_SETPOS,
-    TBM_SETRANGEMAX, TBM_SETRANGEMIN, TB_ENDTRACK, TCIF_TEXT, TCITEMW, TCM_ADJUSTRECT,
-    TCM_GETCURSEL, TCM_INSERTITEMW, TCM_SETCURSEL, TCN_SELCHANGE, TRACKBAR_CLASSW, WC_TABCONTROLW,
+    ICC_BAR_CLASSES, ICC_LISTVIEW_CLASSES, ICC_TAB_CLASSES, INITCOMMONCONTROLSEX, LVCF_TEXT,
+    LVCF_WIDTH, LVCOLUMNW, LVIF_TEXT, LVITEMW, LVM_DELETEALLITEMS, LVM_INSERTCOLUMNW,
+    LVM_INSERTITEMW, LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMTEXTW, LVS_EX_FULLROWSELECT,
+    LVS_REPORT, LVS_SHOWSELALWAYS, NMHDR, NM_RELEASEDCAPTURE, TBM_SETPOS, TBM_SETRANGEMAX,
+    TBM_SETRANGEMIN, TB_ENDTRACK, TCIF_TEXT, TCITEMW, TCM_ADJUSTRECT, TCM_GETCURSEL,
+    TCM_INSERTITEMW, TCM_SETCURSEL, TCN_SELCHANGE, TRACKBAR_CLASSW, WC_LISTVIEWW, WC_TABCONTROLW,
 };
 #[cfg(windows)]
 use windows::Win32::UI::HiDpi::{
@@ -43,10 +62,20 @@ use windows::Win32::UI::HiDpi::{
     MDT_EFFECTIVE_DPI,
 };
 #[cfg(windows)]
-use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetFocus, SetFocus};
+use windows::Win32::UI::Input::Ime::ImmGetVirtualKey;
+#[cfg(windows)]
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    EnableWindow, GetFocus, GetKeyState, SetFocus, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU,
+    VK_PROCESSKEY, VK_RWIN, VK_SHIFT,
+};
+#[cfg(windows)]
+use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 #[cfg(windows)]
 use windows::Win32::UI::Shell::{
-    SHBrowseForFolderW, SHGetPathFromIDListW, BIF_NEWDIALOGSTYLE, BIF_RETURNONLYFSDIRS, BROWSEINFOW,
+    DefSubclassProc, FileOpenDialog, FileSaveDialog, IFileOpenDialog, IFileSaveDialog,
+    SHBrowseForFolderW, SHGetPathFromIDListW, SetWindowSubclass, BIF_NEWDIALOGSTYLE,
+    BIF_RETURNONLYFSDIRS, BROWSEINFOW, FOS_FORCEFILESYSTEM, FOS_PATHMUSTEXIST, FOS_STRICTFILETYPES,
+    SIGDN_FILESYSPATH,
 };
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -55,16 +84,16 @@ use windows::Win32::UI::WindowsAndMessaging::{
     MessageBoxW, PostMessageW, RegisterClassW, SendMessageW, SetForegroundWindow,
     SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, BS_AUTOCHECKBOX, BS_OWNERDRAW,
     BS_PUSHBUTTON, CBN_SELCHANGE, CBS_DROPDOWNLIST, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL,
-    CREATESTRUCTW, EN_KILLFOCUS, ES_AUTOHSCROLL, ES_MULTILINE, ES_READONLY, GWLP_USERDATA, HMENU,
-    IDC_ARROW, MB_ICONERROR, MB_OK, MINMAXINFO, NONCLIENTMETRICSW, SB_BOTTOM, SB_ENDSCROLL,
-    SB_LINEDOWN, SB_LINEUP, SB_PAGEDOWN, SB_PAGEUP, SB_THUMBPOSITION, SB_THUMBTRACK, SB_TOP,
-    SCROLLINFO, SIF_PAGE, SIF_POS, SIF_RANGE, SIF_TRACKPOS, SPI_GETNONCLIENTMETRICS,
-    SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_RESTORE, SW_SHOW,
-    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WHEEL_DELTA, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE,
-    WM_COMMAND, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_GETMINMAXINFO, WM_HSCROLL,
-    WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_NOTIFY, WM_SETFONT, WM_SIZE, WM_VSCROLL,
-    WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_EX_CLIENTEDGE, WS_OVERLAPPEDWINDOW, WS_TABSTOP,
-    WS_VISIBLE, WS_VSCROLL,
+    CREATESTRUCTW, DLGC_WANTALLKEYS, EN_KILLFOCUS, ES_AUTOHSCROLL, ES_MULTILINE, ES_READONLY,
+    GWLP_USERDATA, HMENU, IDC_ARROW, MB_ICONERROR, MB_ICONWARNING, MB_OK, MB_YESNO, MINMAXINFO,
+    NONCLIENTMETRICSW, SB_BOTTOM, SB_ENDSCROLL, SB_LINEDOWN, SB_LINEUP, SB_PAGEDOWN, SB_PAGEUP,
+    SB_THUMBPOSITION, SB_THUMBTRACK, SB_TOP, SCROLLINFO, SIF_PAGE, SIF_POS, SIF_RANGE,
+    SIF_TRACKPOS, SPI_GETNONCLIENTMETRICS, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_RESTORE,
+    SW_SHOW, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WHEEL_DELTA, WINDOW_EX_STYLE, WINDOW_STYLE,
+    WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_GETDLGCODE, WM_GETMINMAXINFO,
+    WM_HSCROLL, WM_KEYDOWN, WM_KILLFOCUS, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_NOTIFY,
+    WM_SETFONT, WM_SIZE, WM_SYSKEYDOWN, WM_VSCROLL, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN,
+    WS_EX_CLIENTEDGE, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 
 #[cfg(windows)]
@@ -73,11 +102,21 @@ pub const WM_APP_SETTINGS_CHANGE: u32 = 0x8000 + 220;
 const WM_APP_PAGE_SCROLL: u32 = 0x8000 + 239;
 #[cfg(windows)]
 const WM_APP_PAGE_WHEEL: u32 = 0x8000 + 240;
+#[cfg(windows)]
+pub const WM_APP_SETTINGS_ACTION: u32 = 0x8000 + 242;
+#[cfg(windows)]
+const WM_APP_SHORTCUT_KEY: u32 = 0x8000 + 243;
 
 #[cfg(windows)]
 const WINDOW_CLASS: PCWSTR = w!("EduToolsSettingsWindow");
 #[cfg(windows)]
 const PAGE_CLASS: PCWSTR = w!("EduToolsSettingsPage");
+#[cfg(windows)]
+const IMPORT_PREVIEW_CLASS: PCWSTR = w!("EduToolsSettingsImportPreview");
+#[cfg(windows)]
+const EXPORT_OPTIONS_CLASS: PCWSTR = w!("EduToolsSettingsExportOptions");
+#[cfg(windows)]
+const SHORTCUT_RECORDER_SUBCLASS_ID: usize = 0xED12;
 const BASE_DPI: u32 = 96;
 const MINIMUM_WIDTH_DIP: i32 = 900;
 const MINIMUM_HEIGHT_DIP: i32 = 620;
@@ -96,6 +135,7 @@ struct LayoutMetrics {
     initial_height: i32,
     outer_margin: i32,
     error_height: i32,
+    action_height: i32,
     page_padding: i32,
     row_gap: i32,
     control_height: i32,
@@ -117,6 +157,7 @@ fn layout_metrics(dpi: u32) -> LayoutMetrics {
         initial_height: dip(INITIAL_HEIGHT_DIP, dpi),
         outer_margin: dip(14, dpi),
         error_height: dip(28, dpi),
+        action_height: dip(30, dpi),
         page_padding: dip(12, dpi),
         row_gap: dip(10, dpi),
         control_height: dip(25, dpi),
@@ -330,10 +371,6 @@ pub const EXCLUDED_FIELDS: &[ExcludedField] = &[
     ExcludedField {
         id: "display",
         reason: "화면 프리셋 탭은 W10/121c 범위",
-    },
-    ExcludedField {
-        id: "shortcuts",
-        reason: "단축키 탭은 120c 범위",
     },
 ];
 
@@ -1397,6 +1434,198 @@ pub struct SettingsChangeRequest {
     pub value: Value,
 }
 
+fn default_export_bundles() -> BTreeSet<SettingsBundle> {
+    SettingsBundle::ALL.into_iter().collect()
+}
+
+fn bundle_name(bundle: SettingsBundle) -> &'static str {
+    match bundle {
+        SettingsBundle::General => "일반",
+        SettingsBundle::Tools => "도구",
+        SettingsBundle::Eraser => "지우개",
+        SettingsBundle::Zoom => "줌",
+        SettingsBundle::Board => "보드",
+        SettingsBundle::Timer => "타이머",
+        SettingsBundle::Display => "화면",
+        SettingsBundle::Shortcuts => "단축키",
+        SettingsBundle::Help => "도움말",
+    }
+}
+
+#[cfg(windows)]
+fn change_bundle_name(id: &str) -> &'static str {
+    if id == "화면 구성" {
+        return bundle_name(SettingsBundle::Display);
+    }
+    match id.split('.').next().unwrap_or("") {
+        "general" => bundle_name(SettingsBundle::General),
+        "tools" => bundle_name(SettingsBundle::Tools),
+        "eraser" => bundle_name(SettingsBundle::Eraser),
+        "zoom" => bundle_name(SettingsBundle::Zoom),
+        "board" => bundle_name(SettingsBundle::Board),
+        "timer" => bundle_name(SettingsBundle::Timer),
+        "display" => bundle_name(SettingsBundle::Display),
+        "shortcuts" => bundle_name(SettingsBundle::Shortcuts),
+        "help" => bundle_name(SettingsBundle::Help),
+        _ => "기타",
+    }
+}
+
+#[cfg(windows)]
+fn scope_name(scope: ShortcutScope) -> &'static str {
+    match scope {
+        ShortcutScope::Global => "전역",
+        ShortcutScope::Annotation => "판서",
+        ShortcutScope::Zoom => "줌",
+    }
+}
+
+#[cfg(windows)]
+fn shortcut_group_name(group: ShortcutGroup) -> &'static str {
+    match group {
+        ShortcutGroup::Tools => "도구",
+        ShortcutGroup::Editing => "편집",
+        ShortcutGroup::ScreenBoardZoom => "화면·보드·줌",
+        ShortcutGroup::TimerAndOther => "타이머·기타",
+    }
+}
+
+#[derive(Clone, Debug)]
+#[cfg_attr(not(windows), allow(dead_code))]
+struct ShortcutRowDefinition {
+    key: String,
+    name: String,
+    group: ShortcutGroup,
+    scope: ShortcutScope,
+    default_portable: Option<String>,
+}
+
+fn shortcut_row_definitions() -> Vec<ShortcutRowDefinition> {
+    ShortcutCatalog::definitions()
+        .into_iter()
+        .flat_map(|definition| {
+            let defaults = definition
+                .bindings
+                .iter()
+                .map(|binding| ShortcutRowDefinition {
+                    key: ShortcutCatalog::override_key(&definition.id, binding.scope),
+                    name: definition.name.clone(),
+                    group: definition.group,
+                    scope: binding.scope,
+                    default_portable: Some(binding.portable_string.clone()),
+                });
+            let assignable =
+                definition
+                    .assignable_scopes()
+                    .into_iter()
+                    .map(|scope| ShortcutRowDefinition {
+                        key: ShortcutCatalog::override_key(&definition.id, scope),
+                        name: definition.name.clone(),
+                        group: definition.group,
+                        scope,
+                        default_portable: None,
+                    });
+            defaults.chain(assignable).collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn windows_shortcut_conflict_table() -> ShortcutConflictTable {
+    let mut table = ShortcutConflictTable::new(
+        &["Delete", "Tab", "Left", "Right", "Up", "Down"],
+        &[
+            "Primary+0",
+            "Primary+1",
+            "Primary+2",
+            "Primary+3",
+            "Primary+4",
+            "Primary+5",
+            "Primary+6",
+            "Primary+7",
+            "Primary+8",
+            "Primary+9",
+            "Shift+Primary+A",
+            "Shift+Primary+B",
+            "Shift+Primary+C",
+            "Shift+Primary+D",
+            "Shift+Primary+E",
+            "Shift+Primary+F",
+            "Shift+Primary+G",
+            "Shift+Primary+H",
+            "Shift+Primary+I",
+            "Shift+Primary+J",
+            "Shift+Primary+K",
+            "Shift+Primary+L",
+            "Shift+Primary+M",
+            "Shift+Primary+N",
+            "Shift+Primary+O",
+            "Shift+Primary+P",
+            "Shift+Primary+Q",
+            "Shift+Primary+R",
+            "Shift+Primary+S",
+            "Shift+Primary+T",
+            "Shift+Primary+U",
+            "Shift+Primary+V",
+            "Shift+Primary+W",
+            "Shift+Primary+X",
+            "Shift+Primary+Y",
+            "Shift+Primary+Z",
+            "Control+Option+Delete",
+            "Control+Option+Tab",
+            "Control+Option+Left",
+            "Control+Option+Right",
+            "Control+Option+Up",
+            "Control+Option+Down",
+        ],
+    );
+    table.avoids_control_digits = true;
+    table.avoids_control_shift_letters = true;
+    table
+}
+
+#[cfg(windows)]
+fn shortcut_warnings(
+    settings: &AppSettings,
+    runtime: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let table = windows_shortcut_conflict_table();
+    let mut warnings = ShortcutConflictDetector::warnings(&settings.shortcuts, &table);
+    warnings.extend(
+        runtime
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone())),
+    );
+    warnings
+}
+
+#[cfg(windows)]
+#[derive(Clone, Debug)]
+pub enum SettingsAction {
+    BeginShortcutRecording {
+        key: String,
+    },
+    CancelShortcutRecording {
+        key: String,
+    },
+    RecordShortcut {
+        key: String,
+        portable: Option<String>,
+    },
+    ResetShortcuts,
+    SetAppModifier(AppModifierSetting),
+    Export {
+        bundles: BTreeSet<SettingsBundle>,
+        include_computer_specific: bool,
+    },
+    Import,
+    ApplyImport {
+        document: SettingsDocument,
+        bundles: BTreeSet<SettingsBundle>,
+    },
+    ResetAll,
+    RestoreBackup,
+}
+
 pub fn apply_change(
     settings: &mut AppSettings,
     request: &SettingsChangeRequest,
@@ -1465,6 +1694,7 @@ fn format_slider_value(value: f64, precision: usize) -> String {
 #[cfg(windows)]
 pub struct SettingsWindow {
     state: Box<WindowState>,
+    import_preview: Option<ImportPreviewWindow>,
     _band: BandRegistration,
 }
 
@@ -1475,8 +1705,11 @@ struct WindowState {
     hwnd: HWND,
     tab: HWND,
     error: HWND,
+    action_buttons: [HWND; 4],
     pages: Vec<PageState>,
     settings: AppSettings,
+    runtime_shortcut_warnings: BTreeMap<String, String>,
+    recording_shortcut: Option<usize>,
     font: HFONT,
     dpi: u32,
     label_width: i32,
@@ -1487,9 +1720,30 @@ struct WindowState {
 struct PageState {
     hwnd: HWND,
     rows: Vec<ControlRow>,
+    shortcuts: Option<ShortcutPageState>,
     scroll_position: i32,
     content_height: i32,
     wheel_remainder: i32,
+}
+
+#[cfg(windows)]
+struct ShortcutPageState {
+    modifier_label: HWND,
+    modifier_combo: HWND,
+    instructions: HWND,
+    reset_button: HWND,
+    group_headers: Vec<(ShortcutGroup, HWND)>,
+    rows: Vec<ShortcutControlRow>,
+}
+
+#[cfg(windows)]
+struct ShortcutControlRow {
+    definition: ShortcutRowDefinition,
+    name: HWND,
+    scope: HWND,
+    recorder: HWND,
+    clear: Option<HWND>,
+    warning: HWND,
 }
 
 #[cfg(windows)]
@@ -1574,12 +1828,13 @@ impl SettingsWindow {
         owner: HWND,
         hinstance: HINSTANCE,
         settings: &AppSettings,
+        runtime_shortcut_warnings: &BTreeMap<String, String>,
         logger: Logger,
     ) -> Result<Self> {
         register_classes(hinstance)?;
         let common_controls = INITCOMMONCONTROLSEX {
             dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
-            dwICC: ICC_TAB_CLASSES | ICC_BAR_CLASSES,
+            dwICC: ICC_TAB_CLASSES | ICC_BAR_CLASSES | ICC_LISTVIEW_CLASSES,
         };
         if !unsafe { InitCommonControlsEx(&common_controls) }.as_bool() {
             return Err(Error::from_thread());
@@ -1592,8 +1847,11 @@ impl SettingsWindow {
             hwnd: HWND::default(),
             tab: HWND::default(),
             error: HWND::default(),
+            action_buttons: [HWND::default(); 4],
             pages: Vec::new(),
             settings: settings.clone(),
+            runtime_shortcut_warnings: runtime_shortcut_warnings.clone(),
+            recording_shortcut: None,
             font: HFONT::default(),
             dpi: target.dpi,
             label_width: 0,
@@ -1625,11 +1883,21 @@ impl SettingsWindow {
             return Err(error);
         }
         let band = BandRegistration::new(hwnd, Band::Dialog);
-        Ok(Self { state, _band: band })
+        Ok(Self {
+            state,
+            import_preview: None,
+            _band: band,
+        })
     }
 
-    pub fn show(&mut self, tab: SettingsTab, settings: &AppSettings) {
+    pub fn show(
+        &mut self,
+        tab: SettingsTab,
+        settings: &AppSettings,
+        runtime_shortcut_warnings: &BTreeMap<String, String>,
+    ) {
         self.state.settings = settings.clone();
+        self.state.runtime_shortcut_warnings = runtime_shortcut_warnings.clone();
         self.state.select_tab(tab.index());
         self.state.refresh_controls(true);
         self.state.clear_error();
@@ -1652,16 +1920,28 @@ impl SettingsWindow {
         }
     }
 
-    pub fn refresh_external(&mut self, settings: &AppSettings, source: &str) {
+    pub fn refresh_external(
+        &mut self,
+        settings: &AppSettings,
+        runtime_shortcut_warnings: &BTreeMap<String, String>,
+        source: &str,
+    ) {
         self.state.settings = settings.clone();
+        self.state.runtime_shortcut_warnings = runtime_shortcut_warnings.clone();
         self.state.refresh_controls(false);
         self.state
             .logger
             .event(&format!("설정 창 외부 변경 반영: source={source}"));
     }
 
-    pub fn accept_change(&mut self, field_id: &str, settings: &AppSettings) {
+    pub fn accept_change(
+        &mut self,
+        field_id: &str,
+        settings: &AppSettings,
+        runtime_shortcut_warnings: &BTreeMap<String, String>,
+    ) {
         self.state.settings = settings.clone();
+        self.state.runtime_shortcut_warnings = runtime_shortcut_warnings.clone();
         self.state.refresh_controls(false);
         self.state.clear_error();
         self.state
@@ -1669,8 +1949,15 @@ impl SettingsWindow {
             .event(&format!("설정 창 필드 변경 성공: id={field_id}"));
     }
 
-    pub fn reject_change(&mut self, field_id: &str, reason: &str, settings: &AppSettings) {
+    pub fn reject_change(
+        &mut self,
+        field_id: &str,
+        reason: &str,
+        settings: &AppSettings,
+        runtime_shortcut_warnings: &BTreeMap<String, String>,
+    ) {
         self.state.settings = settings.clone();
+        self.state.runtime_shortcut_warnings = runtime_shortcut_warnings.clone();
         self.state.refresh_controls(true);
         let message = format!("{field_id}: {reason}");
         self.state.show_error(&message);
@@ -1690,6 +1977,32 @@ impl SettingsWindow {
 
     pub fn hwnd(&self) -> HWND {
         self.state.hwnd
+    }
+
+    pub fn update_runtime_shortcut_warnings(&mut self, warnings: &BTreeMap<String, String>) {
+        self.state.runtime_shortcut_warnings = warnings.clone();
+        self.state.refresh_shortcut_controls();
+    }
+
+    pub fn show_import_preview(
+        &mut self,
+        current: &AppSettings,
+        document: SettingsDocument,
+    ) -> Result<()> {
+        self.import_preview = None;
+        self.import_preview = Some(ImportPreviewWindow::new(
+            self.state.hwnd,
+            self.state.owner,
+            self.state.hinstance,
+            current,
+            document,
+            self.state.logger.clone(),
+        )?);
+        Ok(())
+    }
+
+    pub fn close_import_preview(&mut self) {
+        self.import_preview = None;
     }
 
     pub fn field_control_count(&self) -> usize {
@@ -1741,6 +2054,26 @@ impl WindowState {
             WINDOW_EX_STYLE(0),
             2,
         )?;
+        for (index, title) in [
+            "내보내기…",
+            "가져오기…",
+            "모든 설정 초기화",
+            "이전 설정 복원",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let title = wide(title);
+            self.action_buttons[index] = create_child(
+                self.hwnd,
+                self.hinstance,
+                w!("BUTTON"),
+                PCWSTR(title.as_ptr()),
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
+                WINDOW_EX_STYLE(0),
+                20 + index as i32,
+            )?;
+        }
 
         for (index, tab) in TABS.iter().enumerate() {
             let mut title = wide(tab.title);
@@ -1774,9 +2107,13 @@ impl WindowState {
                     self.create_field_row(page_hwnd, field, index, field_index)
                 })
                 .collect::<Result<Vec<_>>>()?;
+            let shortcuts = (index == SettingsTab::Shortcuts.index())
+                .then(|| self.create_shortcut_page(page_hwnd))
+                .transpose()?;
             self.pages.push(PageState {
                 hwnd: page_hwnd,
                 rows,
+                shortcuts,
                 scroll_position: 0,
                 content_height: 0,
                 wheel_remainder: 0,
@@ -1787,6 +2124,160 @@ impl WindowState {
         self.refresh_controls(true);
         self.layout();
         Ok(())
+    }
+
+    fn create_shortcut_page(&self, page: HWND) -> Result<ShortcutPageState> {
+        let modifier_label = create_child(
+            page,
+            self.hinstance,
+            w!("STATIC"),
+            w!("앱 수정키"),
+            WS_CHILD | WS_VISIBLE,
+            WINDOW_EX_STYLE(0),
+            7_001,
+        )?;
+        let modifier_combo = create_child(
+            page,
+            self.hinstance,
+            w!("COMBOBOX"),
+            PCWSTR::null(),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(CBS_DROPDOWNLIST as u32),
+            WINDOW_EX_STYLE(0),
+            7_002,
+        )?;
+        for label in ["Ctrl+Alt", "Ctrl+Alt+Shift"] {
+            let label = wide(label);
+            unsafe {
+                SendMessageW(
+                    modifier_combo,
+                    CB_ADDSTRING,
+                    None,
+                    Some(LPARAM(label.as_ptr() as isize)),
+                )
+            };
+        }
+        let instructions = create_child(
+            page,
+            self.hinstance,
+            w!("STATIC"),
+            w!("기록 버튼을 클릭한 뒤 새 조합을 누르세요. Esc=취소, Backspace/Delete=해제"),
+            WS_CHILD | WS_VISIBLE,
+            WINDOW_EX_STYLE(0),
+            7_003,
+        )?;
+        let reset_button = create_child(
+            page,
+            self.hinstance,
+            w!("BUTTON"),
+            w!("단축키 기본값 복원"),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
+            WINDOW_EX_STYLE(0),
+            7_004,
+        )?;
+
+        let definitions = shortcut_row_definitions();
+        let mut group_headers = Vec::new();
+        let mut rows = Vec::new();
+        let mut seen_groups = Vec::new();
+        for (index, definition) in definitions.into_iter().enumerate() {
+            if !seen_groups.contains(&definition.group) {
+                seen_groups.push(definition.group);
+                let title = wide(shortcut_group_name(definition.group));
+                group_headers.push((
+                    definition.group,
+                    create_child(
+                        page,
+                        self.hinstance,
+                        w!("STATIC"),
+                        PCWSTR(title.as_ptr()),
+                        WS_CHILD | WS_VISIBLE,
+                        WINDOW_EX_STYLE(0),
+                        7_100 + index as i32,
+                    )?,
+                ));
+            }
+            let name_text = wide(&definition.name);
+            let name = create_child(
+                page,
+                self.hinstance,
+                w!("STATIC"),
+                PCWSTR(name_text.as_ptr()),
+                WS_CHILD | WS_VISIBLE,
+                WINDOW_EX_STYLE(0),
+                8_000 + index as i32 * 10,
+            )?;
+            let scope_text = wide(scope_name(definition.scope));
+            let scope = create_child(
+                page,
+                self.hinstance,
+                w!("STATIC"),
+                PCWSTR(scope_text.as_ptr()),
+                WS_CHILD | WS_VISIBLE,
+                WINDOW_EX_STYLE(0),
+                8_001 + index as i32 * 10,
+            )?;
+            let recorder = create_child(
+                page,
+                self.hinstance,
+                w!("BUTTON"),
+                PCWSTR::null(),
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
+                WINDOW_EX_STYLE(0),
+                8_002 + index as i32 * 10,
+            )?;
+            if !unsafe {
+                SetWindowSubclass(
+                    recorder,
+                    Some(shortcut_recorder_subclass_proc),
+                    SHORTCUT_RECORDER_SUBCLASS_ID,
+                    0,
+                )
+            }
+            .as_bool()
+            {
+                return Err(Error::from_thread());
+            }
+            let clear = definition
+                .default_portable
+                .is_none()
+                .then(|| {
+                    create_child(
+                        page,
+                        self.hinstance,
+                        w!("BUTTON"),
+                        w!("해제"),
+                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
+                        WINDOW_EX_STYLE(0),
+                        8_003 + index as i32 * 10,
+                    )
+                })
+                .transpose()?;
+            let warning = create_child(
+                page,
+                self.hinstance,
+                w!("STATIC"),
+                PCWSTR::null(),
+                WS_CHILD | WS_VISIBLE,
+                WINDOW_EX_STYLE(0),
+                8_004 + index as i32 * 10,
+            )?;
+            rows.push(ShortcutControlRow {
+                definition,
+                name,
+                scope,
+                recorder,
+                clear,
+                warning,
+            });
+        }
+        Ok(ShortcutPageState {
+            modifier_label,
+            modifier_combo,
+            instructions,
+            reset_button,
+            group_headers,
+            rows,
+        })
     }
 
     fn create_field_row(
@@ -1966,6 +2457,9 @@ impl WindowState {
     fn for_each_control(&self, mut body: impl FnMut(HWND)) {
         body(self.tab);
         body(self.error);
+        for button in self.action_buttons {
+            body(button);
+        }
         for page in &self.pages {
             body(page.hwnd);
             for row in &page.rows {
@@ -1976,6 +2470,24 @@ impl WindowState {
                 }
                 if let Some(hwnd) = row.help {
                     body(hwnd);
+                }
+            }
+            if let Some(shortcuts) = page.shortcuts.as_ref() {
+                body(shortcuts.modifier_label);
+                body(shortcuts.modifier_combo);
+                body(shortcuts.instructions);
+                body(shortcuts.reset_button);
+                for (_, header) in &shortcuts.group_headers {
+                    body(*header);
+                }
+                for row in &shortcuts.rows {
+                    body(row.name);
+                    body(row.scope);
+                    body(row.recorder);
+                    if let Some(clear) = row.clear {
+                        body(clear);
+                    }
+                    body(row.warning);
                 }
             }
         }
@@ -2016,9 +2528,10 @@ impl WindowState {
         let metrics = layout_metrics(self.dpi);
         let margin = metrics.outer_margin;
         let error_height = metrics.error_height;
+        let action_height = metrics.action_height;
         let width = (client.right - client.left - margin * 2).max(dip(300, self.dpi));
-        let height =
-            (client.bottom - client.top - margin * 3 - error_height).max(dip(220, self.dpi));
+        let height = (client.bottom - client.top - margin * 4 - error_height - action_height)
+            .max(dip(220, self.dpi));
         let _ = unsafe {
             SetWindowPos(
                 self.tab,
@@ -2062,12 +2575,28 @@ impl WindowState {
             };
             layout_page(page, page_width, page_height, self.dpi, self.label_width);
         }
+        let button_gap = dip(8, self.dpi);
+        let button_width = (width - button_gap * 3) / 4;
+        let action_y = margin * 2 + height;
+        for (index, button) in self.action_buttons.into_iter().enumerate() {
+            let _ = unsafe {
+                SetWindowPos(
+                    button,
+                    None,
+                    margin + index as i32 * (button_width + button_gap),
+                    action_y,
+                    button_width,
+                    action_height,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                )
+            };
+        }
         let _ = unsafe {
             SetWindowPos(
                 self.error,
                 None,
                 margin,
-                margin * 2 + height,
+                action_y + action_height + margin,
                 width,
                 error_height,
                 SWP_NOZORDER | SWP_NOACTIVATE,
@@ -2093,6 +2622,64 @@ impl WindowState {
         }) {
             let _ = unsafe { EnableWindow(row.control, radial) };
         }
+        self.refresh_shortcut_controls();
+    }
+
+    fn refresh_shortcut_controls(&mut self) {
+        let warnings = shortcut_warnings(&self.settings, &self.runtime_shortcut_warnings);
+        let Some(shortcuts) = self
+            .pages
+            .get(SettingsTab::Shortcuts.index())
+            .and_then(|page| page.shortcuts.as_ref())
+        else {
+            return;
+        };
+        let modifier_index =
+            if self.settings.shortcuts.app_modifier == AppModifierSetting::ControlOptionShift {
+                1
+            } else {
+                0
+            };
+        unsafe {
+            SendMessageW(
+                shortcuts.modifier_combo,
+                CB_SETCURSEL,
+                Some(WPARAM(modifier_index)),
+                None,
+            )
+        };
+        for (index, row) in shortcuts.rows.iter().enumerate() {
+            if self.recording_shortcut == Some(index) {
+                set_text(row.recorder, "키를 누르세요…");
+            } else {
+                let portable = self
+                    .settings
+                    .shortcuts
+                    .overrides
+                    .get(&row.definition.key)
+                    .cloned()
+                    .or_else(|| row.definition.default_portable.clone());
+                let display = portable
+                    .as_deref()
+                    .and_then(|value| edutools_core::shortcut::PortableShortcut::parse(value).ok())
+                    .map(|value| value.display_string(self.settings.shortcuts.app_modifier))
+                    .unwrap_or_else(|| portable.unwrap_or_else(|| "없음".to_owned()));
+                set_text(row.recorder, &display);
+            }
+            if let Some(clear) = row.clear {
+                let enabled = self
+                    .settings
+                    .shortcuts
+                    .overrides
+                    .contains_key(&row.definition.key);
+                let _ = unsafe { EnableWindow(clear, enabled) };
+            }
+            let warning = warnings
+                .get(&row.definition.key)
+                .map(|warning| format!("⚠ {warning}"))
+                .unwrap_or_default();
+            set_text(row.warning, &warning);
+        }
     }
 
     fn clear_error(&self) {
@@ -2107,6 +2694,49 @@ impl WindowState {
     fn handle_command(&mut self, wparam: WPARAM, lparam: LPARAM) {
         let hwnd = HWND(lparam.0 as *mut c_void);
         let notification = ((wparam.0 >> 16) & 0xffff) as u16;
+        if notification == 0 {
+            if let Some(index) = self
+                .action_buttons
+                .iter()
+                .position(|button| *button == hwnd)
+            {
+                match index {
+                    0 => {
+                        if let Err(error) = show_export_options_dialog(
+                            self.hwnd,
+                            self.owner,
+                            self.hinstance,
+                            self.logger.clone(),
+                        ) {
+                            self.show_error(&format!("내보내기 선택 창을 열 수 없습니다: {error}"));
+                        }
+                    }
+                    1 => self.post_action(SettingsAction::Import),
+                    2 => {
+                        let message = wide(
+                            "모든 설정을 기본값으로 초기화할까요?\n\n현재 설정은 되돌릴 수 있도록 자동 백업됩니다.",
+                        );
+                        let answer = unsafe {
+                            MessageBoxW(
+                                Some(self.hwnd),
+                                PCWSTR(message.as_ptr()),
+                                w!("모든 설정 초기화"),
+                                MB_YESNO | MB_ICONWARNING,
+                            )
+                        };
+                        if answer == windows::Win32::UI::WindowsAndMessaging::IDYES {
+                            self.post_action(SettingsAction::ResetAll);
+                        }
+                    }
+                    3 => self.post_action(SettingsAction::RestoreBackup),
+                    _ => {}
+                }
+                return;
+            }
+        }
+        if self.handle_shortcut_command(hwnd, notification) {
+            return;
+        }
         let Some((page_index, row_index, auxiliary)) = self.find_row(hwnd) else {
             return;
         };
@@ -2260,6 +2890,148 @@ impl WindowState {
         }
     }
 
+    fn handle_shortcut_command(&mut self, hwnd: HWND, notification: u16) -> bool {
+        let Some(shortcuts) = self
+            .pages
+            .get(SettingsTab::Shortcuts.index())
+            .and_then(|page| page.shortcuts.as_ref())
+        else {
+            return false;
+        };
+        if hwnd == shortcuts.modifier_combo && notification == CBN_SELCHANGE as u16 {
+            let selected = unsafe { SendMessageW(hwnd, CB_GETCURSEL, None, None) }.0;
+            let value = if selected == 1 {
+                AppModifierSetting::ControlOptionShift
+            } else {
+                AppModifierSetting::ControlOption
+            };
+            self.post_action(SettingsAction::SetAppModifier(value));
+            return true;
+        }
+        if hwnd == shortcuts.reset_button && notification == 0 {
+            self.post_action(SettingsAction::ResetShortcuts);
+            return true;
+        }
+        let recorder_index = shortcuts.rows.iter().position(|row| row.recorder == hwnd);
+        let clear_key = shortcuts
+            .rows
+            .iter()
+            .find_map(|row| (row.clear == Some(hwnd)).then(|| row.definition.key.clone()));
+        if let Some(key) = clear_key {
+            if notification == 0 {
+                self.post_action(SettingsAction::RecordShortcut {
+                    key,
+                    portable: None,
+                });
+            }
+            return true;
+        }
+        if let Some(index) = recorder_index {
+            if notification == 0 {
+                self.begin_or_cancel_shortcut_recording(index);
+            }
+            return true;
+        }
+        false
+    }
+
+    fn begin_or_cancel_shortcut_recording(&mut self, index: usize) {
+        if self.recording_shortcut == Some(index) {
+            let key = self.shortcut_key(index).unwrap_or_default();
+            self.recording_shortcut = None;
+            self.refresh_shortcut_controls();
+            self.post_action(SettingsAction::CancelShortcutRecording { key });
+            return;
+        }
+        if let Some(previous) = self.recording_shortcut.take() {
+            let key = self.shortcut_key(previous).unwrap_or_default();
+            self.post_action(SettingsAction::CancelShortcutRecording { key });
+        }
+        self.recording_shortcut = Some(index);
+        self.refresh_shortcut_controls();
+        if let Some(row) = self.shortcut_row(index) {
+            let _ = unsafe { SetFocus(Some(row.recorder)) };
+            self.post_action(SettingsAction::BeginShortcutRecording {
+                key: row.definition.key.clone(),
+            });
+        }
+    }
+
+    fn handle_shortcut_key(&mut self, vk: u32) {
+        let Some(index) = self.recording_shortcut else {
+            return;
+        };
+        let Some(row) = self.shortcut_row(index) else {
+            return;
+        };
+        let modifier_bits = current_recorder_modifiers();
+        let outcome = keymap::recorder_outcome(
+            vk,
+            modifier_bits,
+            row.definition.scope,
+            self.settings.shortcuts.app_modifier,
+        );
+        let key = row.definition.key.clone();
+        match outcome {
+            RecorderOutcome::Ignore => {}
+            RecorderOutcome::Reject => {
+                let _ = unsafe { MessageBeep(MB_ICONWARNING) };
+            }
+            RecorderOutcome::Cancel => {
+                self.recording_shortcut = None;
+                self.refresh_shortcut_controls();
+                self.post_action(SettingsAction::CancelShortcutRecording { key });
+            }
+            RecorderOutcome::Clear => {
+                self.recording_shortcut = None;
+                self.refresh_shortcut_controls();
+                self.post_action(SettingsAction::RecordShortcut {
+                    key,
+                    portable: None,
+                });
+            }
+            RecorderOutcome::Record(portable) => {
+                self.recording_shortcut = None;
+                self.refresh_shortcut_controls();
+                self.post_action(SettingsAction::RecordShortcut {
+                    key,
+                    portable: Some(portable),
+                });
+            }
+        }
+    }
+
+    fn shortcut_row(&self, index: usize) -> Option<&ShortcutControlRow> {
+        self.pages
+            .get(SettingsTab::Shortcuts.index())?
+            .shortcuts
+            .as_ref()?
+            .rows
+            .get(index)
+    }
+
+    fn shortcut_key(&self, index: usize) -> Option<String> {
+        self.shortcut_row(index)
+            .map(|row| row.definition.key.clone())
+    }
+
+    fn post_action(&self, action: SettingsAction) {
+        let pointer = Box::into_raw(Box::new(action));
+        if unsafe {
+            PostMessageW(
+                Some(self.owner),
+                WM_APP_SETTINGS_ACTION,
+                WPARAM(0),
+                LPARAM(pointer as isize),
+            )
+        }
+        .is_err()
+        {
+            let _ = unsafe { Box::from_raw(pointer) };
+            self.show_error("설정 작업을 앱에 전달하지 못했습니다.");
+        }
+    }
+
     fn handle_page_scroll(&mut self, page_hwnd: HWND, wparam: WPARAM) {
         let Some(page) = self.pages.iter_mut().find(|page| page.hwnd == page_hwnd) else {
             return;
@@ -2364,6 +3136,10 @@ impl WindowState {
 
 #[cfg(windows)]
 fn layout_page(page: &mut PageState, width: i32, height: i32, dpi: u32, label_width: i32) {
+    if page.shortcuts.is_some() {
+        layout_shortcut_page(page, width, height, dpi);
+        return;
+    }
     let metrics = layout_metrics(dpi);
     let padding = metrics.page_padding;
     let gap = metrics.row_gap;
@@ -2508,6 +3284,146 @@ fn layout_page(page: &mut PageState, width: i32, height: i32, dpi: u32, label_wi
             windows::Win32::UI::WindowsAndMessaging::SB_VERT,
             &info,
             true,
+        )
+    };
+}
+
+#[cfg(windows)]
+fn layout_shortcut_page(page: &mut PageState, width: i32, height: i32, dpi: u32) {
+    let metrics = layout_metrics(dpi);
+    let padding = metrics.page_padding;
+    let gap = metrics.row_gap;
+    let control_height = metrics.control_height;
+    let header_height = dip(28, dpi);
+    let warning_height = dip(22, dpi);
+    let row_height = control_height + warning_height + dip(4, dpi);
+    let Some(shortcuts) = page.shortcuts.as_mut() else {
+        return;
+    };
+    let group_count = shortcuts.group_headers.len() as i32;
+    page.content_height = padding * 2
+        + control_height * 2
+        + gap * 2
+        + group_count * header_height
+        + shortcuts.rows.len() as i32 * row_height;
+    let maximum = (page.content_height - height).max(0);
+    page.scroll_position = page.scroll_position.clamp(0, maximum);
+    let available = (width - padding * 2 - metrics.scrollbar_gutter).max(1);
+    let combo_width = dip(190, dpi).min(available / 2);
+    let reset_width = dip(170, dpi).min(available / 2);
+    let mut y = padding - page.scroll_position;
+    set_position(
+        shortcuts.modifier_label,
+        padding,
+        y + dip(4, dpi),
+        dip(90, dpi),
+        control_height,
+    );
+    set_position(
+        shortcuts.modifier_combo,
+        padding + dip(96, dpi),
+        y,
+        combo_width,
+        control_height,
+    );
+    y += control_height + gap;
+    set_position(
+        shortcuts.instructions,
+        padding,
+        y + dip(4, dpi),
+        (available - reset_width - gap).max(1),
+        control_height,
+    );
+    set_position(
+        shortcuts.reset_button,
+        padding + available - reset_width,
+        y,
+        reset_width,
+        control_height,
+    );
+    y += control_height + gap;
+
+    let name_width = (available * 38 / 100).max(dip(180, dpi));
+    let scope_width = dip(54, dpi);
+    let clear_width = dip(58, dpi);
+    let recorder_width = dip(180, dpi).min((available / 3).max(1));
+    let mut current_group = None;
+    for row in &shortcuts.rows {
+        if current_group != Some(row.definition.group) {
+            current_group = Some(row.definition.group);
+            if let Some((_, header)) = shortcuts
+                .group_headers
+                .iter()
+                .find(|(group, _)| *group == row.definition.group)
+            {
+                set_position(*header, padding, y + dip(5, dpi), available, header_height);
+            }
+            y += header_height;
+        }
+        let right = padding + available;
+        let clear_space = if row.clear.is_some() {
+            clear_width + gap
+        } else {
+            0
+        };
+        let recorder_x = right - clear_space - recorder_width;
+        set_position(
+            row.name,
+            padding,
+            y + dip(4, dpi),
+            name_width,
+            control_height,
+        );
+        set_position(
+            row.scope,
+            padding + name_width + gap,
+            y + dip(4, dpi),
+            scope_width,
+            control_height,
+        );
+        set_position(row.recorder, recorder_x, y, recorder_width, control_height);
+        if let Some(clear) = row.clear {
+            set_position(clear, right - clear_width, y, clear_width, control_height);
+        }
+        set_position(
+            row.warning,
+            padding + dip(12, dpi),
+            y + control_height,
+            available - dip(12, dpi),
+            warning_height,
+        );
+        y += row_height;
+    }
+    let info = SCROLLINFO {
+        cbSize: size_of::<SCROLLINFO>() as u32,
+        fMask: SIF_RANGE | SIF_PAGE | SIF_POS,
+        nMin: 0,
+        nMax: page.content_height.saturating_sub(1),
+        nPage: height.max(0) as u32,
+        nPos: page.scroll_position,
+        ..Default::default()
+    };
+    unsafe {
+        SetScrollInfo(
+            page.hwnd,
+            windows::Win32::UI::WindowsAndMessaging::SB_VERT,
+            &info,
+            true,
+        )
+    };
+}
+
+#[cfg(windows)]
+fn set_position(hwnd: HWND, x: i32, y: i32, width: i32, height: i32) {
+    let _ = unsafe {
+        SetWindowPos(
+            hwnd,
+            None,
+            x,
+            y,
+            width.max(1),
+            height.max(1),
+            SWP_NOZORDER | SWP_NOACTIVATE,
         )
     };
 }
@@ -2729,6 +3645,674 @@ fn choose_folder(owner: HWND) -> Option<String> {
 }
 
 #[cfg(windows)]
+pub fn choose_settings_export_path(owner: HWND) -> Result<Option<PathBuf>> {
+    let dialog: IFileSaveDialog =
+        unsafe { CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER) }?;
+    let filters = [COMDLG_FILTERSPEC {
+        pszName: w!("EduTools 설정 (*.pansetting)"),
+        pszSpec: w!("*.pansetting"),
+    }];
+    unsafe {
+        dialog.SetTitle(w!("설정 내보내기"))?;
+        dialog.SetFileTypes(&filters)?;
+        dialog.SetFileTypeIndex(1)?;
+        dialog.SetDefaultExtension(w!("pansetting"))?;
+        dialog.SetFileName(w!("EduTools-settings.pansetting"))?;
+        dialog.SetOptions(dialog.GetOptions()? | FOS_FORCEFILESYSTEM | FOS_STRICTFILETYPES)?;
+    }
+    match unsafe { dialog.Show(Some(owner)) } {
+        Ok(()) => shell_item_path(unsafe { dialog.GetResult()? }).map(Some),
+        Err(error) if error.code() == ERROR_CANCELLED.to_hresult() => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(windows)]
+pub fn choose_settings_import_path(owner: HWND) -> Result<Option<PathBuf>> {
+    let dialog: IFileOpenDialog =
+        unsafe { CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER) }?;
+    let filters = [COMDLG_FILTERSPEC {
+        pszName: w!("EduTools 설정 (*.pansetting)"),
+        pszSpec: w!("*.pansetting"),
+    }];
+    unsafe {
+        dialog.SetTitle(w!("설정 가져오기"))?;
+        dialog.SetFileTypes(&filters)?;
+        dialog.SetFileTypeIndex(1)?;
+        dialog.SetDefaultExtension(w!("pansetting"))?;
+        dialog.SetOptions(
+            dialog.GetOptions()? | FOS_FORCEFILESYSTEM | FOS_STRICTFILETYPES | FOS_PATHMUSTEXIST,
+        )?;
+    }
+    match unsafe { dialog.Show(Some(owner)) } {
+        Ok(()) => shell_item_path(unsafe { dialog.GetResult()? }).map(Some),
+        Err(error) if error.code() == ERROR_CANCELLED.to_hresult() => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(windows)]
+fn shell_item_path(item: windows::Win32::UI::Shell::IShellItem) -> Result<PathBuf> {
+    let path = unsafe { item.GetDisplayName(SIGDN_FILESYSPATH) }?;
+    let mut length = 0;
+    while unsafe { *path.0.add(length) } != 0 {
+        length += 1;
+    }
+    let value = OsString::from_wide(unsafe { std::slice::from_raw_parts(path.0, length) });
+    unsafe { CoTaskMemFree(Some(path.0.cast())) };
+    Ok(PathBuf::from(value))
+}
+
+#[cfg(windows)]
+struct ExportOptionsState {
+    parent: HWND,
+    owner: HWND,
+    hwnd: HWND,
+    bundle_checks: Vec<(SettingsBundle, HWND)>,
+    computer_specific: HWND,
+    logger: Logger,
+}
+
+#[cfg(windows)]
+fn show_export_options_dialog(
+    parent: HWND,
+    owner: HWND,
+    hinstance: HINSTANCE,
+    logger: Logger,
+) -> Result<()> {
+    let mut state = Box::new(ExportOptionsState {
+        parent,
+        owner,
+        hwnd: HWND::default(),
+        bundle_checks: Vec::new(),
+        computer_specific: HWND::default(),
+        logger,
+    });
+    let state_ptr = state.as_mut() as *mut ExportOptionsState;
+    let hwnd = match unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            EXPORT_OPTIONS_CLASS,
+            w!("내보낼 설정 묶음"),
+            WS_OVERLAPPEDWINDOW,
+            300,
+            180,
+            470,
+            520,
+            Some(parent),
+            None,
+            Some(hinstance),
+            Some(state_ptr.cast()),
+        )
+    } {
+        Ok(hwnd) => hwnd,
+        Err(error) => return Err(error),
+    };
+    state.hwnd = hwnd;
+    let state = unsafe { &mut *Box::into_raw(state) };
+    let controls = (|| -> Result<()> {
+        let intro = create_child(
+            hwnd,
+            hinstance,
+            w!("STATIC"),
+            w!("이 컴퓨터 전용 항목은 기본적으로 제외됩니다."),
+            WS_CHILD | WS_VISIBLE,
+            WINDOW_EX_STYLE(0),
+            9_000,
+        )?;
+        set_position(intro, 18, 16, 420, 26);
+        for (index, bundle) in SettingsBundle::ALL.into_iter().enumerate() {
+            let label = wide(bundle_name(bundle));
+            let check = create_child(
+                hwnd,
+                hinstance,
+                w!("BUTTON"),
+                PCWSTR(label.as_ptr()),
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_AUTOCHECKBOX as u32),
+                WINDOW_EX_STYLE(0),
+                9_010 + index as i32,
+            )?;
+            unsafe {
+                SendMessageW(
+                    check,
+                    windows::Win32::UI::WindowsAndMessaging::BM_SETCHECK,
+                    Some(WPARAM(BST_CHECKED.0 as usize)),
+                    None,
+                )
+            };
+            set_position(check, 26, 50 + index as i32 * 32, 390, 28);
+            state.bundle_checks.push((bundle, check));
+        }
+        state.computer_specific = create_child(
+            hwnd,
+            hinstance,
+            w!("BUTTON"),
+            w!("이 컴퓨터 전용 항목 포함"),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_AUTOCHECKBOX as u32),
+            WINDOW_EX_STYLE(0),
+            9_030,
+        )?;
+        set_position(state.computer_specific, 26, 344, 390, 28);
+        let cancel = create_child(
+            hwnd,
+            hinstance,
+            w!("BUTTON"),
+            w!("취소"),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
+            WINDOW_EX_STYLE(0),
+            9_032,
+        )?;
+        let next = create_child(
+            hwnd,
+            hinstance,
+            w!("BUTTON"),
+            w!("계속"),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
+            WINDOW_EX_STYLE(0),
+            9_031,
+        )?;
+        set_position(cancel, 244, 392, 90, 30);
+        set_position(next, 344, 392, 90, 30);
+        Ok(())
+    })();
+    if let Err(error) = controls {
+        let _ = unsafe { DestroyWindow(hwnd) };
+        return Err(error);
+    }
+    let _ = unsafe { EnableWindow(parent, false) };
+    let _ = unsafe { ShowWindow(hwnd, SW_SHOW) };
+    let _ = unsafe { SetForegroundWindow(hwnd) };
+    Ok(())
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn export_options_window_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    let mut state_ptr =
+        unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ExportOptionsState };
+    if message == WM_NCCREATE {
+        let create = lparam.0 as *const CREATESTRUCTW;
+        if !create.is_null() {
+            state_ptr = unsafe { (*create).lpCreateParams.cast::<ExportOptionsState>() };
+            unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize) };
+        }
+    }
+    if !state_ptr.is_null() {
+        let state = unsafe { &mut *state_ptr };
+        match message {
+            WM_COMMAND => {
+                let id = (wparam.0 & 0xffff) as i32;
+                if id == 9_031 {
+                    let bundles = state
+                        .bundle_checks
+                        .iter()
+                        .filter_map(|(bundle, check)| {
+                            let checked = unsafe {
+                                SendMessageW(
+                                    *check,
+                                    windows::Win32::UI::WindowsAndMessaging::BM_GETCHECK,
+                                    None,
+                                    None,
+                                )
+                            }
+                            .0 as u32
+                                == BST_CHECKED.0;
+                            checked.then_some(*bundle)
+                        })
+                        .collect::<BTreeSet<_>>();
+                    if bundles.is_empty() {
+                        unsafe {
+                            MessageBoxW(
+                                Some(hwnd),
+                                w!("내보낼 설정 묶음을 하나 이상 선택하세요."),
+                                w!("설정 내보내기"),
+                                MB_OK | MB_ICONERROR,
+                            )
+                        };
+                        return LRESULT(0);
+                    }
+                    let include_computer_specific = unsafe {
+                        SendMessageW(
+                            state.computer_specific,
+                            windows::Win32::UI::WindowsAndMessaging::BM_GETCHECK,
+                            None,
+                            None,
+                        )
+                    }
+                    .0 as u32
+                        == BST_CHECKED.0;
+                    post_settings_action(
+                        state.owner,
+                        SettingsAction::Export {
+                            bundles,
+                            include_computer_specific,
+                        },
+                    );
+                    state.logger.event("설정 내보내기 묶음 선택 완료");
+                    let _ = unsafe { DestroyWindow(hwnd) };
+                    return LRESULT(0);
+                }
+                if id == 9_032 {
+                    state.logger.event("설정 내보내기 취소: 묶음 선택");
+                    let _ = unsafe { DestroyWindow(hwnd) };
+                    return LRESULT(0);
+                }
+            }
+            WM_CLOSE => {
+                state.logger.event("설정 내보내기 취소: 묶음 선택 창 닫힘");
+                let _ = unsafe { DestroyWindow(hwnd) };
+                return LRESULT(0);
+            }
+            WM_NCDESTROY => {
+                let _ = unsafe { EnableWindow(state.parent, true) };
+                let _ = unsafe { SetForegroundWindow(state.parent) };
+                unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) };
+                let _ = unsafe { Box::from_raw(state_ptr) };
+                return LRESULT(0);
+            }
+            _ => {}
+        }
+    }
+    unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+}
+
+#[cfg(windows)]
+fn post_settings_action(owner: HWND, action: SettingsAction) {
+    let pointer = Box::into_raw(Box::new(action));
+    if unsafe {
+        PostMessageW(
+            Some(owner),
+            WM_APP_SETTINGS_ACTION,
+            WPARAM(0),
+            LPARAM(pointer as isize),
+        )
+    }
+    .is_err()
+    {
+        let _ = unsafe { Box::from_raw(pointer) };
+    }
+}
+
+#[cfg(windows)]
+struct ImportPreviewWindow {
+    state: Box<ImportPreviewState>,
+    _band: BandRegistration,
+}
+
+#[cfg(windows)]
+struct ImportPreviewState {
+    owner: HWND,
+    hwnd: HWND,
+    metadata: HWND,
+    warning: HWND,
+    list: HWND,
+    apply: HWND,
+    cancel: HWND,
+    bundle_checks: Vec<(SettingsBundle, HWND)>,
+    current: AppSettings,
+    document: SettingsDocument,
+    logger: Logger,
+}
+
+#[cfg(windows)]
+impl ImportPreviewWindow {
+    fn new(
+        parent: HWND,
+        owner: HWND,
+        hinstance: HINSTANCE,
+        current: &AppSettings,
+        document: SettingsDocument,
+        logger: Logger,
+    ) -> Result<Self> {
+        let mut state = Box::new(ImportPreviewState {
+            owner,
+            hwnd: HWND::default(),
+            metadata: HWND::default(),
+            warning: HWND::default(),
+            list: HWND::default(),
+            apply: HWND::default(),
+            cancel: HWND::default(),
+            bundle_checks: Vec::new(),
+            current: current.clone(),
+            document,
+            logger,
+        });
+        let state_ptr = state.as_mut() as *mut ImportPreviewState;
+        let hwnd = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                IMPORT_PREVIEW_CLASS,
+                w!("설정 가져오기 미리보기"),
+                WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+                180,
+                100,
+                900,
+                650,
+                Some(parent),
+                None,
+                Some(hinstance),
+                Some(state_ptr.cast()),
+            )
+        }?;
+        state.hwnd = hwnd;
+        if let Err(error) = state.create_controls(hinstance) {
+            let _ = unsafe { DestroyWindow(hwnd) };
+            return Err(error);
+        }
+        state.refresh_preview();
+        state.layout();
+        let band = BandRegistration::new(hwnd, Band::Dialog);
+        let _ = unsafe { ShowWindow(hwnd, SW_SHOW) };
+        let _ = unsafe { SetForegroundWindow(hwnd) };
+        state.logger.event(&format!(
+            "설정 가져오기 미리보기 열림: includedBundles={}",
+            state.document.included_bundles.len()
+        ));
+        Ok(Self { state, _band: band })
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ImportPreviewWindow {
+    fn drop(&mut self) {
+        if !self.state.hwnd.is_invalid() && unsafe { IsWindow(Some(self.state.hwnd)) }.as_bool() {
+            let _ = unsafe { DestroyWindow(self.state.hwnd) };
+        }
+    }
+}
+
+#[cfg(windows)]
+impl ImportPreviewState {
+    fn create_controls(&mut self, hinstance: HINSTANCE) -> Result<()> {
+        let metadata = format!(
+            "형식 버전 {} · 앱 {} · {}",
+            self.document.format_version, self.document.app_version, self.document.created_os
+        );
+        let metadata = wide(&metadata);
+        self.metadata = create_child(
+            self.hwnd,
+            hinstance,
+            w!("STATIC"),
+            PCWSTR(metadata.as_ptr()),
+            WS_CHILD | WS_VISIBLE,
+            WINDOW_EX_STYLE(0),
+            10_000,
+        )?;
+        for (index, bundle) in self.document.included_bundles.iter().copied().enumerate() {
+            let label = wide(bundle_name(bundle));
+            let check = create_child(
+                self.hwnd,
+                hinstance,
+                w!("BUTTON"),
+                PCWSTR(label.as_ptr()),
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_AUTOCHECKBOX as u32),
+                WINDOW_EX_STYLE(0),
+                10_010 + index as i32,
+            )?;
+            unsafe {
+                SendMessageW(
+                    check,
+                    windows::Win32::UI::WindowsAndMessaging::BM_SETCHECK,
+                    Some(WPARAM(BST_CHECKED.0 as usize)),
+                    None,
+                )
+            };
+            self.bundle_checks.push((bundle, check));
+        }
+        self.warning = create_child(
+            self.hwnd,
+            hinstance,
+            w!("STATIC"),
+            PCWSTR::null(),
+            WS_CHILD | WS_VISIBLE,
+            WINDOW_EX_STYLE(0),
+            10_030,
+        )?;
+        self.list = create_child(
+            self.hwnd,
+            hinstance,
+            WC_LISTVIEWW,
+            PCWSTR::null(),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(LVS_REPORT | LVS_SHOWSELALWAYS),
+            WS_EX_CLIENTEDGE,
+            10_031,
+        )?;
+        unsafe {
+            SendMessageW(
+                self.list,
+                LVM_SETEXTENDEDLISTVIEWSTYLE,
+                Some(WPARAM(LVS_EX_FULLROWSELECT as usize)),
+                Some(LPARAM(LVS_EX_FULLROWSELECT as isize)),
+            )
+        };
+        for (index, (title, width)) in [
+            ("묶음", 90),
+            ("항목", 260),
+            ("현재 값", 230),
+            ("가져올 값", 230),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut title = wide(title);
+            let column = LVCOLUMNW {
+                mask: LVCF_TEXT | LVCF_WIDTH,
+                cx: width,
+                pszText: PWSTR(title.as_mut_ptr()),
+                ..Default::default()
+            };
+            unsafe {
+                SendMessageW(
+                    self.list,
+                    LVM_INSERTCOLUMNW,
+                    Some(WPARAM(index)),
+                    Some(LPARAM((&column as *const LVCOLUMNW) as isize)),
+                )
+            };
+        }
+        self.cancel = create_child(
+            self.hwnd,
+            hinstance,
+            w!("BUTTON"),
+            w!("취소"),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
+            WINDOW_EX_STYLE(0),
+            10_101,
+        )?;
+        self.apply = create_child(
+            self.hwnd,
+            hinstance,
+            w!("BUTTON"),
+            w!("선택한 묶음 적용"),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
+            WINDOW_EX_STYLE(0),
+            10_100,
+        )?;
+        Ok(())
+    }
+
+    fn selected_bundles(&self) -> BTreeSet<SettingsBundle> {
+        self.bundle_checks
+            .iter()
+            .filter_map(|(bundle, check)| {
+                let checked = unsafe {
+                    SendMessageW(
+                        *check,
+                        windows::Win32::UI::WindowsAndMessaging::BM_GETCHECK,
+                        None,
+                        None,
+                    )
+                }
+                .0 as u32
+                    == BST_CHECKED.0;
+                checked.then_some(*bundle)
+            })
+            .collect()
+    }
+
+    fn refresh_preview(&self) {
+        let selected = self.selected_bundles();
+        let _ = unsafe { EnableWindow(self.apply, !selected.is_empty()) };
+        unsafe { SendMessageW(self.list, LVM_DELETEALLITEMS, None, None) };
+        let changes = match SettingsTransfer::changes(&self.current, &self.document, &selected) {
+            Ok(changes) => changes,
+            Err(error) => {
+                set_text(self.warning, &format!("가져오기 오류: {error}"));
+                return;
+            }
+        };
+        let warning = if selected.contains(&SettingsBundle::Shortcuts) {
+            SettingsTransfer::applied_settings(&self.current, &self.document, &selected)
+                .ok()
+                .map(|settings| shortcut_warnings(&settings, &BTreeMap::new()))
+                .filter(|warnings| !warnings.is_empty())
+                .map(|warnings| {
+                    let values = warnings.values().cloned().collect::<BTreeSet<_>>();
+                    format!(
+                        "⚠ 단축키 충돌: {}",
+                        values.into_iter().collect::<Vec<_>>().join(" · ")
+                    )
+                })
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        set_text(self.warning, &warning);
+        for (row_index, change) in changes.iter().enumerate() {
+            for (column, value) in [
+                change_bundle_name(&change.id).to_owned(),
+                change.id.clone(),
+                change.current_value.clone(),
+                change.imported_value.clone(),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let mut value = wide(&value);
+                let mut item = LVITEMW {
+                    mask: LVIF_TEXT,
+                    iItem: row_index as i32,
+                    iSubItem: column as i32,
+                    pszText: PWSTR(value.as_mut_ptr()),
+                    ..Default::default()
+                };
+                unsafe {
+                    SendMessageW(
+                        self.list,
+                        if column == 0 {
+                            LVM_INSERTITEMW
+                        } else {
+                            LVM_SETITEMTEXTW
+                        },
+                        (column != 0).then_some(WPARAM(row_index)),
+                        Some(LPARAM((&mut item as *mut LVITEMW) as isize)),
+                    )
+                };
+            }
+        }
+        self.logger.event(&format!(
+            "설정 가져오기 미리보기 갱신: selectedBundles={} changes={}",
+            selected.len(),
+            changes.len()
+        ));
+    }
+
+    fn layout(&self) {
+        let mut rect = RECT::default();
+        if unsafe { GetClientRect(self.hwnd, &mut rect) }.is_err() {
+            return;
+        }
+        let width = rect.right - rect.left;
+        let height = rect.bottom - rect.top;
+        let margin = 16;
+        set_position(self.metadata, margin, margin, width - margin * 2, 24);
+        let mut x = margin;
+        for (_, check) in &self.bundle_checks {
+            set_position(*check, x, 46, 88, 26);
+            x += 92;
+        }
+        set_position(self.warning, margin, 76, width - margin * 2, 42);
+        set_position(
+            self.list,
+            margin,
+            120,
+            width - margin * 2,
+            (height - 180).max(120),
+        );
+        set_position(self.cancel, width - 292, height - 48, 100, 30);
+        set_position(self.apply, width - 182, height - 48, 166, 30);
+    }
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn import_preview_window_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    let mut state_ptr =
+        unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ImportPreviewState };
+    if message == WM_NCCREATE {
+        let create = lparam.0 as *const CREATESTRUCTW;
+        if !create.is_null() {
+            state_ptr = unsafe { (*create).lpCreateParams.cast::<ImportPreviewState>() };
+            unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize) };
+        }
+    }
+    if !state_ptr.is_null() {
+        let state = unsafe { &mut *state_ptr };
+        match message {
+            WM_SIZE => {
+                state.layout();
+                return LRESULT(0);
+            }
+            WM_COMMAND => {
+                let id = (wparam.0 & 0xffff) as i32;
+                if (10_010..10_019).contains(&id) {
+                    state.refresh_preview();
+                    return LRESULT(0);
+                }
+                if id == 10_100 {
+                    let bundles = state.selected_bundles();
+                    if !bundles.is_empty() {
+                        post_settings_action(
+                            state.owner,
+                            SettingsAction::ApplyImport {
+                                document: state.document.clone(),
+                                bundles,
+                            },
+                        );
+                    }
+                    return LRESULT(0);
+                }
+                if id == 10_101 {
+                    state.logger.event("설정 가져오기 취소: 미리보기");
+                    let _ = unsafe { DestroyWindow(hwnd) };
+                    return LRESULT(0);
+                }
+            }
+            WM_CLOSE => {
+                state.logger.event("설정 가져오기 취소: 미리보기 창 닫힘");
+                let _ = unsafe { DestroyWindow(hwnd) };
+                return LRESULT(0);
+            }
+            WM_NCDESTROY => {
+                state.hwnd = HWND::default();
+                unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) };
+                return LRESULT(0);
+            }
+            _ => {}
+        }
+    }
+    unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+}
+
+#[cfg(windows)]
 fn color_ref(color: &SettingsColor) -> COLORREF {
     let part = |value: f64| (value.clamp(0.0, 1.0) * 255.0).round() as u32;
     COLORREF(part(color.red) | (part(color.green) << 8) | (part(color.blue) << 16))
@@ -2803,6 +4387,69 @@ fn wide(value: &str) -> Vec<u16> {
 }
 
 #[cfg(windows)]
+fn current_recorder_modifiers() -> u8 {
+    let down = |key: VIRTUAL_KEY| unsafe { GetKeyState(key.0 as i32) } < 0;
+    let mut result = 0;
+    if down(VK_CONTROL) {
+        result |= keymap::MODIFIER_CONTROL;
+    }
+    if down(VK_MENU) {
+        result |= keymap::MODIFIER_ALT;
+    }
+    if down(VK_SHIFT) {
+        result |= keymap::MODIFIER_SHIFT;
+    }
+    if down(VK_LWIN) || down(VK_RWIN) {
+        result |= keymap::MODIFIER_WINDOWS;
+    }
+    result
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn shortcut_recorder_subclass_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _subclass_id: usize,
+    _reference_data: usize,
+) -> LRESULT {
+    match message {
+        WM_GETDLGCODE => return LRESULT(DLGC_WANTALLKEYS as isize),
+        WM_KEYDOWN | WM_SYSKEYDOWN => {
+            let mut vk = wparam.0 as u32;
+            if vk == VK_PROCESSKEY.0 as u32 {
+                vk = unsafe { ImmGetVirtualKey(hwnd) };
+            }
+            if let Ok(parent) = unsafe { GetParent(hwnd) } {
+                if let Ok(settings) = unsafe { GetParent(parent) } {
+                    unsafe {
+                        SendMessageW(
+                            settings,
+                            WM_APP_SHORTCUT_KEY,
+                            Some(WPARAM(vk as usize)),
+                            None,
+                        )
+                    };
+                }
+            }
+            return LRESULT(0);
+        }
+        WM_KILLFOCUS => {
+            if let Ok(parent) = unsafe { GetParent(hwnd) } {
+                if let Ok(settings) = unsafe { GetParent(parent) } {
+                    unsafe {
+                        SendMessageW(settings, WM_APP_SHORTCUT_KEY, Some(WPARAM(0x1B)), None)
+                    };
+                }
+            }
+        }
+        _ => {}
+    }
+    unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
+}
+
+#[cfg(windows)]
 fn register_classes(hinstance: HINSTANCE) -> Result<()> {
     let cursor = unsafe { LoadCursorW(None, IDC_ARROW) }?;
     let background = unsafe { GetSysColorBrush(COLOR_WINDOW) };
@@ -2814,6 +4461,14 @@ fn register_classes(hinstance: HINSTANCE) -> Result<()> {
         (
             PAGE_CLASS,
             page_window_proc as unsafe extern "system" fn(_, _, _, _) -> _,
+        ),
+        (
+            IMPORT_PREVIEW_CLASS,
+            import_preview_window_proc as unsafe extern "system" fn(_, _, _, _) -> _,
+        ),
+        (
+            EXPORT_OPTIONS_CLASS,
+            export_options_window_proc as unsafe extern "system" fn(_, _, _, _) -> _,
         ),
     ] {
         let class = WNDCLASSW {
@@ -2877,6 +4532,10 @@ unsafe extern "system" fn settings_window_proc(
                 state.handle_page_wheel(HWND(lparam.0 as *mut c_void), wparam);
                 return LRESULT(0);
             }
+            WM_APP_SHORTCUT_KEY => {
+                state.handle_shortcut_key(wparam.0 as u32);
+                return LRESULT(0);
+            }
             WM_GETMINMAXINFO => {
                 let info = lparam.0 as *mut MINMAXINFO;
                 if !info.is_null() {
@@ -2925,6 +4584,10 @@ unsafe extern "system" fn settings_window_proc(
                 return LRESULT(0);
             }
             WM_CLOSE => {
+                if let Some(index) = state.recording_shortcut.take() {
+                    let key = state.shortcut_key(index).unwrap_or_default();
+                    state.post_action(SettingsAction::CancelShortcutRecording { key });
+                }
                 let _ = unsafe { ShowWindow(hwnd, SW_HIDE) };
                 state.logger.event("설정 창 닫힘");
                 return LRESULT(0);
@@ -2987,7 +4650,13 @@ unsafe extern "system" fn page_window_proc(
 #[cfg(windows)]
 pub fn selftest_failures(hinstance: HINSTANCE, logger: Logger) -> Vec<String> {
     let mut failures = pure_selftest_failures();
-    match SettingsWindow::new(HWND::default(), hinstance, &AppSettings::default(), logger) {
+    match SettingsWindow::new(
+        HWND::default(),
+        hinstance,
+        &AppSettings::default(),
+        &BTreeMap::new(),
+        logger,
+    ) {
         Ok(mut window) => {
             if window.field_control_count() != field_count() {
                 failures.push(format!(
@@ -2996,7 +4665,11 @@ pub fn selftest_failures(hinstance: HINSTANCE, logger: Logger) -> Vec<String> {
                     field_count()
                 ));
             }
-            window.show(SettingsTab::General, &AppSettings::default());
+            window.show(
+                SettingsTab::General,
+                &AppSettings::default(),
+                &BTreeMap::new(),
+            );
             let hwnd = window.hwnd();
             drop(window);
             if unsafe { IsWindow(Some(hwnd)) }.as_bool() {
@@ -3147,6 +4820,9 @@ fn pure_selftest_failures() -> Vec<String> {
         }
     }
     actual_ids.extend(EXCLUDED_FIELDS.iter().map(|field| field.id));
+    if !shortcut_row_definitions().is_empty() {
+        actual_ids.insert("shortcuts");
+    }
     if actual_ids != expected_ids {
         let missing = expected_ids
             .difference(&actual_ids)
@@ -3192,6 +4868,103 @@ fn pure_selftest_failures() -> Vec<String> {
             failures.push(format!(
                 "settings layout: scale={scale_percent}% dpi={dpi} dimensions={actual:?} expected={expected:?}"
             ));
+        }
+    }
+
+    let mut conflict_settings = AppSettings::default();
+    let conflict_key = ShortcutCatalog::override_key("annotation.toggle", ShortcutScope::Global);
+    conflict_settings
+        .shortcuts
+        .overrides
+        .insert(conflict_key.clone(), "AppMod+Delete".to_owned());
+    let conflict_warnings = ShortcutConflictDetector::warnings(
+        &conflict_settings.shortcuts,
+        &windows_shortcut_conflict_table(),
+    );
+    if !conflict_warnings.contains_key(&conflict_key) {
+        failures.push(
+            "settings shortcuts: Windows Ctrl+Alt+Delete 충돌 경고가 생성되지 않음".to_owned(),
+        );
+    }
+
+    let mut export_source = AppSettings::default();
+    export_source.general.archive_folder_path = Some("C:\\private".to_owned());
+    let export_bundles = default_export_bundles();
+    match SettingsTransfer::export_document(
+        &export_source,
+        &export_bundles,
+        false,
+        "0.1.0",
+        "Windows 11",
+    ) {
+        Ok(document) => {
+            if document.included_bundles != SettingsBundle::ALL {
+                failures.push("settings export: 기본 선택이 9개 전체 묶음이 아님".to_owned());
+            }
+            if document.includes_computer_specific
+                || document
+                    .payload
+                    .general
+                    .as_ref()
+                    .and_then(|general| general.archive_folder_path.as_ref())
+                    .is_some()
+            {
+                failures.push(
+                    "settings export: 기본 내보내기가 이 컴퓨터 전용 경로를 포함함".to_owned(),
+                );
+            }
+        }
+        Err(error) => failures.push(format!("settings export: 기본 문서 생성 실패: {error}")),
+    }
+
+    let mut preview_current = AppSettings::default();
+    preview_current.general.auto_archive_enabled = false;
+    preview_current.tools.shape_recognition_enabled = false;
+    preview_current.eraser.diameter = 30.0;
+    preview_current.zoom.live_by_default = false;
+    preview_current.board.background_pattern = "grid".to_owned();
+    preview_current.timer.break_message = "변경된 문구".to_owned();
+    preview_current.shortcuts.app_modifier = AppModifierSetting::ControlOptionShift;
+    preview_current.help.shows_help_in_sharing = true;
+    let expected_counts = [1_usize, 1, 1, 1, 1, 1, 0, 1, 1];
+    for (fixture_name, fixture) in [
+        (
+            "macos-v1.pansetting",
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../../fixtures/pansetting/macos-v1.pansetting"
+            ))
+            .as_slice(),
+        ),
+        (
+            "windows-v1.pansetting",
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../../fixtures/pansetting/windows-v1.pansetting"
+            ))
+            .as_slice(),
+        ),
+    ] {
+        match SettingsTransfer::decode(fixture) {
+            Ok(document) => {
+                for (bundle, expected) in SettingsBundle::ALL.into_iter().zip(expected_counts) {
+                    match SettingsTransfer::changes(&preview_current, &document, [bundle]) {
+                        Ok(changes) if changes.len() == expected => {}
+                        Ok(changes) => failures.push(format!(
+                            "settings preview: {fixture_name} {} changes={} expected={expected}",
+                            bundle_name(bundle),
+                            changes.len()
+                        )),
+                        Err(error) => failures.push(format!(
+                            "settings preview: {fixture_name} {} 실패: {error}",
+                            bundle_name(bundle)
+                        )),
+                    }
+                }
+            }
+            Err(error) => failures.push(format!(
+                "settings preview: {fixture_name} 디코드 실패: {error}"
+            )),
         }
     }
     failures
