@@ -259,7 +259,8 @@ mod windows_impl {
     use std::path::PathBuf;
     use windows::core::{w, Error, Interface, Result, PCWSTR};
     use windows::Win32::Foundation::{
-        ERROR_CLASS_ALREADY_EXISTS, E_FAIL, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM,
+        COLORREF, ERROR_CLASS_ALREADY_EXISTS, E_FAIL, HINSTANCE, HWND, LPARAM, LRESULT, POINT,
+        WPARAM,
     };
     use windows::Win32::Graphics::Direct2D::Common::{
         D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_U,
@@ -282,8 +283,10 @@ mod windows_impl {
     use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_UNKNOWN;
     use windows::Win32::Graphics::Dxgi::IDXGISwapChain1;
     use windows::Win32::Graphics::Gdi::{
-        ClientToScreen, GetStockObject, GetSysColor, COLOR_GRAYTEXT, COLOR_HIGHLIGHT,
-        COLOR_HIGHLIGHTTEXT, COLOR_WINDOW, COLOR_WINDOWTEXT, DEFAULT_GUI_FONT,
+        ClientToScreen, CreateFontIndirectW, CreateSolidBrush, DeleteObject, GetSysColor,
+        GetSysColorBrush, InvalidateRect, SetBkColor, SetTextColor, CLEARTYPE_QUALITY,
+        COLOR_GRAYTEXT, COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT, COLOR_WINDOW, COLOR_WINDOWTEXT,
+        DEFAULT_CHARSET, HBRUSH, HDC, HFONT, LOGFONTW,
     };
     use windows::Win32::System::SystemInformation::GetTickCount64;
     use windows::Win32::UI::HiDpi::GetDpiForWindow;
@@ -297,10 +300,10 @@ mod windows_impl {
         SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, CREATESTRUCTW, EN_CHANGE,
         EN_KILLFOCUS, EN_SETFOCUS, ES_AUTOHSCROLL, GWLP_USERDATA, GWL_EXSTYLE, HTCLIENT,
         HTTRANSPARENT, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-        SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, WINDOW_STYLE, WM_COMMAND, WM_DPICHANGED,
-        WM_ERASEBKGND, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_MOVE, WM_NCCREATE,
-        WM_NCDESTROY, WM_NCHITTEST, WM_SETFONT, WM_SETTINGCHANGE, WM_SIZE, WM_SYSCOLORCHANGE,
-        WM_THEMECHANGED, WNDCLASSW, WS_BORDER, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
+        SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, WINDOW_STYLE, WM_COMMAND, WM_CTLCOLOREDIT,
+        WM_DPICHANGED, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_MOVE,
+        WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST, WM_SETFONT, WM_SETTINGCHANGE, WM_SIZE,
+        WM_SYSCOLORCHANGE, WM_THEMECHANGED, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
         WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP, WS_TABSTOP,
     };
 
@@ -312,8 +315,15 @@ mod windows_impl {
     const HELP_RELEASE_MAX_MS: u64 = 10_000;
     const HELP_CLASS: PCWSTR = w!("EduToolsHelp");
     const EM_SETSEL_MESSAGE: u32 = 177;
+    const EM_SETMARGINS_MESSAGE: u32 = 0x00d3;
     const EM_SETCUEBANNER_MESSAGE: u32 = 0x1501;
+    const EC_LEFTMARGIN: usize = 0x0001;
+    const EC_RIGHTMARGIN: usize = 0x0002;
     const WM_MOUSELEAVE_MESSAGE: u32 = 675;
+    const SEARCH_FONT_SIZE_DIP: u32 = 14;
+    const SEARCH_HORIZONTAL_MARGIN_DIP: u32 = 8;
+    const SEARCH_BACKGROUND: COLORREF = COLORREF(0x0038_2c28);
+    const SEARCH_TEXT: COLORREF = COLORREF(0x00ff_ffff);
 
     #[derive(Clone, Debug, Default)]
     struct HelpContent {
@@ -347,7 +357,22 @@ mod windows_impl {
         scroll: f64,
         pinned: bool,
         search: HWND,
+        search_font: HFONT,
+        search_background: HBRUSH,
         renderer: Option<HelpRenderer>,
+    }
+
+    impl Drop for HelpWindowState {
+        fn drop(&mut self) {
+            if !self.search_font.is_invalid() {
+                let _ = unsafe { DeleteObject(self.search_font.into()) };
+                self.search_font = HFONT::default();
+            }
+            if !self.search_background.is_invalid() {
+                let _ = unsafe { DeleteObject(self.search_background.into()) };
+                self.search_background = HBRUSH::default();
+            }
+        }
     }
 
     struct HelpWindow {
@@ -397,6 +422,8 @@ mod windows_impl {
                 scroll: 0.0,
                 pinned: false,
                 search: HWND::default(),
+                search_font: HFONT::default(),
+                search_background: HBRUSH::default(),
                 renderer: None,
             });
             let state_ptr = window_state.as_mut() as *mut HelpWindowState;
@@ -421,7 +448,7 @@ mod windows_impl {
                     WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
                     w!("EDIT"),
                     w!(""),
-                    WS_POPUP | WS_TABSTOP | WS_BORDER | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
+                    WS_POPUP | WS_TABSTOP | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
                     0,
                     0,
                     1,
@@ -439,16 +466,17 @@ mod windows_impl {
                 }
             };
             window_state.search = search;
-            let stock_font = unsafe { GetStockObject(DEFAULT_GUI_FONT) };
-            if !stock_font.is_invalid() {
-                unsafe {
-                    SendMessageW(
-                        search,
-                        WM_SETFONT,
-                        Some(WPARAM(stock_font.0 as usize)),
-                        Some(LPARAM(1)),
-                    )
-                };
+            window_state.search_background = unsafe { CreateSolidBrush(SEARCH_BACKGROUND) };
+            if window_state.search_background.is_invalid() {
+                let error = Error::from_thread();
+                let _ = unsafe { DestroyWindow(search) };
+                let _ = unsafe { DestroyWindow(hwnd) };
+                return Err(error);
+            }
+            if let Err(error) = update_search_font(&mut window_state) {
+                let _ = unsafe { DestroyWindow(search) };
+                let _ = unsafe { DestroyWindow(hwnd) };
+                return Err(error);
             }
             unsafe {
                 SendMessageW(
@@ -463,6 +491,7 @@ mod windows_impl {
             let graphics = match GraphicsDevice::new() {
                 Ok(graphics) => graphics,
                 Err(error) => {
+                    let _ = unsafe { DestroyWindow(search) };
                     let _ = unsafe { DestroyWindow(hwnd) };
                     return Err(error);
                 }
@@ -470,6 +499,7 @@ mod windows_impl {
             let renderer = match HelpRenderer::new(&graphics, hwnd, 1, 1, 96) {
                 Ok(renderer) => renderer,
                 Err(error) => {
+                    let _ = unsafe { DestroyWindow(search) };
                     let _ = unsafe { DestroyWindow(hwnd) };
                     return Err(error);
                 }
@@ -863,6 +893,7 @@ mod windows_impl {
                 .resize(width, height, dpi)?;
             let scale = px_per_dip(dpi);
             self.window.state.dpi = dpi;
+            update_search_font(&mut self.window.state)?;
             self.window.state.work = RectF::new(
                 f64::from(monitor.work_rect.left - monitor.rect.left) / scale,
                 f64::from(monitor.work_rect.top - monitor.rect.top) / scale,
@@ -1214,8 +1245,32 @@ mod windows_impl {
                     }
                     return LRESULT(0);
                 }
+                WM_CTLCOLOREDIT => {
+                    if HWND(lparam.0 as *mut c_void) == state.search {
+                        let hdc = HDC(wparam.0 as *mut c_void);
+                        let (text, background, brush) = if high_contrast().unwrap_or(false) {
+                            (
+                                COLORREF(unsafe { GetSysColor(COLOR_WINDOWTEXT) }),
+                                COLORREF(unsafe { GetSysColor(COLOR_WINDOW) }),
+                                unsafe { GetSysColorBrush(COLOR_WINDOW) },
+                            )
+                        } else {
+                            (SEARCH_TEXT, SEARCH_BACKGROUND, state.search_background)
+                        };
+                        unsafe {
+                            SetTextColor(hdc, text);
+                            SetBkColor(hdc, background);
+                        }
+                        return LRESULT(brush.0 as isize);
+                    }
+                }
                 WM_DPICHANGED => {
                     state.dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
+                    if let Err(error) = update_search_font(state) {
+                        state
+                            .logger
+                            .event(&format!("도움말 검색창 DPI 글꼴 갱신 실패: {error}"));
+                    }
                     if let Err(error) = position_search(hwnd, state) {
                         state
                             .logger
@@ -1233,6 +1288,7 @@ mod windows_impl {
                     return LRESULT(0);
                 }
                 WM_SETTINGCHANGE | WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
+                    let _ = unsafe { InvalidateRect(Some(state.search), None, true) };
                     post_owner(state, WM_APP_HELP_REFRESH, 0);
                     return LRESULT(0);
                 }
@@ -1245,6 +1301,57 @@ mod windows_impl {
             }
         }
         unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+    }
+
+    fn update_search_font(state: &mut HelpWindowState) -> Result<()> {
+        let pixel_height = dip_to_px(SEARCH_FONT_SIZE_DIP, state.dpi).max(1);
+        let mut logical_font = LOGFONTW {
+            lfHeight: -(pixel_height as i32),
+            lfWeight: 400,
+            lfCharSet: DEFAULT_CHARSET,
+            lfQuality: CLEARTYPE_QUALITY,
+            ..Default::default()
+        };
+        for (destination, value) in logical_font
+            .lfFaceName
+            .iter_mut()
+            .zip("Segoe UI Variable".encode_utf16())
+        {
+            *destination = value;
+        }
+        let font = unsafe { CreateFontIndirectW(&logical_font) };
+        if font.is_invalid() {
+            return Err(Error::from_thread());
+        }
+
+        unsafe {
+            SendMessageW(
+                state.search,
+                WM_SETFONT,
+                Some(WPARAM(font.0 as usize)),
+                Some(LPARAM(1)),
+            )
+        };
+        let old_font = std::mem::replace(&mut state.search_font, font);
+        if !old_font.is_invalid() {
+            let _ = unsafe { DeleteObject(old_font.into()) };
+        }
+
+        let margin = dip_to_px(SEARCH_HORIZONTAL_MARGIN_DIP, state.dpi).min(u32::from(u16::MAX));
+        let packed_margins = usize::from(margin as u16) | (usize::from(margin as u16) << 16);
+        unsafe {
+            SendMessageW(
+                state.search,
+                EM_SETMARGINS_MESSAGE,
+                Some(WPARAM(EC_LEFTMARGIN | EC_RIGHTMARGIN)),
+                Some(LPARAM(packed_margins as isize)),
+            )
+        };
+        Ok(())
+    }
+
+    fn dip_to_px(value: u32, dpi: u32) -> u32 {
+        value.saturating_mul(dpi).saturating_add(48) / 96
     }
 
     fn client_point(lparam: LPARAM, dpi: u32) -> (f64, f64) {
