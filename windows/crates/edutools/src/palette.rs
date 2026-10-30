@@ -1255,7 +1255,7 @@ mod windows_impl {
                 theme.inactive_icon
             };
             self.icons
-                .draw_selected(&definition.icon_key, selected, icon_rect, icon_tint(tint))
+                .draw_selected(&definition.id, selected, icon_rect, icon_tint(tint))
         }
 
         fn draw_drag_handle(&self, rect: PixelRect, tint: [f64; 4]) -> Result<()> {
