@@ -4,6 +4,7 @@ use crate::monitor::{
     enumerate_monitors, monitor_at_point, monitor_by_key, plan_monitor_sync, Monitor,
 };
 use crate::render::{GraphicsDevice, OverlayRenderer};
+use crate::z_bands::{raise_band_order, Band, BandRegistration};
 use edutools_core::ink::{
     InkCommand, InkLayerState, InkPoint, InkStroke, InkStrokeContent, InkStrokeTool, Point,
 };
@@ -19,8 +20,8 @@ use windows::Win32::Foundation::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos, GetWindowLongPtrW, GetWindowRect,
     KillTimer, RegisterClassW, SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW,
-    SetWindowPos, ShowWindow, CREATESTRUCTW, GWLP_USERDATA, GWL_EXSTYLE, HWND_TOPMOST, LWA_ALPHA,
-    MA_NOACTIVATE, PA_NOACTIVATE, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE,
+    SetWindowPos, ShowWindow, CREATESTRUCTW, GWLP_USERDATA, GWL_EXSTYLE, LWA_ALPHA, MA_NOACTIVATE,
+    PA_NOACTIVATE, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE,
     WM_DISPLAYCHANGE, WM_DPICHANGED, WM_MOUSEACTIVATE, WM_NCCREATE, WM_NCDESTROY,
     WM_POINTERACTIVATE, WM_POINTERCAPTURECHANGED, WM_POINTERDOWN, WM_POINTERLEAVE, WM_POINTERUP,
     WM_POINTERUPDATE, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
@@ -132,6 +133,7 @@ impl OverlayManager {
             self.overlays.len(),
             self.layers.borrow().len()
         ));
+        raise_band_order()?;
         Ok(())
     }
 
@@ -448,6 +450,7 @@ impl OverlayWindowState {
 struct OverlayWindow {
     hwnd: HWND,
     state: Box<OverlayWindowState>,
+    _band: BandRegistration,
 }
 
 impl OverlayWindow {
@@ -498,15 +501,16 @@ impl OverlayWindow {
                 Some(state_ptr.cast::<c_void>()),
             )
         }?;
+        let band = BandRegistration::new(hwnd, Band::Overlay);
         if let Err(error) = unsafe {
             SetWindowPos(
                 hwnd,
-                Some(HWND_TOPMOST),
+                None,
                 rect.left,
                 rect.top,
                 rect.width(),
                 rect.height(),
-                SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW,
             )
         } {
             let _ = unsafe { DestroyWindow(hwnd) };
@@ -529,7 +533,11 @@ impl OverlayWindow {
             }
         };
         state.renderer = Some(renderer);
-        let mut window = Self { hwnd, state };
+        let mut window = Self {
+            hwnd,
+            state,
+            _band: band,
+        };
         window.rebuild_completed()?;
         window.set_click_through(!annotation_enabled)?;
         window.draw(annotation_enabled && debug_overlay)?;

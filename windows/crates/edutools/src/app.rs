@@ -3,6 +3,10 @@ use crate::ink_view::InkInputConfig;
 use crate::kbhook::{HookKeyEvent, KeyboardHook, WM_APP_KEY};
 use crate::log::Logger;
 use crate::overlay::{OverlayManager, SYNC_MESSAGE};
+use crate::palette::{
+    command_for_item, item_enabled, PaletteItemId, PaletteManager, WM_APP_PALETTE_ACTION,
+    WM_APP_PALETTE_REDRAW, WM_APP_PALETTE_SAVE_POSITION, WM_APP_PALETTE_TOGGLE_ORIENTATION,
+};
 use crate::tray::{self, Tray, CALLBACK_MESSAGE, MENU_EXIT, MENU_TOGGLE_ANNOTATION};
 use edutools_core::dispatch::{dispatch, DispatchContext, Effect, PressedShortcuts};
 use edutools_core::ink::{
@@ -140,6 +144,7 @@ struct App {
     keyboard_hook: Option<KeyboardHook>,
     pressed_shortcuts: PressedShortcuts,
     overlays: Option<OverlayManager>,
+    palette: Option<PaletteManager>,
     logger: Logger,
     shutting_down: bool,
 }
@@ -161,6 +166,9 @@ impl App {
                 return Err(error);
             }
         }
+        let mut palette = PaletteManager::new(self.hwnd, self.hinstance, self.logger.clone())?;
+        palette.refresh(&self.state, &self.settings)?;
+        self.palette = Some(palette);
         Ok(())
     }
 
@@ -413,6 +421,9 @@ impl App {
                 Effect::StepBack(result) => self
                     .logger
                     .event(&format!("효과 ({source}): 한 단계 나가기 {result:?}")),
+                Effect::PaletteVisibilityChanged(visible) => self
+                    .logger
+                    .event(&format!("효과 ({source}): 선형 팔레트 표시 상태 {visible}")),
                 other => self
                     .logger
                     .event(&format!("이번 라운드에서 UI 미구현 core effect: {other:?}")),
@@ -425,6 +436,7 @@ impl App {
                     .event(&format!("오버레이 입력 설정 반영 실패: {error}"));
             }
         }
+        self.refresh_palette("core effect");
     }
 
     fn synchronize_overlays(&mut self, reason: &str) {
@@ -432,6 +444,89 @@ impl App {
             if let Err(error) = overlays.synchronize(reason) {
                 self.report_overlay_error("모니터 재구성", &error);
             }
+        }
+        if let Some(palette) = self.palette.as_mut() {
+            if let Err(error) = palette.display_configuration_changed(&self.state, &self.settings) {
+                self.report_palette_error("모니터 재구성", &error);
+            }
+        }
+    }
+
+    fn handle_palette_action(&mut self, value: usize) {
+        let Some(item) = PaletteItemId::from_message(value) else {
+            self.logger
+                .event(&format!("팔레트 항목 메시지 범위 밖: {value}"));
+            return;
+        };
+        let Some(command) = command_for_item(item) else {
+            self.logger
+                .event(&format!("팔레트 비동작 항목 클릭 무시: {item:?}"));
+            return;
+        };
+        if !item_enabled(item, &self.state, &self.settings) {
+            self.logger
+                .event(&format!("팔레트 비활성 항목 클릭 무시: {item:?}"));
+            return;
+        }
+        let display_id = match self.palette.as_ref().map(PaletteManager::monitor_key) {
+            Some(Ok(display_id)) => display_id,
+            Some(Err(error)) => {
+                self.report_palette_error("대상 모니터 판정", &error);
+                None
+            }
+            None => None,
+        };
+        let context = DispatchContext {
+            scope: ShortcutScope::Annotation,
+            display_id: display_id.as_deref(),
+            board_display_id: display_id.as_deref(),
+            ..DispatchContext::default()
+        };
+        match dispatch(&command, &mut self.state, &self.settings, context) {
+            Ok(effects) => self.apply_effects(effects, &format!("팔레트 {item:?}")),
+            Err(error) => self.logger.event(&format!(
+                "팔레트 core dispatch 실패: item={item:?} command={command:?}: {error}"
+            )),
+        }
+    }
+
+    fn refresh_palette(&mut self, reason: &str) {
+        if let Some(palette) = self.palette.as_mut() {
+            if let Err(error) = palette.refresh(&self.state, &self.settings) {
+                self.report_palette_error(reason, &error);
+            }
+        }
+    }
+
+    fn redraw_palette(&mut self) {
+        if let Some(palette) = self.palette.as_mut() {
+            if let Err(error) = palette.redraw(&self.state, &self.settings) {
+                self.report_palette_error("다시 그리기", &error);
+            }
+        }
+    }
+
+    fn save_palette_position(&mut self) {
+        if let Some(palette) = self.palette.as_mut() {
+            if let Err(error) = palette.save_position() {
+                self.report_palette_error("위치 저장", &error);
+            }
+        }
+    }
+
+    fn toggle_palette_orientation(&mut self) {
+        if let Some(palette) = self.palette.as_mut() {
+            if let Err(error) = palette.toggle_orientation(&self.state, &self.settings) {
+                self.report_palette_error("가로/세로 전환", &error);
+            }
+        }
+    }
+
+    fn report_palette_error(&self, context: &str, error: &Error) {
+        let message = format!("팔레트 {context} 실패: {error}");
+        self.logger.event(&message);
+        if let Some(tray) = self.tray.as_ref() {
+            tray.show_warning("팔레트 오류", &message);
         }
     }
 
@@ -475,6 +570,7 @@ impl App {
         self.set_keyboard_hook(false);
         // Overlay HWNDs and graphics resources must be released on the UI thread before the tray
         // and hidden owner window go away.
+        self.palette = None;
         self.overlays = None;
         if let Some(hotkeys) = self.hotkeys.as_mut() {
             hotkeys.shutdown();
@@ -534,6 +630,7 @@ fn run_message_loop(logger: Logger) -> Result<i32> {
         keyboard_hook: None,
         pressed_shortcuts: PressedShortcuts::new(),
         overlays: None,
+        palette: None,
         logger,
         shutting_down: false,
     });
@@ -602,6 +699,22 @@ unsafe extern "system" fn window_proc(
             }
             SYNC_MESSAGE => {
                 app.synchronize_overlays("오버레이 메시지");
+                return LRESULT(0);
+            }
+            WM_APP_PALETTE_ACTION => {
+                app.handle_palette_action(wparam.0);
+                return LRESULT(0);
+            }
+            WM_APP_PALETTE_REDRAW => {
+                app.redraw_palette();
+                return LRESULT(0);
+            }
+            WM_APP_PALETTE_SAVE_POSITION => {
+                app.save_palette_position();
+                return LRESULT(0);
+            }
+            WM_APP_PALETTE_TOGGLE_ORIENTATION => {
+                app.toggle_palette_orientation();
                 return LRESULT(0);
             }
             WM_SETTINGCHANGE => {
@@ -686,6 +799,13 @@ fn run_selftest(logger: &Logger) -> bool {
         ) {
             Ok(mut overlays) => failures.extend(overlays.selftest_failures()),
             Err(error) => failures.push(format!("overlay: 생성 실패: {error}")),
+        }
+
+        let state = AppState::new();
+        let settings = AppSettings::default();
+        match PaletteManager::new(HWND::default(), hinstance, logger.clone()) {
+            Ok(mut palette) => failures.extend(palette.selftest_failures(&state, &settings)),
+            Err(error) => failures.push(format!("palette: 생성 실패: {error}")),
         }
     }
 

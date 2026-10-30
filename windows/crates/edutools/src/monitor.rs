@@ -82,6 +82,7 @@ mod windows_impl {
     pub struct Monitor {
         pub handle: HMONITOR,
         pub rect: MonitorRect,
+        pub work_rect: MonitorRect,
         pub dpi: (u32, u32),
         pub is_primary: bool,
         pub session_key: String,
@@ -173,6 +174,7 @@ mod windows_impl {
             .unwrap_or(info.szDevice.len());
         let session_key = String::from_utf16_lossy(&info.szDevice[..device_len]);
         let rect = info.monitorInfo.rcMonitor;
+        let work_rect = info.monitorInfo.rcWork;
         Ok(Monitor {
             handle,
             rect: MonitorRect {
@@ -180,6 +182,12 @@ mod windows_impl {
                 top: rect.top,
                 right: rect.right,
                 bottom: rect.bottom,
+            },
+            work_rect: MonitorRect {
+                left: work_rect.left,
+                top: work_rect.top,
+                right: work_rect.right,
+                bottom: work_rect.bottom,
             },
             dpi: (dpi_x, dpi_y),
             is_primary: info.monitorInfo.dwFlags & 1 != 0,
