@@ -14,6 +14,7 @@ use edutools_core::shortcut::{
 };
 use edutools_core::state::AppState;
 use std::mem::size_of;
+use std::path::PathBuf;
 use windows::core::{w, Error, Result, PCWSTR};
 use windows::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT,
@@ -40,6 +41,26 @@ pub fn run() -> i32 {
     let logger = Logger::open();
     logger.event("EduTools 시작");
 
+    let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
+    if arguments
+        .first()
+        .is_some_and(|value| value == "--selftest-icons")
+    {
+        if arguments.len() != 2 {
+            eprintln!("사용법: edutools --selftest-icons <출력 폴더>");
+            return 2;
+        }
+        let output = PathBuf::from(&arguments[1]);
+        return match crate::app_icon::run_selftest_icons(&output, &logger) {
+            Ok(()) => 0,
+            Err(error) => {
+                logger.event(&format!("--selftest-icons 실패: {error}"));
+                eprintln!("--selftest-icons: {error}");
+                1
+            }
+        };
+    }
+
     // SAFETY: this process-wide opt-in is called exactly once, before any app windows are created.
     if let Err(error) = unsafe { EnableMouseInPointer(true) } {
         logger.event(&format!("EnableMouseInPointer(TRUE) 실패: {error}"));
@@ -47,10 +68,7 @@ pub fn run() -> i32 {
         return 1;
     }
 
-    if std::env::args_os()
-        .skip(1)
-        .any(|argument| argument == "--selftest")
-    {
+    if arguments.iter().any(|argument| argument == "--selftest") {
         let passed = run_selftest(&logger);
         logger.event(if passed {
             "--selftest 통과"
