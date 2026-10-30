@@ -45,16 +45,18 @@ use crate::render::GraphicsDevice;
 use crate::settings_file::FileSettingsStorage;
 use crate::settings_ui::{
     apply_change as apply_settings_window_change, choose_settings_export_path,
-    choose_settings_import_path, SettingsAction, SettingsChangeRequest, SettingsTab,
-    SettingsWindow, WM_APP_SETTINGS_ACTION, WM_APP_SETTINGS_CHANGE,
+    choose_settings_import_path, new_preset_id, DisplayApplyAvailability, DisplayCommand,
+    DisplayEdit, DisplayMutationKind, DisplayMutationRequest, SettingsAction,
+    SettingsChangeRequest, SettingsTab, SettingsWindow, WM_APP_SETTINGS_ACTION,
+    WM_APP_SETTINGS_CHANGE,
 };
 use crate::text_entry::{
     cancel_reason, TextEntryRequest, TextEntryWindow, WM_APP_TEXT_ENTRY_CANCEL,
     WM_APP_TEXT_ENTRY_COMMIT, WM_APP_TEXT_ENTRY_OPEN,
 };
 use crate::tray::{
-    self, display_preset_index, Tray, CALLBACK_MESSAGE, MENU_EXIT, MENU_SETTINGS,
-    MENU_TOGGLE_ANNOTATION,
+    self, display_preset_index, Tray, CALLBACK_MESSAGE, MENU_DISPLAY_SETTINGS, MENU_EXIT,
+    MENU_SETTINGS, MENU_TOGGLE_ANNOTATION,
 };
 use crate::zoom_view::{
     decode_pointer, decode_wheel, ZoomView, WM_APP_ZOOM_INK_INPUT, WM_APP_ZOOM_POINTER,
@@ -63,7 +65,8 @@ use crate::zoom_view::{
 use edutools_core::board::BoardPresentation;
 use edutools_core::dispatch::{dispatch, DispatchContext, Effect, PressedShortcuts};
 use edutools_core::display_preset::{
-    DisplayAutoSwitchDecision, DisplayAutoSwitchPolicy, DisplayPlanner, DisplayPresetDefaults,
+    unique_name, DisplayAutoSwitchDecision, DisplayAutoSwitchPolicy, DisplayPlanner,
+    DisplayPresetCapture, DisplayPresetDefaults,
 };
 use edutools_core::eraser::EraserMode;
 use edutools_core::ink::{
@@ -625,8 +628,32 @@ impl App {
                 }
             }
         }
+        let availability = self.display_apply_availability();
         if let Some(window) = self.settings_window.as_mut() {
-            window.show(tab, &self.settings, &warnings);
+            window.show(tab, &self.settings, &warnings, availability);
+        }
+    }
+
+    fn display_apply_availability(&self) -> DisplayApplyAvailability {
+        match self.display_applier.state() {
+            DisplayApplyState::Applying => {
+                return DisplayApplyAvailability::unavailable("다른 화면 구성을 적용하는 중입니다")
+            }
+            DisplayApplyState::AwaitingConfirmation => {
+                return DisplayApplyAvailability::unavailable(
+                    "현재 화면 구성을 먼저 유지하거나 되돌리세요",
+                )
+            }
+            DisplayApplyState::Idle => {}
+        }
+        match is_console_session() {
+            Ok(true) => DisplayApplyAvailability::available(),
+            Ok(false) => DisplayApplyAvailability::unavailable(
+                "원격 데스크톱(RDP)·비콘솔 세션에서는 적용할 수 없습니다",
+            ),
+            Err(error) => DisplayApplyAvailability::unavailable(format!(
+                "현재 세션을 확인할 수 없어 적용을 비활성화했습니다: {error}"
+            )),
         }
     }
 
@@ -704,6 +731,219 @@ impl App {
             SettingsAction::RestoreBackup => {
                 self.logger.event("이전 설정 복원 요청");
                 self.restore_latest_backup();
+            }
+            SettingsAction::DisplayMutation(request) => self.handle_display_mutation(request),
+            SettingsAction::DisplayCommand(command) => self.handle_display_command(command),
+        }
+    }
+
+    fn handle_display_mutation(&mut self, request: DisplayMutationRequest) {
+        let mut candidate = self.settings.clone();
+        candidate.display = request.display.clone();
+        if let Err(error) = SettingsValidator::validate(&candidate) {
+            let reason = error.to_string();
+            self.logger.event(&format!(
+                "화면 탭 검증 거부: action={} reason={reason}",
+                display_mutation_name(&request.kind)
+            ));
+            let warnings = self.runtime_shortcut_warnings();
+            if let Some(window) = self.settings_window.as_mut() {
+                window.reject_display_change(&reason, &self.settings, &warnings);
+            }
+            return;
+        }
+
+        let previous = self.settings.display.clone();
+        let replacement = request.display.clone();
+        self.update_settings("display-tab", move |settings| {
+            settings.display = replacement;
+        });
+        self.log_display_mutation(&request.kind, &previous, &self.settings.display);
+        let warnings = self.runtime_shortcut_warnings();
+        if let Some(window) = self.settings_window.as_mut() {
+            window.accept_display_change(&self.settings, &warnings);
+        }
+    }
+
+    fn log_display_mutation(
+        &self,
+        kind: &DisplayMutationKind,
+        previous: &edutools_core::display_preset::DisplaySettings,
+        current: &edutools_core::display_preset::DisplaySettings,
+    ) {
+        let detail = match kind {
+            DisplayMutationKind::AutoSwitch => format!("자동 전환={}", current.auto_switch_enabled),
+            DisplayMutationKind::Rename { preset } => format!(
+                "이름 변경 index={} oldHash={} newHash={}",
+                preset,
+                previous
+                    .presets
+                    .get(*preset)
+                    .map(|value| hash_prefix8(&value.name))
+                    .unwrap_or_else(|| "missing".to_owned()),
+                current
+                    .presets
+                    .get(*preset)
+                    .map(|value| hash_prefix8(&value.name))
+                    .unwrap_or_else(|| "missing".to_owned())
+            ),
+            DisplayMutationKind::Duplicate { source, inserted } => format!(
+                "복제 source={} inserted={} presetHash={}",
+                source,
+                inserted,
+                current
+                    .presets
+                    .get(*inserted)
+                    .map(|value| hash_prefix8(&value.name))
+                    .unwrap_or_else(|| "missing".to_owned())
+            ),
+            DisplayMutationKind::Delete { preset } => format!(
+                "삭제 index={} presetHash={}",
+                preset,
+                previous
+                    .presets
+                    .get(*preset)
+                    .map(|value| hash_prefix8(&value.name))
+                    .unwrap_or_else(|| "missing".to_owned())
+            ),
+            DisplayMutationKind::MovePreset {
+                source,
+                destination,
+            } => format!("순서 이동 source={source} destination={destination}"),
+            DisplayMutationKind::Edit(edit) => display_edit_log(edit),
+            DisplayMutationKind::Capture { preset, warnings } => format!(
+                "캡처 index={} presetHash={} warnings={}",
+                preset,
+                current
+                    .presets
+                    .get(*preset)
+                    .map(|value| hash_prefix8(&value.name))
+                    .unwrap_or_else(|| "missing".to_owned()),
+                warnings.len()
+            ),
+        };
+        self.logger.event(&format!("화면 탭 변경: {detail}"));
+    }
+
+    fn handle_display_command(&mut self, command: DisplayCommand) {
+        match command {
+            DisplayCommand::ShowPlan(index) => {
+                let Some(preset) = self.settings.display.presets.get(index).cloned() else {
+                    let warnings = self.runtime_shortcut_warnings();
+                    if let Some(window) = self.settings_window.as_mut() {
+                        window.reject_display_change(
+                            "선택한 프리셋이 없습니다",
+                            &self.settings,
+                            &warnings,
+                        );
+                    }
+                    return;
+                };
+                match current_display_configuration() {
+                    Ok(configuration) => {
+                        let plan = DisplayPlanner::plan(&preset, &configuration.online);
+                        let applicable = plan.is_applicable();
+                        let summary = plan.summary();
+                        self.logger.event(&format!(
+                            "화면 탭 계획 보기: presetHash={} applicable={} summary={}",
+                            hash_prefix8(&preset.name),
+                            applicable,
+                            summary.replace('\n', " | ")
+                        ));
+                        if let Some(window) = self.settings_window.as_ref() {
+                            window.show_display_message(
+                                if applicable {
+                                    "화면 구성 계획"
+                                } else {
+                                    "화면 구성 계획 · 적용 불가"
+                                },
+                                &summary,
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        let reason = format!("계획을 계산할 수 없습니다: {error}");
+                        self.logger.event(&reason);
+                        let warnings = self.runtime_shortcut_warnings();
+                        if let Some(window) = self.settings_window.as_mut() {
+                            window.reject_display_change(&reason, &self.settings, &warnings);
+                        }
+                    }
+                }
+            }
+            DisplayCommand::Capture => self.capture_display_preset(),
+            DisplayCommand::Apply(index) => {
+                self.apply_display_preset(index, DisplayApplySource::Manual);
+                let availability = self.display_apply_availability();
+                if let Some(window) = self.settings_window.as_mut() {
+                    window.set_display_apply_availability(availability);
+                }
+            }
+        }
+    }
+
+    fn capture_display_preset(&mut self) {
+        if self.settings.display.presets.len() >= DisplayPresetDefaults::MAXIMUM_PRESET_COUNT {
+            let warnings = self.runtime_shortcut_warnings();
+            if let Some(window) = self.settings_window.as_mut() {
+                window.reject_display_change(
+                    "프리셋 최대 개수에 도달했습니다",
+                    &self.settings,
+                    &warnings,
+                );
+            }
+            return;
+        }
+        let configuration = match current_display_configuration() {
+            Ok(configuration) => configuration,
+            Err(error) => {
+                let reason = format!("현재 구성을 캡처할 수 없습니다: {error}");
+                self.logger.event(&reason);
+                let warnings = self.runtime_shortcut_warnings();
+                if let Some(window) = self.settings_window.as_mut() {
+                    window.reject_display_change(&reason, &self.settings, &warnings);
+                }
+                return;
+            }
+        };
+        let name = unique_name(
+            "현재 구성",
+            self.settings
+                .display
+                .presets
+                .iter()
+                .map(|preset| preset.name.as_str()),
+        );
+        let capture =
+            match DisplayPresetCapture::current(&configuration.online, &name, new_preset_id()) {
+                Ok(capture) => capture,
+                Err(error) => {
+                    let reason = error.to_string();
+                    self.logger.event(&format!("화면 탭 캡처 실패: {reason}"));
+                    let warnings = self.runtime_shortcut_warnings();
+                    if let Some(window) = self.settings_window.as_mut() {
+                        window.reject_display_change(&reason, &self.settings, &warnings);
+                    }
+                    return;
+                }
+            };
+        let warnings = capture.warnings.clone();
+        let mut display = self.settings.display.clone();
+        let index = display.presets.len();
+        display.presets.push(capture.preset);
+        self.handle_display_mutation(DisplayMutationRequest {
+            display,
+            kind: DisplayMutationKind::Capture {
+                preset: index,
+                warnings: warnings.clone(),
+            },
+        });
+        if let Some(window) = self.settings_window.as_mut() {
+            window.select_display_preset(index);
+        }
+        if !warnings.is_empty() {
+            if let Some(window) = self.settings_window.as_ref() {
+                window.show_display_message("현재 구성 캡처", &warnings.join("\n"));
             }
         }
     }
@@ -2479,7 +2719,7 @@ impl App {
             overlays.set_display_preset_restoration_deferred(true, true);
         }
 
-        match self.display_applier.apply_preset(&preset, index, source) {
+        let result = match self.display_applier.apply_preset(&preset, index, source) {
             Ok(completion) => {
                 let active_uuids = completion.expected.active_uuids();
                 self.expected_after_apply = Some(completion.expected);
@@ -2512,7 +2752,12 @@ impl App {
                 }
                 None
             }
+        };
+        let availability = self.display_apply_availability();
+        if let Some(window) = self.settings_window.as_mut() {
+            window.set_display_apply_availability(availability);
         }
+        result
     }
 
     fn handle_display_confirmation(&mut self, decision: ConfirmationDecision) {
@@ -2569,6 +2814,10 @@ impl App {
             } else {
                 self.show_display_apply_warning("화면 구성 확인을 완료하지 못했습니다", message);
             }
+        }
+        let availability = self.display_apply_availability();
+        if let Some(window) = self.settings_window.as_mut() {
+            window.set_display_apply_availability(availability);
         }
     }
 
@@ -2663,6 +2912,9 @@ impl App {
             tray.refresh_display("디스플레이 동기화 타이머");
         }
         self.synchronize_overlays("0.3초 디스플레이 동기화 타이머");
+        if let Some(window) = self.settings_window.as_mut() {
+            window.refresh_display_configuration("모니터 구성 변경 알림");
+        }
     }
 
     fn handle_display_stability_timer(&mut self) {
@@ -3650,6 +3902,10 @@ impl App {
                 self.logger.event("트레이 메뉴 선택: 설정");
                 self.show_settings(SettingsTab::General, "트레이 메뉴");
             }
+            Some(MENU_DISPLAY_SETTINGS) => {
+                self.logger.event("트레이 메뉴 선택: 프리셋 편집…");
+                self.show_display_settings("트레이 화면 구성 하위 메뉴");
+            }
             Some(MENU_EXIT) => {
                 self.logger.event("트레이 메뉴 선택: EduTools 종료");
                 // SAFETY: hwnd is this app's hidden top-level window.
@@ -4433,6 +4689,87 @@ fn run_selftest(logger: &Logger) -> bool {
         logger.event(&format!("--selftest 실패: {failure}"));
     }
     failures.is_empty()
+}
+
+fn display_mutation_name(kind: &DisplayMutationKind) -> &'static str {
+    match kind {
+        DisplayMutationKind::AutoSwitch => "auto-switch",
+        DisplayMutationKind::Rename { .. } => "rename",
+        DisplayMutationKind::Duplicate { .. } => "duplicate",
+        DisplayMutationKind::Delete { .. } => "delete",
+        DisplayMutationKind::MovePreset { .. } => "move-preset",
+        DisplayMutationKind::Edit(_) => "edit",
+        DisplayMutationKind::Capture { .. } => "capture",
+    }
+}
+
+fn display_edit_log(edit: &DisplayEdit) -> String {
+    match edit {
+        DisplayEdit::SetGridCell { preset, slot, cell } => format!(
+            "격자 변경 preset={preset} slot={} cell={},{}",
+            slot.display_name(),
+            cell.x,
+            cell.y
+        ),
+        DisplayEdit::AddScreen { preset, slot } => {
+            format!(
+                "화면 슬롯 추가 preset={preset} slot={}",
+                slot.display_name()
+            )
+        }
+        DisplayEdit::RemoveScreen { preset, slot } => format!(
+            "화면 슬롯 제거 preset={preset} slot={}",
+            slot.display_name()
+        ),
+        DisplayEdit::AddMonitor { preset, slot, .. } => {
+            format!("모니터 추가 preset={preset} slot={}", slot.display_name())
+        }
+        DisplayEdit::ReplaceMonitor {
+            preset,
+            slot,
+            monitor,
+            ..
+        } => format!(
+            "모니터 교체 preset={preset} slot={} row={monitor}",
+            slot.display_name()
+        ),
+        DisplayEdit::SetAutoMatch {
+            preset,
+            slot,
+            monitor,
+            enabled,
+        } => format!(
+            "모니터 자동 체크 preset={preset} slot={} row={monitor} enabled={enabled}",
+            slot.display_name()
+        ),
+        DisplayEdit::RemoveMonitor {
+            preset,
+            slot,
+            monitor,
+        } => format!(
+            "모니터 제거 preset={preset} slot={} row={monitor}",
+            slot.display_name()
+        ),
+        DisplayEdit::MoveMonitorWithin {
+            preset,
+            slot,
+            monitor,
+            offset,
+        } => format!(
+            "모니터 순서 preset={preset} slot={} row={monitor} offset={offset}",
+            slot.display_name()
+        ),
+        DisplayEdit::MoveMonitorBetween {
+            preset,
+            source,
+            monitor,
+            destination,
+        } => format!(
+            "모니터 슬롯 이동 preset={preset} source={} row={monitor} destination={}",
+            source.display_name(),
+            destination.display_name()
+        ),
+    }
 }
 
 const _: () = {

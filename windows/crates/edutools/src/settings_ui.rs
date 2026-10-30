@@ -1,4 +1,15 @@
-//! Win32 설정 창. Swift `SettingsController`의 설정 탭과 전송 흐름을 옮긴다.
+//! Win32 설정 창. 선언형 설정 표와 화면 프리셋 커스텀 탭을 함께 관리한다.
+
+#[path = "display_settings_ui.rs"]
+mod display_settings_ui;
+
+use display_settings_ui::synthetic_edit_round_trip_failure;
+#[cfg(windows)]
+pub use display_settings_ui::{
+    new_preset_id, DisplayCommand, DisplayEdit, DisplayMutationKind, DisplayMutationRequest,
+};
+#[cfg(windows)]
+use display_settings_ui::{DisplayPage, DisplayPageEvent};
 
 #[cfg(windows)]
 use crate::keymap::{self, RecorderOutcome};
@@ -259,21 +270,21 @@ pub enum SettingsTab {
     Zoom,
     Board,
     Timer,
-    Shortcuts,
-    /// W10 화면 탭이 연결되기 전 호출 호환용. 현재는 일반 탭을 보여 준다.
     Display,
+    Shortcuts,
 }
 
 impl SettingsTab {
     fn index(self) -> usize {
         match self {
-            Self::General | Self::Display => 0,
+            Self::General => 0,
             Self::Tools => 1,
             Self::Eraser => 2,
             Self::Zoom => 3,
             Self::Board => 4,
             Self::Timer => 5,
-            Self::Shortcuts => 6,
+            Self::Display => 6,
+            Self::Shortcuts => 7,
         }
     }
 }
@@ -370,7 +381,7 @@ pub const EXCLUDED_FIELDS: &[ExcludedField] = &[
     },
     ExcludedField {
         id: "display",
-        reason: "화면 프리셋 탭은 W10/121c 범위",
+        reason: "화면 프리셋은 선언형 필드 표가 아닌 W10 커스텀 탭으로 제공",
     },
 ];
 
@@ -1423,6 +1434,10 @@ const TABS: &[TabDefinition] = &[
         fields: TIMER_FIELDS,
     },
     TabDefinition {
+        title: "화면",
+        fields: &[],
+    },
+    TabDefinition {
         title: "단축키",
         fields: &[],
     },
@@ -1624,6 +1639,32 @@ pub enum SettingsAction {
     },
     ResetAll,
     RestoreBackup,
+    DisplayMutation(DisplayMutationRequest),
+    DisplayCommand(DisplayCommand),
+}
+
+#[cfg(windows)]
+#[derive(Clone, Debug)]
+pub struct DisplayApplyAvailability {
+    pub enabled: bool,
+    pub reason: Option<String>,
+}
+
+#[cfg(windows)]
+impl DisplayApplyAvailability {
+    pub fn available() -> Self {
+        Self {
+            enabled: true,
+            reason: None,
+        }
+    }
+
+    pub fn unavailable(reason: impl Into<String>) -> Self {
+        Self {
+            enabled: false,
+            reason: Some(reason.into()),
+        }
+    }
 }
 
 pub fn apply_change(
@@ -1707,6 +1748,8 @@ struct WindowState {
     error: HWND,
     action_buttons: [HWND; 4],
     pages: Vec<PageState>,
+    display_page: Option<DisplayPage>,
+    display_apply_availability: DisplayApplyAvailability,
     settings: AppSettings,
     runtime_shortcut_warnings: BTreeMap<String, String>,
     recording_shortcut: Option<usize>,
@@ -1849,6 +1892,8 @@ impl SettingsWindow {
             error: HWND::default(),
             action_buttons: [HWND::default(); 4],
             pages: Vec::new(),
+            display_page: None,
+            display_apply_availability: DisplayApplyAvailability::available(),
             settings: settings.clone(),
             runtime_shortcut_warnings: runtime_shortcut_warnings.clone(),
             recording_shortcut: None,
@@ -1895,9 +1940,11 @@ impl SettingsWindow {
         tab: SettingsTab,
         settings: &AppSettings,
         runtime_shortcut_warnings: &BTreeMap<String, String>,
+        availability: DisplayApplyAvailability,
     ) {
         self.state.settings = settings.clone();
         self.state.runtime_shortcut_warnings = runtime_shortcut_warnings.clone();
+        self.state.display_apply_availability = availability;
         self.state.select_tab(tab.index());
         self.state.refresh_controls(true);
         self.state.clear_error();
@@ -1905,11 +1952,6 @@ impl SettingsWindow {
         let _ = unsafe { ShowWindow(self.state.hwnd, SW_SHOW) };
         let _ = unsafe { SetForegroundWindow(self.state.hwnd) };
         let _ = unsafe { SetFocus(Some(self.state.tab)) };
-        if tab == SettingsTab::Display {
-            self.state
-                .logger
-                .event("설정 창 탭 이동 요청: 화면 탭은 W10 범위이므로 일반 탭 표시");
-        }
         self.state
             .logger
             .event(&format!("설정 창 열림: tab={}", TABS[tab.index()].title));
@@ -1932,6 +1974,33 @@ impl SettingsWindow {
         self.state
             .logger
             .event(&format!("설정 창 외부 변경 반영: source={source}"));
+    }
+
+    pub fn refresh_display_configuration(&mut self, source: &str) {
+        let error = self
+            .state
+            .display_page
+            .as_mut()
+            .and_then(|page| page.refresh_online(false));
+        self.state.refresh_controls(false);
+        if let Some(error) = error {
+            self.state.show_error(&error);
+        }
+        self.state
+            .logger
+            .event(&format!("화면 탭 연결 상태 갱신: source={source}"));
+    }
+
+    pub fn set_display_apply_availability(&mut self, availability: DisplayApplyAvailability) {
+        self.state.display_apply_availability = availability;
+        self.state.refresh_controls(false);
+    }
+
+    pub fn select_display_preset(&mut self, index: usize) {
+        if let Some(page) = self.state.display_page.as_mut() {
+            page.select_preset(index);
+        }
+        self.state.refresh_controls(true);
     }
 
     pub fn accept_change(
@@ -1975,6 +2044,51 @@ impl SettingsWindow {
         };
     }
 
+    pub fn accept_display_change(
+        &mut self,
+        settings: &AppSettings,
+        runtime_shortcut_warnings: &BTreeMap<String, String>,
+    ) {
+        self.state.settings = settings.clone();
+        self.state.runtime_shortcut_warnings = runtime_shortcut_warnings.clone();
+        self.state.refresh_controls(true);
+        self.state.clear_error();
+    }
+
+    pub fn reject_display_change(
+        &mut self,
+        reason: &str,
+        settings: &AppSettings,
+        runtime_shortcut_warnings: &BTreeMap<String, String>,
+    ) {
+        self.state.settings = settings.clone();
+        self.state.runtime_shortcut_warnings = runtime_shortcut_warnings.clone();
+        self.state.refresh_controls(true);
+        self.state.show_error(reason);
+        let detail = wide(reason);
+        unsafe {
+            MessageBoxW(
+                Some(self.state.hwnd),
+                PCWSTR(detail.as_ptr()),
+                w!("화면 프리셋을 변경할 수 없습니다"),
+                MB_OK | MB_ICONERROR,
+            )
+        };
+    }
+
+    pub fn show_display_message(&self, title: &str, detail: &str) {
+        let title = wide(title);
+        let detail = wide(detail);
+        unsafe {
+            MessageBoxW(
+                Some(self.state.hwnd),
+                PCWSTR(detail.as_ptr()),
+                PCWSTR(title.as_ptr()),
+                MB_OK,
+            )
+        };
+    }
+
     pub fn hwnd(&self) -> HWND {
         self.state.hwnd
     }
@@ -2012,6 +2126,14 @@ impl SettingsWindow {
             .flat_map(|page| page.rows.iter())
             .filter(|row| unsafe { IsWindow(Some(row.control)) }.as_bool())
             .count()
+    }
+
+    pub fn display_control_count(&self) -> usize {
+        self.state
+            .display_page
+            .as_ref()
+            .map(DisplayPage::control_count)
+            .unwrap_or(0)
     }
 }
 
@@ -2118,6 +2240,11 @@ impl WindowState {
                 content_height: 0,
                 wheel_remainder: 0,
             });
+            if index == SettingsTab::Display.index() {
+                let mut display_page = DisplayPage::new(page_hwnd, self.hinstance)?;
+                let _ = display_page.refresh_online(false);
+                self.display_page = Some(display_page);
+            }
         }
         self.update_font()?;
         self.select_tab(0);
@@ -2419,6 +2546,9 @@ impl WindowState {
                 )
             };
         });
+        if let Some(page) = self.display_page.as_mut() {
+            page.set_font(new_font);
+        }
         self.label_width = self.measure_label_width();
         if !old_font.is_invalid() {
             let _ = unsafe { DeleteObject(old_font.into()) };
@@ -2491,6 +2621,9 @@ impl WindowState {
                 }
             }
         }
+        if let Some(page) = self.display_page.as_ref() {
+            page.for_each_control(&mut body);
+        }
     }
 
     fn select_tab(&mut self, index: usize) {
@@ -2561,7 +2694,7 @@ impl WindowState {
         let page_y = margin + page_rect.top;
         let page_width = (page_rect.right - page_rect.left).max(1);
         let page_height = (page_rect.bottom - page_rect.top).max(1);
-        for page in &mut self.pages {
+        for (index, page) in self.pages.iter_mut().enumerate() {
             let _ = unsafe {
                 SetWindowPos(
                     page.hwnd,
@@ -2573,7 +2706,15 @@ impl WindowState {
                     SWP_NOZORDER | SWP_NOACTIVATE,
                 )
             };
-            layout_page(page, page_width, page_height, self.dpi, self.label_width);
+            if index == SettingsTab::Display.index() {
+                if let Some(display) = self.display_page.as_mut() {
+                    page.content_height =
+                        display.layout(page_width, self.dpi, page.scroll_position);
+                    update_page_scrollbar(page, page_height);
+                }
+            } else {
+                layout_page(page, page_width, page_height, self.dpi, self.label_width);
+            }
         }
         let button_gap = dip(8, self.dpi);
         let button_width = (width - button_gap * 3) / 4;
@@ -2623,6 +2764,15 @@ impl WindowState {
             let _ = unsafe { EnableWindow(row.control, radial) };
         }
         self.refresh_shortcut_controls();
+        if let Some(page) = self.display_page.as_mut() {
+            if let Err(error) = page.refresh(
+                &self.settings.display,
+                self.display_apply_availability.clone(),
+            ) {
+                self.show_error(&format!("화면 탭 갱신 실패: {error}"));
+            }
+        }
+        self.layout();
     }
 
     fn refresh_shortcut_controls(&mut self) {
@@ -2692,6 +2842,19 @@ impl WindowState {
     }
 
     fn handle_command(&mut self, wparam: WPARAM, lparam: LPARAM) {
+        if let Some(page) = self.display_page.as_mut() {
+            match page.handle_command(wparam, lparam, &self.settings.display) {
+                Ok(event) if display_event_handled(&event) => {
+                    self.handle_display_page_event(event);
+                    return;
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    self.show_error(&format!("화면 탭 명령 처리 실패: {error}"));
+                    return;
+                }
+            }
+        }
         let hwnd = HWND(lparam.0 as *mut c_void);
         let notification = ((wparam.0 >> 16) & 0xffff) as u16;
         if notification == 0 {
@@ -2794,6 +2957,19 @@ impl WindowState {
             return;
         }
         let header = unsafe { &*header };
+        if let Some(page) = self.display_page.as_mut() {
+            match page.handle_notify(lparam, &self.settings.display) {
+                Ok(event) if display_event_handled(&event) => {
+                    self.handle_display_page_event(event);
+                    return;
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    self.show_error(&format!("화면 탭 선택 처리 실패: {error}"));
+                    return;
+                }
+            }
+        }
         if header.hwndFrom == self.tab && header.code == TCN_SELCHANGE {
             let index = self.selected_tab();
             self.select_tab(index);
@@ -3032,10 +3208,28 @@ impl WindowState {
         }
     }
 
+    fn handle_display_page_event(&mut self, event: DisplayPageEvent) {
+        if let Some(error) = event.error {
+            self.show_error(&error);
+            self.logger
+                .event(&format!("화면 탭 편집 거부: reason={error}"));
+        }
+        if event.changed_selection {
+            self.layout();
+        }
+        if let Some(mutation) = event.mutation {
+            self.post_action(SettingsAction::DisplayMutation(mutation));
+        }
+        if let Some(command) = event.command {
+            self.post_action(SettingsAction::DisplayCommand(command));
+        }
+    }
+
     fn handle_page_scroll(&mut self, page_hwnd: HWND, wparam: WPARAM) {
-        let Some(page) = self.pages.iter_mut().find(|page| page.hwnd == page_hwnd) else {
+        let Some(page_index) = self.pages.iter().position(|page| page.hwnd == page_hwnd) else {
             return;
         };
+        let page = &mut self.pages[page_index];
         let mut client = RECT::default();
         if unsafe { GetClientRect(page.hwnd, &mut client) }.is_err() {
             return;
@@ -3074,19 +3268,14 @@ impl WindowState {
             _ => {}
         }
         page.scroll_position = next.clamp(0, maximum);
-        layout_page(
-            page,
-            client.right - client.left,
-            page_height,
-            self.dpi,
-            self.label_width,
-        );
+        self.layout_page_index(page_index, client.right - client.left, page_height);
     }
 
     fn handle_page_wheel(&mut self, page_hwnd: HWND, wparam: WPARAM) {
-        let Some(page) = self.pages.iter_mut().find(|page| page.hwnd == page_hwnd) else {
+        let Some(page_index) = self.pages.iter().position(|page| page.hwnd == page_hwnd) else {
             return;
         };
+        let page = &mut self.pages[page_index];
         let delta = ((wparam.0 >> 16) as u16 as i16) as i32;
         if delta == 0 {
             return;
@@ -3106,10 +3295,17 @@ impl WindowState {
         let maximum = (page.content_height - height).max(0);
         let distance = layout_metrics(self.dpi).scroll_line * 3;
         page.scroll_position = (page.scroll_position - steps * distance).clamp(0, maximum);
-        layout_page(page, width, height, self.dpi, self.label_width);
+        self.layout_page_index(page_index, width, height);
     }
 
     fn draw_color_button(&self, lparam: LPARAM) -> bool {
+        if self
+            .display_page
+            .as_ref()
+            .is_some_and(|page| page.draw_item(lparam))
+        {
+            return true;
+        }
         let item = lparam.0 as *const DRAWITEMSTRUCT;
         if item.is_null() {
             return false;
@@ -3132,6 +3328,28 @@ impl WindowState {
         }
         true
     }
+
+    fn layout_page_index(&mut self, index: usize, width: i32, height: i32) {
+        let Some(page) = self.pages.get_mut(index) else {
+            return;
+        };
+        if index == SettingsTab::Display.index() {
+            if let Some(display) = self.display_page.as_mut() {
+                page.content_height = display.layout(width, self.dpi, page.scroll_position);
+                update_page_scrollbar(page, height);
+            }
+        } else {
+            layout_page(page, width, height, self.dpi, self.label_width);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn display_event_handled(event: &DisplayPageEvent) -> bool {
+    event.mutation.is_some()
+        || event.command.is_some()
+        || event.error.is_some()
+        || event.changed_selection
 }
 
 #[cfg(windows)]
@@ -3269,6 +3487,11 @@ fn layout_page(page: &mut PageState, width: i32, height: i32, dpi: u32, label_wi
         }
         y += base_height + help_height + gap;
     }
+    update_page_scrollbar(page, height);
+}
+
+#[cfg(windows)]
+fn update_page_scrollbar(page: &PageState, height: i32) {
     let info = SCROLLINFO {
         cbSize: size_of::<SCROLLINFO>() as u32,
         fMask: SIF_RANGE | SIF_PAGE | SIF_POS,
@@ -4666,10 +4889,17 @@ pub fn selftest_failures(hinstance: HINSTANCE, logger: Logger) -> Vec<String> {
                 ));
             }
             window.show(
-                SettingsTab::General,
+                SettingsTab::Display,
                 &AppSettings::default(),
                 &BTreeMap::new(),
+                DisplayApplyAvailability::available(),
             );
+            if window.display_control_count() < 16 {
+                failures.push(format!(
+                    "settings window: 화면 탭 컨트롤 수 {} < 고정 컨트롤 16",
+                    window.display_control_count()
+                ));
+            }
             let hwnd = window.hwnd();
             drop(window);
             if unsafe { IsWindow(Some(hwnd)) }.as_bool() {
@@ -4683,6 +4913,9 @@ pub fn selftest_failures(hinstance: HINSTANCE, logger: Logger) -> Vec<String> {
 
 fn pure_selftest_failures() -> Vec<String> {
     let mut failures = Vec::new();
+    if let Some(failure) = synthetic_edit_round_trip_failure() {
+        failures.push(failure);
+    }
     for (expected, tab) in [
         SettingsTab::General,
         SettingsTab::Tools,
@@ -4690,6 +4923,7 @@ fn pure_selftest_failures() -> Vec<String> {
         SettingsTab::Zoom,
         SettingsTab::Board,
         SettingsTab::Timer,
+        SettingsTab::Display,
         SettingsTab::Shortcuts,
     ]
     .into_iter()
@@ -4701,10 +4935,6 @@ fn pure_selftest_failures() -> Vec<String> {
                 tab.index()
             ));
         }
-    }
-    if SettingsTab::Display.index() != 0 {
-        failures
-            .push("settings tabs: W10 화면 이동 호환 API가 일반 탭으로 폴백하지 않음".to_owned());
     }
     let counted = tab_field_counts()
         .into_iter()
