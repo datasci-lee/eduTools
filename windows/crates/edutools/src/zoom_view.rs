@@ -36,18 +36,17 @@ use windows::Win32::Graphics::DirectWrite::{
 };
 use windows::Win32::Graphics::Dxgi::{IDXGISurface, IDXGISwapChain1};
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetObjectW, SelectObject, BITMAP,
-    BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HGDIOBJ,
+    CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, GetObjectW, BITMAP, BITMAPINFO,
+    BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HGDIOBJ, RGBQUAD,
 };
-use windows::Win32::UI::HiDpi::GetSystemMetricsForDpi;
 use windows::Win32::UI::WindowsAndMessaging::{
     CopyIcon, CreateCursor, CreateWindowExW, DefWindowProcW, DestroyCursor, DestroyIcon,
-    DestroyWindow, DrawIconEx, GetCursorInfo, GetCursorPos, GetForegroundWindow, GetIconInfo,
+    DestroyWindow, GetCursorInfo, GetCursorPos, GetForegroundWindow, GetIconInfo,
     GetWindowLongPtrW, KillTimer, LoadCursorW, PostMessageW, RegisterClassW, SendMessageW,
     SetCursor, SetForegroundWindow, SetTimer, SetWindowDisplayAffinity, SetWindowLongPtrW,
-    SetWindowPos, ShowWindow, CREATESTRUCTW, CURSORINFO, CURSOR_SHOWING, DI_NORMAL, GWLP_USERDATA,
-    HCURSOR, HICON, ICONINFO, IDC_ARROW, IDC_IBEAM, SM_CXCURSOR, SM_CYCURSOR, SWP_SHOWWINDOW,
-    SW_SHOW, WDA_EXCLUDEFROMCAPTURE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY,
+    SetWindowPos, ShowWindow, CREATESTRUCTW, CURSORINFO, CURSOR_SHOWING, GWLP_USERDATA, HCURSOR,
+    HICON, ICONINFO, IDC_ARROW, IDC_IBEAM, IDC_WAIT, SWP_SHOWWINDOW, SW_SHOW,
+    WDA_EXCLUDEFROMCAPTURE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY,
     WM_POINTERCAPTURECHANGED, WM_POINTERDOWN, WM_POINTERLEAVE, WM_POINTERUP, WM_POINTERUPDATE,
     WM_SETCURSOR, WM_TIMER, WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
     WS_POPUP,
@@ -774,7 +773,25 @@ impl ZoomRenderer {
             }
         }
 
-        for (name, resource) in [("arrow", IDC_ARROW), ("I-beam", IDC_IBEAM)] {
+        let synthetic_mask = [
+            0x30, 0, 0, 0, // AND: 0, 0, 1, 1
+            0x50, 0, 0, 0, // XOR: 0, 1, 0, 1
+        ];
+        let synthetic_rgba = compose_cursor_mask(None, &synthetic_mask, 4, 4, 1);
+        let expected_rgba = vec![
+            0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0, 0, 255, 255, 255, 255,
+        ];
+        if synthetic_rgba.as_deref() != Some(expected_rgba.as_slice()) {
+            failures.push(format!(
+                "zoom cursor mask composition: BGRA={synthetic_rgba:?}, expected={expected_rgba:?}"
+            ));
+        }
+
+        for (name, resource) in [
+            ("arrow", IDC_ARROW),
+            ("I-beam", IDC_IBEAM),
+            ("wait", IDC_WAIT),
+        ] {
             let handle = unsafe { LoadCursorW(None, resource) }?;
             let cursor = acquire_cursor_bitmap(&self.context, handle, self.dpi)?;
             if cursor.hotspot.x < 0.0
@@ -904,80 +921,135 @@ fn acquire_cursor_bitmap(
     source_cursor: HCURSOR,
     dpi: u32,
 ) -> Result<CursorBitmap> {
-    let copied = unsafe { CopyIcon(HICON(source_cursor.0)) }?;
     let mut icon_info = ICONINFO::default();
+    let copied = unsafe { CopyIcon(HICON(source_cursor.0)) }.map_err(|error| {
+        cursor_bitmap_error(
+            &format!("CopyIcon ({error})"),
+            &icon_info,
+            &BITMAP::default(),
+        )
+    })?;
+    let mut diagnostic = BITMAP::default();
     let result = (|| -> Result<CursorBitmap> {
-        unsafe { GetIconInfo(copied, &mut icon_info) }?;
-        let bitmap_handle = if !icon_info.hbmColor.is_invalid() {
-            icon_info.hbmColor
-        } else {
-            icon_info.hbmMask
-        };
-        if bitmap_handle.is_invalid() {
-            return Err(Error::new(E_FAIL, "cursor icon has no bitmap"));
-        }
-        let mut bitmap_info = BITMAP::default();
-        let copied_bytes = unsafe {
-            GetObjectW(
-                HGDIOBJ(bitmap_handle.0),
-                size_of::<BITMAP>() as i32,
-                Some((&mut bitmap_info as *mut BITMAP).cast()),
-            )
-        };
-        if copied_bytes != size_of::<BITMAP>() as i32 {
-            return Err(Error::new(E_FAIL, "GetObjectW(cursor bitmap) failed"));
-        }
-        let native_width = bitmap_info.bmWidth.unsigned_abs().max(1);
-        let native_height = if icon_info.hbmColor.is_invalid() {
-            (bitmap_info.bmHeight.unsigned_abs() / 2).max(1)
-        } else {
-            bitmap_info.bmHeight.unsigned_abs().max(1)
-        };
-        let width = u32::try_from(unsafe { GetSystemMetricsForDpi(SM_CXCURSOR, dpi) })
-            .ok()
-            .filter(|value| *value > 0)
-            .unwrap_or(native_width);
-        let height = u32::try_from(unsafe { GetSystemMetricsForDpi(SM_CYCURSOR, dpi) })
-            .ok()
-            .filter(|value| *value > 0)
-            .unwrap_or(native_height);
-        let black = draw_icon_surface(copied, width, height, 0)?;
-        let pixels = if black.chunks_exact(4).any(|pixel| pixel[3] != 0) {
-            black
-        } else {
-            let white = draw_icon_surface(copied, width, height, 255)?;
-            let mut recovered = vec![0_u8; black.len()];
-            for ((output, black), white) in recovered
-                .chunks_exact_mut(4)
-                .zip(black.chunks_exact(4))
-                .zip(white.chunks_exact(4))
-            {
-                if (0..3).any(|channel| white[channel] < black[channel]) {
-                    // XOR 반전 픽셀은 배경 색을 알 수 없으므로 불투명 흰색 윤곽으로 근사한다.
-                    output.copy_from_slice(&[255, 255, 255, 255]);
-                    continue;
-                }
-                let background = (0..3)
-                    .map(|channel| white[channel] - black[channel])
-                    .max()
-                    .unwrap_or(255);
-                let alpha = 255_u8.saturating_sub(background);
-                for channel in 0..3 {
-                    let straight = if alpha == 0 {
-                        0
-                    } else {
-                        ((u16::from(black[channel]) * 255 + u16::from(alpha) / 2)
-                            / u16::from(alpha))
-                        .min(255)
-                    };
-                    output[channel] = ((straight * u16::from(alpha) + 127) / 255).min(255) as u8;
-                }
-                output[3] = alpha;
+        unsafe { GetIconInfo(copied, &mut icon_info) }.map_err(|error| {
+            cursor_bitmap_error(&format!("GetIconInfo ({error})"), &icon_info, &diagnostic)
+        })?;
+        let (width, height, pixels) = if !icon_info.hbmColor.is_invalid() {
+            let color_info =
+                cursor_bitmap_info(icon_info.hbmColor, "hbmColor", &icon_info, &diagnostic)?;
+            diagnostic = color_info;
+            let width = diagnostic.bmWidth.unsigned_abs();
+            let height = diagnostic.bmHeight.unsigned_abs();
+            if width == 0 || height == 0 || width > i32::MAX as u32 || height > i32::MAX as u32 {
+                return Err(cursor_bitmap_error(
+                    "GetObjectW(hbmColor) dimensions",
+                    &icon_info,
+                    &diagnostic,
+                ));
             }
-            recovered
+            let mut pixels = read_cursor_color_bitmap(
+                icon_info.hbmColor,
+                width,
+                height,
+                &icon_info,
+                &diagnostic,
+            )?;
+            if pixels.chunks_exact(4).all(|pixel| pixel[3] == 0) {
+                if icon_info.hbmMask.is_invalid() {
+                    return Err(cursor_bitmap_error(
+                        "GetDIBits(hbmMask): missing AND mask",
+                        &icon_info,
+                        &diagnostic,
+                    ));
+                }
+                let mask_info =
+                    cursor_bitmap_info(icon_info.hbmMask, "hbmMask", &icon_info, &diagnostic)?;
+                if mask_info.bmWidth.unsigned_abs() != width
+                    || mask_info.bmHeight.unsigned_abs() != height
+                {
+                    return Err(cursor_bitmap_error(
+                        "GetObjectW(hbmMask) dimensions",
+                        &icon_info,
+                        &mask_info,
+                    ));
+                }
+                let (mask, mask_stride) = read_cursor_mask_bitmap(
+                    icon_info.hbmMask,
+                    width,
+                    height,
+                    &icon_info,
+                    &mask_info,
+                )?;
+                pixels =
+                    compose_cursor_mask(Some(pixels.as_slice()), &mask, mask_stride, width, height)
+                        .ok_or_else(|| {
+                            cursor_bitmap_error(
+                                "GetDIBits(hbmMask) composition",
+                                &icon_info,
+                                &mask_info,
+                            )
+                        })?;
+            } else if pixels
+                .chunks_exact(4)
+                .any(|pixel| pixel[..3].iter().any(|channel| *channel > pixel[3]))
+            {
+                for pixel in pixels.chunks_exact_mut(4) {
+                    let alpha = u16::from(pixel[3]);
+                    for channel in &mut pixel[..3] {
+                        *channel = ((u16::from(*channel) * alpha + 127) / 255) as u8;
+                    }
+                }
+            }
+            (width, height, pixels)
+        } else {
+            if icon_info.hbmMask.is_invalid() {
+                return Err(cursor_bitmap_error(
+                    "GetIconInfo: cursor has no bitmap",
+                    &icon_info,
+                    &diagnostic,
+                ));
+            }
+            let mask_info =
+                cursor_bitmap_info(icon_info.hbmMask, "hbmMask", &icon_info, &diagnostic)?;
+            diagnostic = mask_info;
+            let width = diagnostic.bmWidth.unsigned_abs();
+            let total_height = diagnostic.bmHeight.unsigned_abs();
+            if width == 0
+                || total_height == 0
+                || total_height % 2 != 0
+                || width > i32::MAX as u32
+                || total_height > i32::MAX as u32
+            {
+                return Err(cursor_bitmap_error(
+                    "GetObjectW(hbmMask) monochrome dimensions",
+                    &icon_info,
+                    &diagnostic,
+                ));
+            }
+            let height = total_height / 2;
+            let (mask, mask_stride) = read_cursor_mask_bitmap(
+                icon_info.hbmMask,
+                width,
+                total_height,
+                &icon_info,
+                &diagnostic,
+            )?;
+            let pixels =
+                compose_cursor_mask(None, &mask, mask_stride, width, height).ok_or_else(|| {
+                    cursor_bitmap_error(
+                        "GetDIBits(hbmMask) monochrome composition",
+                        &icon_info,
+                        &diagnostic,
+                    )
+                })?;
+            (width, height, pixels)
         };
         if pixels.chunks_exact(4).all(|pixel| pixel[3] == 0) {
-            return Err(Error::new(E_FAIL, "cursor bitmap alpha is empty"));
+            return Err(cursor_bitmap_error(
+                "GetDIBits: cursor bitmap alpha is empty",
+                &icon_info,
+                &diagnostic,
+            ));
         }
         let properties = D2D1_BITMAP_PROPERTIES1 {
             pixelFormat: pixel_format(),
@@ -986,9 +1058,13 @@ fn acquire_cursor_bitmap(
             bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
             ..Default::default()
         };
-        let pitch = width
-            .checked_mul(4)
-            .ok_or_else(|| Error::new(E_FAIL, "cursor bitmap pitch overflow"))?;
+        let pitch = width.checked_mul(4).ok_or_else(|| {
+            cursor_bitmap_error(
+                "GetDIBits: cursor bitmap pitch overflow",
+                &icon_info,
+                &diagnostic,
+            )
+        })?;
         let bitmap = unsafe {
             context.CreateBitmap(
                 D2D_SIZE_U { width, height },
@@ -1003,29 +1079,79 @@ fn acquire_cursor_bitmap(
             bitmap,
             width,
             height,
-            hotspot: Point::new(
-                f64::from(icon_info.xHotspot) * f64::from(width) / f64::from(native_width),
-                f64::from(icon_info.yHotspot) * f64::from(height) / f64::from(native_height),
-            ),
+            hotspot: Point::new(f64::from(icon_info.xHotspot), f64::from(icon_info.yHotspot)),
         })
     })();
+    let mut cleanup_failures = Vec::new();
     if !icon_info.hbmColor.is_invalid() {
-        let _ = unsafe { DeleteObject(HGDIOBJ(icon_info.hbmColor.0)) };
+        if !unsafe { DeleteObject(HGDIOBJ(icon_info.hbmColor.0)) }.as_bool() {
+            cleanup_failures.push("DeleteObject(hbmColor)");
+        }
     }
     if !icon_info.hbmMask.is_invalid() {
-        let _ = unsafe { DeleteObject(HGDIOBJ(icon_info.hbmMask.0)) };
+        if !unsafe { DeleteObject(HGDIOBJ(icon_info.hbmMask.0)) }.as_bool() {
+            cleanup_failures.push("DeleteObject(hbmMask)");
+        }
     }
-    let _ = unsafe { DestroyIcon(copied) };
-    result
+    if unsafe { DestroyIcon(copied) }.is_err() {
+        cleanup_failures.push("DestroyIcon");
+    }
+    if cleanup_failures.is_empty() {
+        result
+    } else {
+        let cleanup_error =
+            cursor_bitmap_error(&cleanup_failures.join(" + "), &icon_info, &diagnostic);
+        match result {
+            Ok(_) => Err(cleanup_error),
+            Err(error) => Err(Error::new(E_FAIL, format!("{error}; {cleanup_error}"))),
+        }
+    }
 }
 
-fn draw_icon_surface(icon: HICON, width: u32, height: u32, background: u8) -> Result<Vec<u8>> {
-    let hdc = unsafe { CreateCompatibleDC(None) };
-    if hdc.is_invalid() {
-        return Err(Error::from_thread());
+fn cursor_bitmap_info(
+    bitmap: HBITMAP,
+    label: &str,
+    icon_info: &ICONINFO,
+    diagnostic: &BITMAP,
+) -> Result<BITMAP> {
+    let mut bitmap_info = BITMAP::default();
+    let copied_bytes = unsafe {
+        GetObjectW(
+            HGDIOBJ(bitmap.0),
+            size_of::<BITMAP>() as i32,
+            Some((&mut bitmap_info as *mut BITMAP).cast()),
+        )
+    };
+    if copied_bytes != size_of::<BITMAP>() as i32 {
+        return Err(cursor_bitmap_error(
+            &format!("GetObjectW({label}), returned {copied_bytes}"),
+            icon_info,
+            diagnostic,
+        ));
     }
-    let mut bits = std::ptr::null_mut::<c_void>();
-    let info = BITMAPINFO {
+    Ok(bitmap_info)
+}
+
+fn read_cursor_color_bitmap(
+    bitmap: HBITMAP,
+    width: u32,
+    height: u32,
+    icon_info: &ICONINFO,
+    diagnostic: &BITMAP,
+) -> Result<Vec<u8>> {
+    let byte_count = usize::try_from(width)
+        .ok()
+        .and_then(|width| {
+            usize::try_from(height)
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| {
+            cursor_bitmap_error("GetDIBits(hbmColor) buffer size", icon_info, diagnostic)
+        })?;
+    let mut pixels = vec![0_u8; byte_count];
+    let mut dib_info = BITMAPINFO {
         bmiHeader: BITMAPINFOHEADER {
             biSize: size_of::<BITMAPINFOHEADER>() as u32,
             biWidth: width as i32,
@@ -1033,52 +1159,194 @@ fn draw_icon_surface(icon: HICON, width: u32, height: u32, background: u8) -> Re
             biPlanes: 1,
             biBitCount: 32,
             biCompression: BI_RGB.0,
-            biSizeImage: width.saturating_mul(height).saturating_mul(4),
+            biSizeImage: u32::try_from(byte_count).unwrap_or(0),
             ..Default::default()
         },
         ..Default::default()
     };
-    let dib =
-        match unsafe { CreateDIBSection(Some(hdc), &info, DIB_RGB_COLORS, &mut bits, None, 0) } {
-            Ok(dib) => dib,
-            Err(error) => {
-                let _ = unsafe { DeleteDC(hdc) };
-                return Err(error);
-            }
-        };
-    let old = unsafe { SelectObject(hdc, HGDIOBJ(dib.0)) };
-    if old.is_invalid() {
-        let _ = unsafe { DeleteObject(HGDIOBJ(dib.0)) };
-        let _ = unsafe { DeleteDC(hdc) };
-        return Err(Error::new(E_FAIL, "SelectObject(cursor DIB) failed"));
+    let hdc = unsafe { CreateCompatibleDC(None) };
+    if hdc.is_invalid() {
+        return Err(cursor_bitmap_error(
+            "CreateCompatibleDC(hbmColor)",
+            icon_info,
+            diagnostic,
+        ));
     }
-    let byte_count = width as usize * height as usize * 4;
-    unsafe { std::ptr::write_bytes(bits, background, byte_count) };
-    let draw = unsafe {
-        DrawIconEx(
+    let read_lines = unsafe {
+        GetDIBits(
             hdc,
+            bitmap,
             0,
-            0,
-            icon,
-            width as i32,
-            height as i32,
-            0,
-            None,
-            DI_NORMAL,
+            height,
+            Some(pixels.as_mut_ptr().cast()),
+            &mut dib_info,
+            DIB_RGB_COLORS,
         )
     };
-    let pixels = if draw.is_ok() {
-        Some(unsafe { std::slice::from_raw_parts(bits.cast::<u8>(), byte_count) }.to_vec())
-    } else {
-        None
-    };
-    if !old.is_invalid() {
-        unsafe { SelectObject(hdc, old) };
+    let deleted = unsafe { DeleteDC(hdc) }.as_bool();
+    if read_lines != height as i32 {
+        return Err(cursor_bitmap_error(
+            &format!("GetDIBits(hbmColor), returned {read_lines}/{height} lines"),
+            icon_info,
+            diagnostic,
+        ));
     }
-    let _ = unsafe { DeleteObject(HGDIOBJ(dib.0)) };
-    let _ = unsafe { DeleteDC(hdc) };
-    draw?;
-    pixels.ok_or_else(|| Error::new(E_FAIL, "cursor DIB readback failed"))
+    if !deleted {
+        return Err(cursor_bitmap_error(
+            "DeleteDC(hbmColor)",
+            icon_info,
+            diagnostic,
+        ));
+    }
+    Ok(pixels)
+}
+
+#[repr(C)]
+struct MonochromeBitmapInfo {
+    header: BITMAPINFOHEADER,
+    colors: [RGBQUAD; 2],
+}
+
+fn read_cursor_mask_bitmap(
+    bitmap: HBITMAP,
+    width: u32,
+    height: u32,
+    icon_info: &ICONINFO,
+    diagnostic: &BITMAP,
+) -> Result<(Vec<u8>, usize)> {
+    let stride = width
+        .checked_add(31)
+        .map(|bits| bits / 32)
+        .and_then(|words| words.checked_mul(4))
+        .and_then(|stride| usize::try_from(stride).ok())
+        .ok_or_else(|| cursor_bitmap_error("GetDIBits(hbmMask) stride", icon_info, diagnostic))?;
+    let byte_count = stride
+        .checked_mul(usize::try_from(height).unwrap_or(usize::MAX))
+        .ok_or_else(|| {
+            cursor_bitmap_error("GetDIBits(hbmMask) buffer size", icon_info, diagnostic)
+        })?;
+    let mut mask = vec![0_u8; byte_count];
+    let mut dib_info = MonochromeBitmapInfo {
+        header: BITMAPINFOHEADER {
+            biSize: size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: width as i32,
+            biHeight: -(height as i32),
+            biPlanes: 1,
+            biBitCount: 1,
+            biCompression: BI_RGB.0,
+            biSizeImage: u32::try_from(byte_count).unwrap_or(0),
+            biClrUsed: 2,
+            ..Default::default()
+        },
+        colors: [
+            RGBQUAD::default(),
+            RGBQUAD {
+                rgbBlue: 255,
+                rgbGreen: 255,
+                rgbRed: 255,
+                rgbReserved: 0,
+            },
+        ],
+    };
+    let hdc = unsafe { CreateCompatibleDC(None) };
+    if hdc.is_invalid() {
+        return Err(cursor_bitmap_error(
+            "CreateCompatibleDC(hbmMask)",
+            icon_info,
+            diagnostic,
+        ));
+    }
+    let read_lines = unsafe {
+        GetDIBits(
+            hdc,
+            bitmap,
+            0,
+            height,
+            Some(mask.as_mut_ptr().cast()),
+            (&mut dib_info as *mut MonochromeBitmapInfo).cast::<BITMAPINFO>(),
+            DIB_RGB_COLORS,
+        )
+    };
+    let deleted = unsafe { DeleteDC(hdc) }.as_bool();
+    if read_lines != height as i32 {
+        return Err(cursor_bitmap_error(
+            &format!("GetDIBits(hbmMask), returned {read_lines}/{height} lines"),
+            icon_info,
+            diagnostic,
+        ));
+    }
+    if !deleted {
+        return Err(cursor_bitmap_error(
+            "DeleteDC(hbmMask)",
+            icon_info,
+            diagnostic,
+        ));
+    }
+    Ok((mask, stride))
+}
+
+fn compose_cursor_mask(
+    color: Option<&[u8]>,
+    mask: &[u8],
+    mask_stride: usize,
+    width: u32,
+    height: u32,
+) -> Option<Vec<u8>> {
+    let width = usize::try_from(width).ok()?;
+    let height = usize::try_from(height).ok()?;
+    let mask_rows = if color.is_some() {
+        height
+    } else {
+        height.checked_mul(2)?
+    };
+    if mask.len() < mask_stride.checked_mul(mask_rows)? {
+        return None;
+    }
+    let color_byte_count = width.checked_mul(height)?.checked_mul(4)?;
+    if color.is_some_and(|pixels| pixels.len() < color_byte_count) {
+        return None;
+    }
+    let mut pixels = vec![0_u8; color_byte_count];
+    for y in 0..height {
+        for x in 0..width {
+            let mask_bit = |row: usize| mask[row * mask_stride + x / 8] & (0x80_u8 >> (x % 8)) != 0;
+            let and = mask_bit(y);
+            let offset = (y * width + x) * 4;
+            if let Some(color) = color {
+                let source = &color[offset..offset + 4];
+                if and && source[..3].iter().any(|channel| *channel != 0) {
+                    // XOR 반전 픽셀은 배경을 알 수 없으므로 불투명 흰색 윤곽으로 근사한다.
+                    pixels[offset..offset + 4].copy_from_slice(&[255, 255, 255, 255]);
+                } else if !and {
+                    pixels[offset..offset + 3].copy_from_slice(&source[..3]);
+                    pixels[offset + 3] = 255;
+                }
+            } else {
+                let xor = mask_bit(y + height);
+                pixels[offset..offset + 4].copy_from_slice(match (and, xor) {
+                    (false, false) => &[0, 0, 0, 255],
+                    (false, true) => &[255, 255, 255, 255],
+                    (true, false) => &[0, 0, 0, 0],
+                    (true, true) => &[255, 255, 255, 255],
+                });
+            }
+        }
+    }
+    Some(pixels)
+}
+
+fn cursor_bitmap_error(call: &str, icon_info: &ICONINFO, bitmap_info: &BITMAP) -> Error {
+    Error::new(
+        E_FAIL,
+        format!(
+            "{call} failed (ICONINFO fIcon={} hbmColor_null={} bitmap={}x{} bpp={})",
+            icon_info.fIcon.as_bool(),
+            icon_info.hbmColor.is_invalid(),
+            bitmap_info.bmWidth,
+            bitmap_info.bmHeight,
+            bitmap_info.bmBitsPixel
+        ),
+    )
 }
 
 unsafe extern "system" fn zoom_window_proc(
