@@ -1,0 +1,299 @@
+use edutools_core::{
+    AppSettings, BoardGroupSettings, DisplayPreset, EraserGroupSettings, GeneralSettings,
+    HelpGroupSettings, SettingsValidator, ShortcutGroupSettings, TimerGroupSettings, ToolSettings,
+    ZoomGroupSettings,
+};
+use serde::Deserialize;
+use serde_json::{json, Map, Value};
+use std::fs;
+use std::path::PathBuf;
+
+// Swift: SettingsDocument subset used by SettingsTests.exportIncludesPresetsAndExcludesComputerSpecificValues
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FixtureDocument {
+    included_bundles: Vec<String>,
+    payload: Value,
+}
+
+// Swift: DisplayPresetBundle
+#[derive(Deserialize)]
+struct FixtureDisplayBundle {
+    presets: Vec<DisplayPreset>,
+}
+
+// Swift: Tests fixture lookup through TestSupport.Fixtures
+fn repository_fixture(relative: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../..")
+        .join(relative)
+}
+
+// Swift: JSONEncoder().encode(AppSettings.default)
+fn default_json() -> Value {
+    serde_json::to_value(AppSettings::default()).expect("default settings serialize")
+}
+
+// Swift: DisplayPreset Codable input used by SettingsTests
+fn preset_json() -> Value {
+    json!({
+        "id": "11111111-2222-3333-4444-555555555555",
+        "name": "Classroom",
+        "main": {
+            "monitors": [{
+                "identity": {
+                    "uuid": "display-test-uuid",
+                    "vendor": 1,
+                    "model": 2,
+                    "serial": 3,
+                    "name": "Classroom Display",
+                    "kind": "external"
+                },
+                "autoMatch": true
+            }],
+            "cell": {"x": 0, "y": 0}
+        }
+    })
+}
+
+// Swift: SettingsTests JSON mutation helpers
+fn object_at_mut<'a>(value: &'a mut Value, key: &str) -> &'a mut Map<String, Value> {
+    value
+        .get_mut(key)
+        .and_then(Value::as_object_mut)
+        .unwrap_or_else(|| panic!("{key} object"))
+}
+
+// Swift: SettingsGoldenIntegrationTests.everyVersionedFixtureRoundTripsThroughSettingsStore
+#[test]
+fn golden_settings_decode_validate_and_round_trip() {
+    let data = fs::read_to_string(repository_fixture(
+        "Tests/Fixtures/settings/v0.1.0/settings.json",
+    ))
+    .expect("read golden settings");
+    let decoded: AppSettings = serde_json::from_str(&data).expect("decode golden settings");
+
+    SettingsValidator::validate(&decoded).expect("golden settings validate");
+    let encoded = serde_json::to_string(&decoded).expect("serialize golden settings");
+    let round_tripped: AppSettings =
+        serde_json::from_str(&encoded).expect("decode serialized golden settings");
+
+    assert_eq!(round_tripped, decoded);
+    assert_eq!(decoded.tools.palette_glass_opacity, 0.62);
+}
+
+// Swift: SettingsTests.exportIncludesPresetsAndExcludesComputerSpecificValues
+#[test]
+fn macos_pansetting_all_bundles_apply_to_default() {
+    let data = fs::read_to_string(repository_fixture(
+        "fixtures/pansetting/macos-v1.pansetting",
+    ))
+    .expect("read macOS pansetting fixture");
+    let document: FixtureDocument = serde_json::from_str(&data).expect("decode fixture document");
+    let expected_bundles = [
+        "general",
+        "tools",
+        "eraser",
+        "zoom",
+        "board",
+        "timer",
+        "display",
+        "shortcuts",
+        "help",
+    ];
+    assert_eq!(document.included_bundles, expected_bundles);
+
+    let payload = document.payload.as_object().expect("payload object");
+    let mut applied = AppSettings::default();
+    applied.general = serde_json::from_value::<GeneralSettings>(payload["general"].clone())
+        .expect("general payload");
+    applied.tools =
+        serde_json::from_value::<ToolSettings>(payload["tools"].clone()).expect("tools payload");
+    applied.eraser = serde_json::from_value::<EraserGroupSettings>(payload["eraser"].clone())
+        .expect("eraser payload");
+    applied.zoom =
+        serde_json::from_value::<ZoomGroupSettings>(payload["zoom"].clone()).expect("zoom payload");
+    applied.board = serde_json::from_value::<BoardGroupSettings>(payload["board"].clone())
+        .expect("board payload");
+    applied.timer = serde_json::from_value::<TimerGroupSettings>(payload["timer"].clone())
+        .expect("timer payload");
+    applied.display.presets =
+        serde_json::from_value::<FixtureDisplayBundle>(payload["display"].clone())
+            .expect("display payload")
+            .presets;
+    applied.shortcuts =
+        serde_json::from_value::<ShortcutGroupSettings>(payload["shortcuts"].clone())
+            .expect("shortcuts payload");
+    applied.help =
+        serde_json::from_value::<HelpGroupSettings>(payload["help"].clone()).expect("help payload");
+
+    SettingsValidator::validate(&applied).expect("applied fixture validates");
+    assert_eq!(applied, AppSettings::default());
+}
+
+// Swift: SettingsTests.decodingIgnoresUnknownKeysAndDefaultsMissingValues
+#[test]
+fn compatibility_decoding_defaults_migrates_and_filters() {
+    let mut compatible = default_json();
+    compatible["futureSetting"] = json!({"enabled": true});
+    compatible
+        .as_object_mut()
+        .expect("settings object")
+        .remove("display");
+    object_at_mut(&mut compatible, "zoom").remove("previewDimming");
+    let tools = object_at_mut(&mut compatible, "tools");
+    tools.insert("penWidth".to_owned(), json!(3));
+    tools.insert("highlighterWidth".to_owned(), json!(18));
+    tools.insert("textFontSize".to_owned(), json!(24));
+    for key in [
+        "perToolMemory",
+        "favorites",
+        "paletteGlassOpacity",
+        "pressureMinimumWidthRatio",
+    ] {
+        tools.remove(key);
+    }
+    let decoded: AppSettings = serde_json::from_value(compatible).expect("compatible settings");
+    assert_eq!(decoded, AppSettings::default());
+
+    let mut migrated = default_json();
+    let tools = object_at_mut(&mut migrated, "tools");
+    tools.remove("perToolMemory");
+    tools.insert("penWidth".to_owned(), json!(5));
+    tools.insert("highlighterWidth".to_owned(), json!(20));
+    tools.insert("textFontSize".to_owned(), json!(30));
+    let migrated: AppSettings = serde_json::from_value(migrated).expect("migrated settings");
+    assert_eq!(migrated.tools.per_tool_memory.pen.size, 5.0);
+    assert_eq!(migrated.tools.per_tool_memory.arrow.size, 5.0);
+    assert_eq!(migrated.tools.per_tool_memory.rectangle.size, 5.0);
+    assert_eq!(migrated.tools.per_tool_memory.ellipse.size, 5.0);
+    assert_eq!(migrated.tools.per_tool_memory.highlighter.size, 20.0);
+    assert_eq!(migrated.tools.per_tool_memory.text.size, 30.0);
+    SettingsValidator::validate(&migrated).expect("migrated settings validate");
+
+    let mut current_wins = default_json();
+    object_at_mut(&mut current_wins, "tools").insert("penWidth".to_owned(), json!("bad"));
+    let decoded: AppSettings =
+        serde_json::from_value(current_wins).expect("perToolMemory wins over old key");
+    assert_eq!(decoded, AppSettings::default());
+
+    let valid = json!({"tool": "pen", "colorIndex": 0, "size": 3});
+    let mut favorites = vec![valid.clone(), valid, json!({"tool": "future", "size": 3})];
+    for size in 4..=11 {
+        favorites.push(json!({"tool": "pen", "colorIndex": 0, "size": size}));
+    }
+    let mut filtered = default_json();
+    object_at_mut(&mut filtered, "tools").insert("favorites".to_owned(), Value::Array(favorites));
+    let filtered: AppSettings = serde_json::from_value(filtered).expect("favorite filtering");
+    assert_eq!(filtered.tools.favorites.len(), 8);
+    assert!(filtered
+        .tools
+        .favorites
+        .iter()
+        .all(|favorite| favorite.tool == "pen"));
+    SettingsValidator::validate(&filtered).expect("filtered favorites validate");
+}
+
+// Swift: SettingsTests decoding and SettingsValidator rejection table
+#[test]
+fn rejects_bad_enums_integers_required_keys_and_ranges() {
+    let mut failures: Vec<(&str, Value)> = Vec::new();
+
+    let mut value = default_json();
+    object_at_mut(&mut value, "tools").insert("paletteStyle".to_owned(), json!("x"));
+    failures.push(("unknown palette style", value));
+
+    let mut value = default_json();
+    object_at_mut(&mut value, "shortcuts").insert("appModifier".to_owned(), json!("x"));
+    failures.push(("unknown app modifier", value));
+
+    for (name, vendor) in [
+        ("negative vendor", json!(-1)),
+        ("overflow vendor", json!(4_294_967_296_u64)),
+    ] {
+        let mut value = default_json();
+        value["display"]["presets"] = Value::Array(vec![preset_json()]);
+        value["display"]["presets"][0]["main"]["monitors"][0]["identity"]["vendor"] = vendor;
+        failures.push((name, value));
+    }
+
+    let mut value = default_json();
+    value["display"]["presets"] = Value::Array(vec![preset_json()]);
+    value["display"]["presets"][0]["main"]["monitors"][0]["identity"]["kind"] = json!("x");
+    failures.push(("unknown display kind", value));
+
+    let mut value = default_json();
+    value["display"]["presets"] = Value::Array(vec![preset_json()]);
+    value["display"]["presets"][0]["id"] = json!("not-a-uuid");
+    failures.push(("invalid preset id", value));
+
+    let mut value = default_json();
+    value
+        .as_object_mut()
+        .expect("settings object")
+        .remove("general");
+    failures.push(("missing required top-level group", value));
+
+    let mut value = default_json();
+    object_at_mut(&mut value, "tools").remove("colors");
+    failures.push(("missing ordinary required field", value));
+
+    let mut value = default_json();
+    object_at_mut(&mut value, "tools")
+        .get_mut("perToolMemory")
+        .and_then(Value::as_object_mut)
+        .expect("memory object")
+        .remove("text");
+    failures.push(("partial per-tool memory", value));
+
+    let mut value = default_json();
+    object_at_mut(&mut value, "display").remove("presets");
+    failures.push(("partial display group", value));
+
+    let mut value = default_json();
+    value["display"]["presets"] = Value::Array(vec![preset_json()]);
+    value["display"]["presets"][0]["main"]
+        .as_object_mut()
+        .expect("main screen")
+        .remove("cell");
+    failures.push(("missing screen cell", value));
+
+    for (name, value) in failures {
+        assert!(
+            serde_json::from_value::<AppSettings>(value).is_err(),
+            "case={name}"
+        );
+    }
+
+    for pointer in [
+        "/tools/pressureMinimumWidthRatio",
+        "/tools/perToolMemory",
+        "/tools/favorites",
+        "/tools/paletteStyle",
+        "/tools/paletteGlassOpacity",
+        "/zoom/previewDimming",
+        "/display",
+    ] {
+        let mut value = default_json();
+        *value.pointer_mut(pointer).expect("defaultable field") = Value::Null;
+        let decoded: AppSettings = serde_json::from_value(value)
+            .unwrap_or_else(|error| panic!("null default failed for {pointer}: {error}"));
+        assert_eq!(decoded, AppSettings::default(), "pointer={pointer}");
+    }
+
+    let mut out_of_range = AppSettings::default();
+    out_of_range.zoom.maximum_magnification = 9.0;
+    assert!(SettingsValidator::validate(&out_of_range).is_err());
+
+    let mut lowercase_id = default_json();
+    let mut preset = preset_json();
+    preset["id"] = json!("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+    lowercase_id["display"]["presets"] = Value::Array(vec![preset]);
+    let decoded: AppSettings = serde_json::from_value(lowercase_id).expect("lowercase UUID");
+    SettingsValidator::validate(&decoded).expect("lowercase UUID settings validate");
+    let encoded = serde_json::to_value(decoded).expect("serialize normalized UUID");
+    assert_eq!(
+        encoded["display"]["presets"][0]["id"],
+        json!("AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")
+    );
+}
