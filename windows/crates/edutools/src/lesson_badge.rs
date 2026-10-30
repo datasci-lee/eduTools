@@ -1692,7 +1692,7 @@ mod windows_impl {
             .map_or(0.0, |duration| duration.as_secs_f64())
     }
 
-    fn play_completion_sound(name: &str, logger: &Logger) {
+    pub(crate) fn play_completion_sound(name: &str, logger: &Logger) {
         let style = match name {
             "Glass" | "Hero" | "Ping" | "Pop" | "Purr" | "Tink" => Some(MB_ICONINFORMATION),
             "Basso" | "Funk" | "Sosumi" => Some(MB_ICONERROR),
