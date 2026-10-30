@@ -1,6 +1,8 @@
 use crate::ink_view::{pointer_id_from_wparam, InkInputConfig, InkInputController, InputOutcome};
 use crate::log::Logger;
-use crate::monitor::{enumerate_monitors, monitor_by_key, plan_monitor_sync, Monitor};
+use crate::monitor::{
+    enumerate_monitors, monitor_at_point, monitor_by_key, plan_monitor_sync, Monitor,
+};
 use crate::render::{GraphicsDevice, OverlayRenderer};
 use edutools_core::ink::{
     InkCommand, InkLayerState, InkPoint, InkStroke, InkStrokeContent, InkStrokeTool, Point,
@@ -15,7 +17,7 @@ use windows::Win32::Foundation::{
     WIN32_ERROR, WPARAM,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, GetWindowRect,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos, GetWindowLongPtrW, GetWindowRect,
     RegisterClassW, SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos, ShowWindow,
     CREATESTRUCTW, GWLP_USERDATA, GWL_EXSTYLE, HWND_TOPMOST, LWA_ALPHA, MA_NOACTIVATE,
     PA_NOACTIVATE, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE,
@@ -154,9 +156,84 @@ impl OverlayManager {
         }
     }
 
+    pub fn monitor_key_at_cursor(&self) -> Result<Option<String>> {
+        let mut point = windows::Win32::Foundation::POINT::default();
+        // SAFETY: point is writable storage and this call does not retain it.
+        unsafe { GetCursorPos(&mut point) }?;
+        let monitors = self
+            .overlays
+            .values()
+            .map(|overlay| overlay.monitor().clone())
+            .collect::<Vec<_>>();
+        Ok(monitor_at_point(&monitors, point).map(|monitor| monitor.session_key.clone()))
+    }
+
+    pub fn undo(&mut self, monitor_key: &str) -> Result<bool> {
+        let changed = self
+            .layers
+            .borrow_mut()
+            .get_mut(monitor_key)
+            .is_some_and(InkLayerState::undo);
+        if changed {
+            self.rebuild_monitor(monitor_key)?;
+        }
+        Ok(changed)
+    }
+
+    pub fn redo(&mut self, monitor_key: &str) -> Result<bool> {
+        let changed = self
+            .layers
+            .borrow_mut()
+            .get_mut(monitor_key)
+            .is_some_and(InkLayerState::redo);
+        if changed {
+            self.rebuild_monitor(monitor_key)?;
+        }
+        Ok(changed)
+    }
+
+    pub fn clear_all(&mut self) -> Result<usize> {
+        let changed_keys = {
+            let mut layers = self.layers.borrow_mut();
+            layers
+                .iter_mut()
+                .filter_map(|(key, layer)| {
+                    if layer.strokes().is_empty() {
+                        return None;
+                    }
+                    let before = layer.strokes().to_vec();
+                    layer.execute(InkCommand::ReplaceStrokes {
+                        before,
+                        after: Vec::new(),
+                    });
+                    Some(key.clone())
+                })
+                .collect::<Vec<_>>()
+        };
+        for key in &changed_keys {
+            self.rebuild_monitor(key)?;
+        }
+        Ok(changed_keys.len())
+    }
+
+    pub fn set_pass_through(&mut self, enabled: bool) -> Result<()> {
+        for overlay in self.overlays.values_mut() {
+            overlay.set_click_through(enabled || !self.annotation_enabled)?;
+        }
+        Ok(())
+    }
+
     pub fn finish_all_active(&mut self, reason: &str) -> Result<()> {
         for overlay in self.overlays.values_mut() {
             overlay.finish_active(reason)?;
+        }
+        Ok(())
+    }
+
+    fn rebuild_monitor(&mut self, monitor_key: &str) -> Result<()> {
+        if let Some(overlay) = self.overlays.get_mut(monitor_key) {
+            overlay.rebuild_completed()?;
+            overlay.draw(self.annotation_enabled && self.debug_overlay)?;
         }
         Ok(())
     }
@@ -270,6 +347,7 @@ struct OverlayWindowState {
 impl OverlayWindowState {
     fn apply_input_outcome(&mut self, outcome: InputOutcome) -> Result<()> {
         let minimum_ratio = self.input.pressure_minimum_width_ratio();
+        let highlighter_opacity = self.input.highlighter_opacity();
         for stroke in outcome.finished {
             self.layers
                 .borrow_mut()
@@ -279,7 +357,7 @@ impl OverlayWindowState {
             self.renderer
                 .as_ref()
                 .expect("renderer initialized after window creation")
-                .append_completed(&stroke, minimum_ratio)?;
+                .append_completed(&stroke, minimum_ratio, highlighter_opacity)?;
         }
         if outcome.redraw {
             self.draw()?;
@@ -294,6 +372,7 @@ impl OverlayWindowState {
             .draw_frame(
                 self.input.active_stroke(),
                 self.input.pressure_minimum_width_ratio(),
+                self.input.highlighter_opacity(),
                 self.debug_visible,
             )
     }
@@ -376,6 +455,7 @@ impl OverlayWindow {
             hwnd,
             rect.width(),
             rect.height(),
+            state.monitor.dpi.0,
             state.monitor.session_key.clone(),
             state.logger.clone(),
         ) {
@@ -426,7 +506,7 @@ impl OverlayWindow {
                 SWP_NOACTIVATE | SWP_NOZORDER,
             )
         }?;
-        if old.rect != rect {
+        if old.rect != rect || old.dpi != self.state.monitor.dpi {
             let strokes = self.strokes();
             self.state
                 .renderer
@@ -435,8 +515,10 @@ impl OverlayWindow {
                 .resize(
                     rect.width(),
                     rect.height(),
+                    self.state.monitor.dpi.0,
                     &strokes,
                     self.state.input.pressure_minimum_width_ratio(),
+                    self.state.input.highlighter_opacity(),
                 )?;
         }
         self.state.draw()
@@ -504,6 +586,7 @@ impl OverlayWindow {
             .rebuild_completed(
                 &self.strokes(),
                 self.state.input.pressure_minimum_width_ratio(),
+                self.state.input.highlighter_opacity(),
             )
     }
 
@@ -536,9 +619,10 @@ impl OverlayWindow {
             .renderer
             .as_ref()
             .expect("renderer lives until OverlayWindow::drop");
-        renderer.rebuild_completed(fake_layer.strokes(), ratio)?;
-        renderer.draw_frame(None, ratio, false)?;
-        renderer.rebuild_completed(&self.strokes(), ratio)?;
+        let highlighter_opacity = self.state.input.highlighter_opacity();
+        renderer.rebuild_completed(fake_layer.strokes(), ratio, highlighter_opacity)?;
+        renderer.draw_frame(None, ratio, highlighter_opacity, false)?;
+        renderer.rebuild_completed(&self.strokes(), ratio, highlighter_opacity)?;
         self.state.draw()
     }
 }
