@@ -66,6 +66,17 @@ pub fn plan_monitor_sync(
     plan
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn monitor_index_at_point(rects: &[MonitorRect], x: i32, y: i32) -> Option<usize> {
+    rects
+        .iter()
+        .position(|rect| x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom)
+}
+
+pub const fn local_point_in_monitor(rect: MonitorRect, x: i32, y: i32) -> (i32, i32) {
+    (x - rect.left, y - rect.top)
+}
+
 #[cfg(windows)]
 mod windows_impl {
     use super::{MonitorRect, MonitorSnapshot};
@@ -217,7 +228,10 @@ pub use windows_impl::{enumerate_monitors, monitor_by_key, Monitor};
 
 #[cfg(test)]
 mod tests {
-    use super::{plan_monitor_sync, MonitorRect, MonitorSnapshot, MonitorSyncPlan};
+    use super::{
+        local_point_in_monitor, monitor_index_at_point, plan_monitor_sync, MonitorRect,
+        MonitorSnapshot, MonitorSyncPlan,
+    };
 
     fn monitor(key: &str, left: i32) -> MonitorSnapshot {
         MonitorSnapshot {
@@ -276,6 +290,35 @@ mod tests {
 
         for (name, current, discovered, expected) in cases {
             assert_eq!(plan_monitor_sync(&current, &discovered), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn zoom_start_monitor_and_local_center_table_handles_boundaries_and_negative_origins() {
+        let rects = [
+            MonitorRect {
+                left: -1_280,
+                top: -200,
+                right: 0,
+                bottom: 824,
+            },
+            MonitorRect {
+                left: 0,
+                top: 0,
+                right: 1_920,
+                bottom: 1_080,
+            },
+        ];
+        let cases = [
+            ((-1, 10), Some((0, (1_279, 210)))),
+            ((0, 10), Some((1, (0, 10)))),
+            ((-1_280, -200), Some((0, (0, 0)))),
+            ((1_920, 10), None),
+        ];
+        for ((x, y), expected) in cases {
+            let actual = monitor_index_at_point(&rects, x, y)
+                .map(|index| (index, local_point_in_monitor(rects[index], x, y)));
+            assert_eq!(actual, expected, "point=({x},{y})");
         }
     }
 }

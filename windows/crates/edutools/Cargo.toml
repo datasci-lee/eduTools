@@ -7,6 +7,8 @@ build = "build.rs"
 [target.'cfg(windows)'.dependencies]
 edutools-core = { path = "../edutools-core" }
 windows = { version = "0.62", features = [
+    "Graphics_Capture",
+    "Graphics_DirectX_Direct3D11",
     "Media_Control",
     "Win32_Foundation",
     "Win32_Graphics_Direct2D",
@@ -33,6 +35,8 @@ windows = { version = "0.62", features = [
     "Win32_System_Variant",
     "Win32_System_WinRT",
     "Win32_Storage_FileSystem",
+    "Win32_System_WinRT_Direct3D11",
+    "Win32_System_WinRT_Graphics_Capture",
     "Win32_UI_HiDpi",
     "Win32_UI_Accessibility",
     "Win32_UI_Controls",

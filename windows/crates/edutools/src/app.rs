@@ -1,19 +1,23 @@
 use crate::break_screen::{
     BreakStartOutcome, BreakTimerManager, WM_APP_BREAK_ACTION, WM_APP_BREAK_TICK,
 };
+use crate::capture::{
+    CapturedFrame, ZoomCapture, WM_APP_ZOOM_CAPTURE_FAILED, WM_APP_ZOOM_FRAME, WM_APP_ZOOM_RECREATE,
+};
 use crate::help::{
     monotonic_millis, monotonic_seconds, HelpManager, HELP_RELEASE_TIMER_ID, WM_APP_HELP_ACTION,
     WM_APP_HELP_CLOSE, WM_APP_HELP_REFRESH,
 };
 use crate::hotkey::HotkeyCenter;
 use crate::ink_view::InkInputConfig;
-use crate::kbhook::{HookKeyEvent, KeyboardHook, WM_APP_KEY};
+use crate::kbhook::{HookKeyEvent, HookScope, KeyboardHook, WM_APP_KEY};
 use crate::keymap;
 use crate::lesson_badge::{
     play_completion_sound, LessonBadgeManager, SettingsMutation as LessonSettingsMutation,
     WM_APP_LESSON_ACTION, WM_APP_LESSON_COMPLETED,
 };
 use crate::log::Logger;
+use crate::monitor::{enumerate_monitors, local_point_in_monitor, monitor_at_point, Monitor};
 use crate::music::{BreakMusicManager, WM_APP_MUSIC_LAUNCH_RESULT, WM_APP_MUSIC_PAUSE_RESULT};
 use crate::overlay::{OverlayManager, SYNC_MESSAGE};
 use crate::palette::{
@@ -24,12 +28,17 @@ use crate::radial_palette::{
     RadialPaletteManager, WM_APP_RADIAL_ACTION, WM_APP_RADIAL_COLLAPSE, WM_APP_RADIAL_REDRAW,
     WM_APP_RADIAL_SAVE_POSITION,
 };
+use crate::render::GraphicsDevice;
 use crate::settings_file::FileSettingsStorage;
 use crate::text_entry::{
     cancel_reason, TextEntryRequest, TextEntryWindow, WM_APP_TEXT_ENTRY_CANCEL,
     WM_APP_TEXT_ENTRY_COMMIT, WM_APP_TEXT_ENTRY_OPEN,
 };
 use crate::tray::{self, Tray, CALLBACK_MESSAGE, MENU_EXIT, MENU_TOGGLE_ANNOTATION};
+use crate::zoom_view::{
+    decode_pointer, decode_wheel, ZoomView, WM_APP_ZOOM_POINTER, WM_APP_ZOOM_REDRAW,
+    WM_APP_ZOOM_WHEEL,
+};
 use edutools_core::board::BoardPresentation;
 use edutools_core::dispatch::{dispatch, DispatchContext, Effect, PressedShortcuts};
 use edutools_core::eraser::EraserMode;
@@ -46,14 +55,19 @@ use edutools_core::shortcut::{
     ShortcutCatalog, ShortcutCommand, ShortcutDefinition, ShortcutScope,
 };
 use edutools_core::state::{AppState, FavoriteSaveResult, SettingsMutation};
+use edutools_core::zoom::{
+    stop_or_cancel_preview_action, Point as ZoomPoint, Size as ZoomSize, ZoomFollowMode,
+    ZoomGeometry, ZoomSessionState, ZoomStopAction,
+};
 use std::cell::RefCell;
 use std::mem::size_of;
 use std::path::PathBuf;
 use std::rc::Rc;
 use windows::core::{w, Error, Result, PCWSTR};
+use windows::Graphics::SizeInt32;
 use windows::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, E_FAIL, HANDLE, HINSTANCE, HWND, LPARAM,
-    LRESULT, WPARAM,
+    LRESULT, POINT, WPARAM,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::CreateMutexW;
@@ -63,12 +77,13 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::Input::Pointer::EnableMouseInPointer;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow, DispatchMessageW, GetMessageW,
-    GetWindowLongPtrW, LoadImageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW,
-    SetWindowLongPtrW, TranslateMessage, GDI_IMAGE_TYPE, GWLP_USERDATA, HICON, IMAGE_ICON,
-    LR_DEFAULTCOLOR, MSG, WM_CONTEXTMENU, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_HOTKEY,
-    WM_KEYDOWN, WM_POWERBROADCAST, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMECHANGE, WM_TIMER,
-    WNDCLASSW, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
+    CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow, DispatchMessageW, GetCursorPos,
+    GetForegroundWindow, GetMessageW, GetWindowLongPtrW, IsWindow, LoadImageW, PostQuitMessage,
+    RegisterClassW, RegisterWindowMessageW, SetForegroundWindow, SetWindowLongPtrW,
+    TranslateMessage, GDI_IMAGE_TYPE, GWLP_USERDATA, HICON, IMAGE_ICON, LR_DEFAULTCOLOR, MSG,
+    WM_CONTEXTMENU, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_HOTKEY, WM_KEYDOWN,
+    WM_POWERBROADCAST, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMECHANGE, WM_TIMER, WNDCLASSW,
+    WS_EX_TOOLWINDOW, WS_OVERLAPPED,
 };
 
 const WINDOW_CLASS: PCWSTR = w!("EduToolsMain");
@@ -189,8 +204,26 @@ struct App {
     lesson_badge: Option<LessonBadgeManager>,
     break_timer: Option<BreakTimerManager>,
     pending_break_request: Option<i64>,
+    zoom: Option<ZoomRuntime>,
     logger: Logger,
     shutting_down: bool,
+}
+
+struct ZoomRuntime {
+    view: ZoomView,
+    preview_original_frame: Option<CapturedFrame>,
+    capture: ZoomCapture,
+    _graphics: GraphicsDevice,
+    monitor: Monitor,
+    previous_foreground: HWND,
+    wheel_accumulator: i32,
+}
+
+impl Drop for ZoomRuntime {
+    fn drop(&mut self) {
+        self.preview_original_frame = None;
+        self.view.clear_frame();
+    }
 }
 
 impl App {
@@ -349,10 +382,10 @@ impl App {
                     current,
                 ));
             }
-            let hook_was_enabled = self.keyboard_hook.is_some();
-            if hook_was_enabled {
-                self.set_keyboard_hook(false);
-                self.set_keyboard_hook(true);
+            // 훅은 설치 시점의 바인딩을 읽으므로 단축키가 바뀌면 내렸다가 현재 스코프로 다시 올린다.
+            if self.keyboard_hook.is_some() {
+                self.uninstall_keyboard_hook_for_shutdown();
+                self.synchronize_keyboard_hook();
             }
             targets.push("global-hotkeys+keyboard-hook");
         }
@@ -572,6 +605,9 @@ impl App {
         } else if definition.command == ShortcutCommand::ToggleAnnotationMode {
             self.logger.event("전역 키 annotation.toggle 눌림");
             self.toggle_annotation("전역 키");
+        } else if definition.command == ShortcutCommand::ToggleZoom {
+            self.logger.event("전역 키 zoom.toggle 눌림");
+            self.apply_effects(vec![Effect::ToggleZoom], "전역 키 zoom.toggle");
         } else if definition.command == ShortcutCommand::ToggleLessonTimer
             || definition.command == ShortcutCommand::ShowBreakTimerSetup
         {
@@ -618,7 +654,7 @@ impl App {
         }
     }
 
-    fn handle_annotation_key(&mut self, event: HookKeyEvent) {
+    fn handle_mode_key(&mut self, event: HookKeyEvent) {
         let definition = self
             .keyboard_hook
             .as_ref()
@@ -632,7 +668,8 @@ impl App {
             return;
         };
         self.logger.event(&format!(
-            "판서 키 {}: physicalKey={:#x} 정의={} 소비={}",
+            "모드 키 {:?} {}: physicalKey={:#x} 정의={} 소비={}",
+            event.scope,
             if event.is_key_up { "up" } else { "down" },
             event.key_code,
             definition.id,
@@ -642,18 +679,25 @@ impl App {
             return;
         }
 
-        let display_id = match self
-            .overlays
-            .as_ref()
-            .map(OverlayManager::monitor_key_at_cursor)
-        {
-            Some(Ok(display_id)) => display_id,
-            Some(Err(error)) => {
-                self.logger
-                    .event(&format!("커서 모니터 판정 실패: {error}"));
-                None
-            }
-            None => None,
+        let display_id = match event.scope {
+            HookScope::Zoom => self
+                .state
+                .borrow()
+                .zoom_session()
+                .map(|session| session.display_id.clone()),
+            HookScope::Annotation => match self
+                .overlays
+                .as_ref()
+                .map(OverlayManager::monitor_key_at_cursor)
+            {
+                Some(Ok(display_id)) => display_id,
+                Some(Err(error)) => {
+                    self.logger
+                        .event(&format!("커서 모니터 판정 실패: {error}"));
+                    None
+                }
+                None => None,
+            },
         };
         let board_display_id = self
             .state
@@ -661,7 +705,7 @@ impl App {
             .presented_board()
             .map(|board| board.display_id.clone());
         let context = DispatchContext {
-            scope: ShortcutScope::Annotation,
+            scope: event.scope.shortcut_scope(),
             display_id: display_id.as_deref(),
             board_display_id: board_display_id.as_deref(),
             has_selection: display_id.as_deref().is_some_and(|display_id| {
@@ -695,24 +739,38 @@ impl App {
                         definition.id, event.consumed, result.consumed
                     ));
                 }
-                self.apply_effects(result.effects, &format!("판서 키 {}", definition.id));
+                self.apply_effects(
+                    result.effects,
+                    &format!("{:?} 키 {}", event.scope, definition.id),
+                );
             }
             Err(error) => self.logger.event(&format!(
                 "판서 키 core dispatch 실패: 정의={} error={error}",
                 definition.id
             )),
         }
+        if event.is_key_up {
+            self.synchronize_keyboard_hook();
+        }
     }
 
-    fn set_keyboard_hook(&mut self, enabled: bool) {
-        if enabled {
-            if self.keyboard_hook.is_some() {
+    fn synchronize_keyboard_hook(&mut self) {
+        let annotation_active = self.state.borrow().is_annotation_mode_enabled();
+        let zoom_active = self.zoom.is_some();
+        if annotation_active || zoom_active {
+            if let Some(hook) = self.keyboard_hook.as_ref() {
+                hook.set_scopes(annotation_active, zoom_active);
+                self.logger.event(&format!(
+                    "키보드 훅 스코프 갱신: zoom={zoom_active} annotation={annotation_active}"
+                ));
                 return;
             }
-            match KeyboardHook::install(self.hwnd, &self.settings) {
+            match KeyboardHook::install(self.hwnd, &self.settings, annotation_active, zoom_active) {
                 Ok(hook) => {
                     self.keyboard_hook = Some(hook);
-                    self.logger.event("판서 키보드 훅 설치 성공");
+                    self.logger.event(&format!(
+                        "키보드 훅 설치 성공: zoom={zoom_active} annotation={annotation_active}"
+                    ));
                 }
                 Err(error) => {
                     let message = format!("판서 키보드 훅 설치 실패: {error}");
@@ -725,13 +783,22 @@ impl App {
             return;
         }
 
+        if !self.pressed_shortcuts.is_empty() {
+            if let Some(hook) = self.keyboard_hook.as_ref() {
+                hook.set_scopes(false, false);
+                self.logger
+                    .event("키보드 훅 해제 지연: 이미 삼킨 keyUp 쌍을 받은 뒤 해제");
+            }
+            return;
+        }
+
         let Some(mut hook) = self.keyboard_hook.take() else {
             return;
         };
         match hook.uninstall() {
             Ok(()) => {
                 self.pressed_shortcuts = PressedShortcuts::new();
-                self.logger.event("판서 키보드 훅 해제 성공");
+                self.logger.event("키보드 훅 해제 성공");
             }
             Err(error) => {
                 let message = format!("판서 키보드 훅 해제 실패: {error}");
@@ -742,6 +809,17 @@ impl App {
                 self.keyboard_hook = Some(hook);
             }
         }
+    }
+
+    fn uninstall_keyboard_hook_for_shutdown(&mut self) {
+        let Some(mut hook) = self.keyboard_hook.take() else {
+            return;
+        };
+        if let Err(error) = hook.uninstall() {
+            self.logger
+                .event(&format!("앱 종료 중 키보드 훅 해제 실패: {error}"));
+        }
+        self.pressed_shortcuts = PressedShortcuts::new();
     }
 
     fn apply_effects(&mut self, effects: Vec<Effect>, source: &str) {
@@ -761,7 +839,7 @@ impl App {
                     if !enabled {
                         self.cancel_text_entry("판서 끔");
                     }
-                    self.set_keyboard_hook(enabled);
+                    self.synchronize_keyboard_hook();
                     if let Some(tray) = self.tray.as_mut() {
                         tray.set_annotation_enabled(enabled);
                     }
@@ -998,6 +1076,20 @@ impl App {
                         help.close(&self.state.borrow(), source);
                     }
                 }
+                Effect::ToggleZoom => {
+                    if self.zoom.is_some() {
+                        self.stop_zoom("토글 키", false);
+                    } else {
+                        self.start_zoom();
+                    }
+                }
+                Effect::AdjustZoom(steps) => self.adjust_zoom(steps),
+                Effect::ResetZoom => self.reset_zoom(),
+                Effect::ToggleZoomFreeze => self.toggle_zoom_freeze(),
+                Effect::StopZoom => self.stop_or_cancel_zoom_preview(),
+                Effect::BeginZoomPreview => self.begin_zoom_preview(),
+                Effect::FinishZoomPreview => self.finish_zoom_preview(false),
+                Effect::CycleZoomFollowMode => self.cycle_zoom_follow_mode(),
                 Effect::ToggleLessonTimer => {
                     let result = self
                         .lesson_badge
@@ -1023,6 +1115,493 @@ impl App {
         }
         if runtime_state_changed {
             self.refresh_runtime_state("core effect");
+        }
+    }
+
+    fn start_zoom(&mut self) {
+        if self.zoom.is_some() || self.state.borrow().zoom_session().is_some() {
+            return;
+        }
+        let mut cursor = POINT::default();
+        if let Err(error) = unsafe { GetCursorPos(&mut cursor) } {
+            self.report_zoom_failure(format!("포인터 위치를 읽지 못했습니다: {error}"));
+            return;
+        }
+        let monitors = match enumerate_monitors() {
+            Ok(monitors) => monitors,
+            Err(error) => {
+                self.report_zoom_failure(format!("모니터 목록을 읽지 못했습니다: {error}"));
+                return;
+            }
+        };
+        let Some(monitor) = monitor_at_point(&monitors, cursor).cloned() else {
+            self.report_zoom_failure("포인터가 있는 모니터를 찾지 못했습니다.".to_owned());
+            return;
+        };
+        match ZoomCapture::is_supported() {
+            Ok(true) => {}
+            Ok(false) => {
+                self.report_zoom_failure(
+                    "이 Windows 환경은 Windows Graphics Capture를 지원하지 않습니다.".to_owned(),
+                );
+                return;
+            }
+            Err(error) => {
+                self.report_zoom_failure(format!(
+                    "Windows Graphics Capture 지원 여부를 확인하지 못했습니다: {error}"
+                ));
+                return;
+            }
+        }
+        let (local_x, local_y) = local_point_in_monitor(monitor.rect, cursor.x, cursor.y);
+        let screen_size = ZoomSize::new(
+            f64::from(monitor.rect.width()),
+            f64::from(monitor.rect.height()),
+        );
+        let magnification = self.settings.zoom.starting_magnification;
+        let center = ZoomGeometry::clamped_center(
+            ZoomPoint::new(f64::from(local_x), f64::from(local_y)),
+            screen_size,
+            magnification,
+        );
+        let follow_mode = match self.settings.zoom.follow_mode.as_str() {
+            "always" => ZoomFollowMode::Always,
+            "fixed" => ZoomFollowMode::Fixed,
+            _ => ZoomFollowMode::Edge,
+        };
+        let session = ZoomSessionState {
+            display_id: monitor.session_key.clone(),
+            screen_size,
+            magnification,
+            starting_magnification: magnification,
+            center,
+            follow_mode,
+            follow_smoothness: self.settings.zoom.follow_smoothness,
+            preview_dimming: self.settings.zoom.preview_dimming,
+            is_frozen: !self.settings.zoom.live_by_default,
+            is_previewing: false,
+        };
+        self.state.borrow_mut().set_zoom_session(session.clone());
+        let previous_foreground = unsafe { GetForegroundWindow() };
+        let result = (|| -> Result<ZoomRuntime> {
+            let graphics = GraphicsDevice::new()?;
+            let mut view = ZoomView::new(
+                self.hwnd,
+                self.hinstance,
+                &monitor,
+                &graphics,
+                self.logger.clone(),
+            )?;
+            view.set_pointer(center);
+            view.show_message(ZoomGeometry::magnification_label(magnification));
+            view.render(&session)?;
+            let capture = ZoomCapture::start(
+                self.hwnd,
+                monitor.handle,
+                SizeInt32 {
+                    Width: monitor.rect.width(),
+                    Height: monitor.rect.height(),
+                },
+                &graphics,
+                self.logger.clone(),
+            )?;
+            Ok(ZoomRuntime {
+                view,
+                preview_original_frame: None,
+                capture,
+                _graphics: graphics,
+                monitor,
+                previous_foreground,
+                wheel_accumulator: 0,
+            })
+        })();
+        match result {
+            Ok(runtime) => {
+                let border = runtime.capture.border_disabled();
+                self.logger.event(&format!(
+                    "줌 시작: monitor={} physical={}x{} center=({:.1},{:.1}) magnification={:.2} follow={:?} WGC=true borderDisabled={border}",
+                    runtime.monitor.session_key,
+                    runtime.monitor.rect.width(),
+                    runtime.monitor.rect.height(),
+                    center.x,
+                    center.y,
+                    magnification,
+                    follow_mode,
+                ));
+                self.zoom = Some(runtime);
+                self.synchronize_keyboard_hook();
+            }
+            Err(error) => {
+                self.state.borrow_mut().end_zoom();
+                self.report_zoom_failure(format!(
+                    "Windows Graphics Capture로 줌을 시작하지 못했습니다: {error}"
+                ));
+            }
+        }
+    }
+
+    fn stop_zoom(&mut self, reason: &str, notify: bool) {
+        let Some(runtime) = self.zoom.take() else {
+            self.state.borrow_mut().end_zoom();
+            self.synchronize_keyboard_hook();
+            return;
+        };
+        let previous_foreground = runtime.previous_foreground;
+        let overwritten = runtime.capture.overwritten_count();
+        drop(runtime);
+        self.state.borrow_mut().end_zoom();
+        self.synchronize_keyboard_hook();
+        self.logger.event(&format!(
+            "줌 종료: reason={reason} slotOverwrites={overwritten}"
+        ));
+        if !self.state.borrow().is_annotation_mode_enabled()
+            && !previous_foreground.is_invalid()
+            && unsafe { IsWindow(Some(previous_foreground)) }.as_bool()
+        {
+            let restored = unsafe { SetForegroundWindow(previous_foreground) }.as_bool();
+            if !restored {
+                self.logger.event("줌 시작 전 전경 앱 복원 실패");
+            }
+        }
+        if notify {
+            if let Some(tray) = self.tray.as_ref() {
+                tray.show_warning(
+                    "화면 줌 종료",
+                    "모니터 구성이나 캡처 장치가 바뀌어 줌을 종료했습니다. 다시 시작하세요.",
+                );
+            }
+        }
+    }
+
+    fn adjust_zoom(&mut self, steps: i32) {
+        if steps == 0 || self.zoom.is_none() {
+            return;
+        }
+        let Some(mut session) = self.state.borrow().zoom_session().cloned() else {
+            return;
+        };
+        let adjusted = ZoomGeometry::adjusted_magnification(session.magnification, steps);
+        if adjusted == session.magnification {
+            return;
+        }
+        session.magnification = adjusted;
+        session.center = ZoomGeometry::clamped_center(
+            session.center,
+            session.screen_size,
+            session.magnification,
+        );
+        self.state.borrow_mut().set_zoom_session(session);
+        if let Some(runtime) = self.zoom.as_mut() {
+            runtime
+                .view
+                .show_message(ZoomGeometry::magnification_label(adjusted));
+        }
+        self.logger.event(&format!(
+            "줌 배율 변경: steps={steps} magnification={adjusted:.2}"
+        ));
+        self.render_zoom("배율 변경");
+    }
+
+    fn reset_zoom(&mut self) {
+        let Some(mut session) = self.state.borrow().zoom_session().cloned() else {
+            return;
+        };
+        session.magnification = session.starting_magnification;
+        session.center = ZoomGeometry::clamped_center(
+            session.center,
+            session.screen_size,
+            session.magnification,
+        );
+        let magnification = session.magnification;
+        self.state.borrow_mut().set_zoom_session(session);
+        if let Some(runtime) = self.zoom.as_mut() {
+            runtime
+                .view
+                .show_message(ZoomGeometry::magnification_label(magnification));
+        }
+        self.logger
+            .event(&format!("줌 배율 초기화: magnification={magnification:.2}"));
+        self.render_zoom("배율 초기화");
+    }
+
+    fn cycle_zoom_follow_mode(&mut self) {
+        let Some(mut session) = self.state.borrow().zoom_session().cloned() else {
+            return;
+        };
+        session.follow_mode = session.follow_mode.next();
+        let mode = session.follow_mode;
+        self.state.borrow_mut().set_zoom_session(session);
+        let label = match mode {
+            ZoomFollowMode::Always => "항상",
+            ZoomFollowMode::Edge => "가장자리",
+            ZoomFollowMode::Fixed => "고정",
+        };
+        if let Some(runtime) = self.zoom.as_mut() {
+            runtime.view.show_message(format!("따라가기: {label}"));
+        }
+        self.logger.event(&format!("줌 따라가기 변경: {mode:?}"));
+        self.render_zoom("따라가기 변경");
+    }
+
+    fn toggle_zoom_freeze(&mut self) {
+        let Some(runtime) = self.zoom.as_mut() else {
+            return;
+        };
+        if !runtime.view.has_frame() {
+            runtime.view.show_message("첫 화면을 캡처하는 중입니다");
+            return;
+        }
+        let Some(mut session) = self.state.borrow().zoom_session().cloned() else {
+            return;
+        };
+        session.is_frozen = !session.is_frozen;
+        let frozen = session.is_frozen;
+        runtime
+            .capture
+            .set_accepting_frames(!frozen || session.is_previewing);
+        runtime.view.show_message(if frozen {
+            "정지 줌 · 판서 켜짐"
+        } else {
+            "라이브 줌"
+        });
+        self.state.borrow_mut().set_zoom_session(session);
+        let should_enable_annotation = frozen && !self.state.borrow().is_annotation_mode_enabled();
+        if should_enable_annotation {
+            self.state.borrow_mut().set_annotation_mode_enabled(true);
+            self.apply_effects(
+                vec![Effect::AnnotationModeChanged(true)],
+                "정지 줌 판서 활성화",
+            );
+        }
+        self.logger.event(&format!("줌 정지 전이: frozen={frozen}"));
+        self.render_zoom("정지 전이");
+    }
+
+    fn begin_zoom_preview(&mut self) {
+        let Some(mut session) = self.state.borrow().zoom_session().cloned() else {
+            return;
+        };
+        if session.is_previewing {
+            return;
+        }
+        let Some(runtime) = self.zoom.as_mut() else {
+            return;
+        };
+        runtime.preview_original_frame = runtime.view.current_frame();
+        runtime.capture.set_accepting_frames(true);
+        session.is_previewing = true;
+        self.state.borrow_mut().set_zoom_session(session);
+        self.logger.event("줌 미리보기 시작");
+        self.render_zoom("미리보기 시작");
+        if let Some(runtime) = self.zoom.as_ref() {
+            let _ = runtime.view.focus();
+        }
+    }
+
+    fn finish_zoom_preview(&mut self, cancelled: bool) {
+        let Some(mut session) = self.state.borrow().zoom_session().cloned() else {
+            return;
+        };
+        if !session.is_previewing {
+            return;
+        }
+        let Some(runtime) = self.zoom.as_mut() else {
+            return;
+        };
+        session.is_previewing = false;
+        if cancelled && session.is_frozen {
+            if let Some(frame) = runtime.preview_original_frame.take() {
+                runtime.view.restore_frame(frame);
+            }
+        } else {
+            runtime.preview_original_frame = None;
+        }
+        runtime.capture.set_accepting_frames(!session.is_frozen);
+        self.state.borrow_mut().set_zoom_session(session);
+        self.logger
+            .event(&format!("줌 미리보기 종료: cancelled={cancelled}"));
+        self.render_zoom("미리보기 종료");
+        if let Some(runtime) = self.zoom.as_ref() {
+            let _ = runtime.view.focus();
+        }
+    }
+
+    fn stop_or_cancel_zoom_preview(&mut self) {
+        let previewing = self
+            .state
+            .borrow()
+            .zoom_session()
+            .is_some_and(|session| session.is_previewing);
+        match stop_or_cancel_preview_action(previewing) {
+            ZoomStopAction::CancelPreview => self.finish_zoom_preview(true),
+            ZoomStopAction::StopZoom => self.stop_zoom("Esc/StopZoom", false),
+        }
+    }
+
+    fn handle_zoom_frame(&mut self) {
+        let frame = self
+            .zoom
+            .as_ref()
+            .and_then(|runtime| runtime.capture.take_latest());
+        let Some(frame) = frame else { return };
+        let Some(mut session) = self.state.borrow().zoom_session().cloned() else {
+            return;
+        };
+        let already_frozen = session.is_frozen
+            && !session.is_previewing
+            && self
+                .zoom
+                .as_ref()
+                .is_some_and(|runtime| runtime.view.has_frame());
+        if already_frozen {
+            return;
+        }
+        if let Some(runtime) = self.zoom.as_mut() {
+            runtime.view.set_frame(frame);
+            if session.is_frozen && !session.is_previewing {
+                runtime.capture.set_accepting_frames(false);
+            }
+        }
+        if !session.is_frozen && !session.is_previewing {
+            if let Some(pointer) = self.zoom_pointer_location() {
+                session.center = ZoomGeometry::followed_center(
+                    session.center,
+                    pointer,
+                    session.screen_size,
+                    session.magnification,
+                    session.follow_mode,
+                    session.follow_smoothness,
+                );
+                self.state.borrow_mut().set_zoom_session(session);
+            }
+        }
+        self.render_zoom("프레임 수신");
+    }
+
+    fn handle_zoom_pointer(&mut self, point: ZoomPoint) {
+        let Some(mut session) = self.state.borrow().zoom_session().cloned() else {
+            return;
+        };
+        if point.x < 0.0
+            || point.y < 0.0
+            || point.x >= session.screen_size.width
+            || point.y >= session.screen_size.height
+        {
+            return;
+        }
+        if let Some(runtime) = self.zoom.as_mut() {
+            runtime.view.set_pointer(point);
+        }
+        if session.is_previewing {
+            session.center =
+                ZoomGeometry::clamped_center(point, session.screen_size, session.magnification);
+            self.state.borrow_mut().set_zoom_session(session);
+        } else if !session.is_frozen {
+            session.center = ZoomGeometry::followed_center(
+                session.center,
+                point,
+                session.screen_size,
+                session.magnification,
+                session.follow_mode,
+                session.follow_smoothness,
+            );
+            self.state.borrow_mut().set_zoom_session(session);
+        }
+        self.render_zoom("포인터 이동");
+    }
+
+    fn handle_zoom_wheel(&mut self, delta: i32, control_down: bool) {
+        let previewing = self
+            .state
+            .borrow()
+            .zoom_session()
+            .is_some_and(|session| session.is_previewing);
+        if !previewing && !control_down {
+            if let Some(runtime) = self.zoom.as_mut() {
+                runtime.wheel_accumulator = 0;
+            }
+            return;
+        }
+        let steps = if let Some(runtime) = self.zoom.as_mut() {
+            runtime.wheel_accumulator += delta;
+            let steps = runtime.wheel_accumulator / 120;
+            runtime.wheel_accumulator -= steps * 120;
+            steps
+        } else {
+            0
+        };
+        self.adjust_zoom(steps);
+    }
+
+    fn handle_zoom_recreate(&mut self) {
+        let result = self.zoom.as_mut().map(|runtime| {
+            runtime.preview_original_frame = None;
+            runtime.view.clear_frame();
+            runtime.capture.set_accepting_frames(true);
+            runtime.capture.recreate_if_needed()
+        });
+        match result {
+            Some(Ok(true)) => self.logger.event("WGC 프레임 풀 재생성 완료"),
+            Some(Ok(false)) | None => {}
+            Some(Err(error)) => {
+                let message = format!("WGC 프레임 풀 재생성 실패: {error}");
+                self.stop_zoom("캡처 크기 변경 실패", false);
+                self.report_zoom_failure(message);
+            }
+        }
+    }
+
+    fn handle_zoom_capture_failure(&mut self) {
+        let message = self
+            .zoom
+            .as_ref()
+            .and_then(|runtime| runtime.capture.take_failure())
+            .unwrap_or_else(|| "Windows Graphics Capture가 중단되었습니다.".to_owned());
+        self.stop_zoom("캡처 실패", false);
+        self.report_zoom_failure(message);
+    }
+
+    fn zoom_pointer_location(&self) -> Option<ZoomPoint> {
+        let runtime = self.zoom.as_ref()?;
+        let mut point = POINT::default();
+        unsafe { GetCursorPos(&mut point) }.ok()?;
+        if point.x < runtime.monitor.rect.left
+            || point.x >= runtime.monitor.rect.right
+            || point.y < runtime.monitor.rect.top
+            || point.y >= runtime.monitor.rect.bottom
+        {
+            return None;
+        }
+        Some(ZoomPoint::new(
+            f64::from(point.x - runtime.monitor.rect.left),
+            f64::from(point.y - runtime.monitor.rect.top),
+        ))
+    }
+
+    fn render_zoom(&mut self, reason: &str) {
+        let Some(session) = self.state.borrow().zoom_session().cloned() else {
+            return;
+        };
+        if let Some(pointer) = self.zoom_pointer_location() {
+            if let Some(runtime) = self.zoom.as_mut() {
+                runtime.view.set_pointer(pointer);
+            }
+        }
+        let result = self
+            .zoom
+            .as_mut()
+            .map(|runtime| runtime.view.render(&session));
+        if let Some(Err(error)) = result {
+            let message = format!("줌 창 렌더 실패 ({reason}): {error}");
+            self.stop_zoom("렌더 장치 실패", false);
+            self.report_zoom_failure(message);
+        }
+    }
+
+    fn report_zoom_failure(&self, message: String) {
+        self.logger.event(&format!("줌 실패: {message}"));
+        if let Some(tray) = self.tray.as_ref() {
+            tray.show_warning("화면 줌 오류", &message);
         }
     }
 
@@ -1824,7 +2403,9 @@ impl App {
             music.stop_music_for_termination();
         }
         self.cancel_text_entry("앱 종료");
-        self.set_keyboard_hook(false);
+        self.zoom = None;
+        self.state.borrow_mut().end_zoom();
+        self.uninstall_keyboard_hook_for_shutdown();
         // Overlay HWNDs and graphics resources must be released on the UI thread before the tray
         // and hidden owner window go away.
         self.radial_palette = None;
@@ -1922,6 +2503,7 @@ fn run_message_loop(logger: Logger) -> Result<i32> {
         lesson_badge: None,
         break_timer: None,
         pending_break_request: None,
+        zoom: None,
         logger,
         shutting_down: false,
     });
@@ -1992,7 +2574,31 @@ unsafe extern "system" fn window_proc(
                 return LRESULT(0);
             }
             WM_APP_KEY => {
-                app.handle_annotation_key(HookKeyEvent::decode(wparam, lparam));
+                app.handle_mode_key(HookKeyEvent::decode(wparam, lparam));
+                return LRESULT(0);
+            }
+            WM_APP_ZOOM_FRAME => {
+                app.handle_zoom_frame();
+                return LRESULT(0);
+            }
+            WM_APP_ZOOM_CAPTURE_FAILED => {
+                app.handle_zoom_capture_failure();
+                return LRESULT(0);
+            }
+            WM_APP_ZOOM_POINTER => {
+                app.handle_zoom_pointer(decode_pointer(lparam));
+                return LRESULT(0);
+            }
+            WM_APP_ZOOM_WHEEL => {
+                app.handle_zoom_wheel(decode_wheel(wparam), lparam.0 != 0);
+                return LRESULT(0);
+            }
+            WM_APP_ZOOM_RECREATE => {
+                app.handle_zoom_recreate();
+                return LRESULT(0);
+            }
+            WM_APP_ZOOM_REDRAW => {
+                app.render_zoom("메시지 타이머");
                 return LRESULT(0);
             }
             WM_APP_TEXT_ENTRY_OPEN => {
@@ -2126,6 +2732,9 @@ unsafe extern "system" fn window_proc(
                 return LRESULT(0);
             }
             WM_DISPLAYCHANGE => {
+                if app.zoom.is_some() {
+                    app.stop_zoom("WM_DISPLAYCHANGE", true);
+                }
                 if let Some(tray) = app.tray.as_mut() {
                     tray.refresh_display("WM_DISPLAYCHANGE");
                 }
@@ -2211,6 +2820,10 @@ fn run_selftest(logger: &Logger) -> bool {
     };
 
     if !hinstance.is_invalid() {
+        failures.extend(crate::zoom_view::selftest_failures(
+            hinstance,
+            logger.clone(),
+        ));
         for id in tray::ALL_ICON_RESOURCE_IDS {
             for size in [16, 20, 24, 32, 48] {
                 let resource = PCWSTR(usize::from(id) as *const u16);
@@ -2371,8 +2984,11 @@ fn run_selftest(logger: &Logger) -> bool {
             "keymap: 판서 바인딩을 VK로 바꿀 수 없음: {binding}"
         ));
     }
+    for binding in crate::kbhook::unmappable_zoom_bindings(&AppSettings::default()) {
+        failures.push(format!("keymap: 줌 바인딩을 VK로 바꿀 수 없음: {binding}"));
+    }
 
-    match KeyboardHook::install(HWND::default(), &AppSettings::default()) {
+    match KeyboardHook::install(HWND::default(), &AppSettings::default(), true, false) {
         Ok(mut hook) => match hook.uninstall() {
             Ok(()) => logger.event("--selftest: 키보드 훅 설치/해제 왕복 통과"),
             Err(error) => failures.push(format!("keyboard hook: 해제 실패: {error}")),

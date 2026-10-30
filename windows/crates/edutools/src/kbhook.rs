@@ -21,7 +21,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 pub const WM_APP_KEY: u32 = 0x8000 + 3;
 const KEY_UP_FLAG: isize = 1;
 const CONSUMED_FLAG: isize = 1 << 1;
-const DEFINITION_SHIFT: usize = 2;
+const ZOOM_SCOPE_FLAG: isize = 1 << 2;
+const DEFINITION_SHIFT: usize = 3;
 const SCAN_CODE_COUNT: usize = 512;
 
 static TEXT_INPUT_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -34,11 +35,28 @@ struct CallbackState {
     hwnd: HWND,
     definitions: Vec<ShortcutDefinition>,
     settings: AppSettings,
-    pressed: [Option<usize>; SCAN_CODE_COUNT],
+    pressed: [Option<(usize, HookScope)>; SCAN_CODE_COUNT],
+    annotation_active: bool,
+    zoom_active: bool,
 }
 
 thread_local! {
     static CALLBACK_STATE: RefCell<Option<CallbackState>> = const { RefCell::new(None) };
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HookScope {
+    Annotation,
+    Zoom,
+}
+
+impl HookScope {
+    pub const fn shortcut_scope(self) -> ShortcutScope {
+        match self {
+            Self::Annotation => ShortcutScope::Annotation,
+            Self::Zoom => ShortcutScope::Zoom,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -47,6 +65,7 @@ pub struct HookKeyEvent {
     pub definition_index: usize,
     pub is_key_up: bool,
     pub consumed: bool,
+    pub scope: HookScope,
 }
 
 impl HookKeyEvent {
@@ -57,6 +76,11 @@ impl HookKeyEvent {
             definition_index: payload >> DEFINITION_SHIFT,
             is_key_up: lparam.0 & KEY_UP_FLAG != 0,
             consumed: lparam.0 & CONSUMED_FLAG != 0,
+            scope: if lparam.0 & ZOOM_SCOPE_FLAG != 0 {
+                HookScope::Zoom
+            } else {
+                HookScope::Annotation
+            },
         }
     }
 }
@@ -67,7 +91,12 @@ pub struct KeyboardHook {
 }
 
 impl KeyboardHook {
-    pub fn install(hwnd: HWND, settings: &AppSettings) -> Result<Self> {
+    pub fn install(
+        hwnd: HWND,
+        settings: &AppSettings,
+        annotation_active: bool,
+        zoom_active: bool,
+    ) -> Result<Self> {
         let definitions = ShortcutCatalog::resolved_definitions(&settings.shortcuts);
         // SAFETY: None requests the current executable module that contains the callback.
         let module = unsafe { GetModuleHandleW(None) }?;
@@ -82,6 +111,8 @@ impl KeyboardHook {
                 definitions: definitions.clone(),
                 settings: settings.clone(),
                 pressed: [None; SCAN_CODE_COUNT],
+                annotation_active,
+                zoom_active,
             });
         });
 
@@ -109,6 +140,15 @@ impl KeyboardHook {
 
     pub fn definition(&self, index: usize) -> Option<&ShortcutDefinition> {
         self.definitions.get(index)
+    }
+
+    pub fn set_scopes(&self, annotation_active: bool, zoom_active: bool) {
+        CALLBACK_STATE.with(|slot| {
+            if let Some(state) = slot.borrow_mut().as_mut() {
+                state.annotation_active = annotation_active;
+                state.zoom_active = zoom_active;
+            }
+        });
     }
 
     pub fn uninstall(&mut self) -> Result<()> {
@@ -147,6 +187,19 @@ pub fn unmappable_annotation_bindings(settings: &AppSettings) -> Vec<String> {
         .collect()
 }
 
+pub fn unmappable_zoom_bindings(settings: &AppSettings) -> Vec<String> {
+    ShortcutCatalog::resolved_definitions(&settings.shortcuts)
+        .into_iter()
+        .filter_map(|definition| {
+            let binding = definition.binding(ShortcutScope::Zoom)?;
+            keymap::token_to_vk(&binding.key)
+                .is_none()
+                .then(|| format!("{} ({})", definition.id, binding.key))
+        })
+        .collect()
+}
+
+#[cfg(test)]
 fn matching_annotation_definition(
     definitions: &[ShortcutDefinition],
     key_code: u32,
@@ -158,6 +211,36 @@ fn matching_annotation_definition(
             .binding(ShortcutScope::Annotation)
             .is_some_and(|binding| binding.matches(key, modifiers))
     })
+}
+
+fn matching_mode_definition(
+    definitions: &[ShortcutDefinition],
+    key_code: u32,
+    modifiers: ShortcutModifiers,
+    annotation_active: bool,
+    zoom_active: bool,
+) -> Option<(usize, HookScope)> {
+    let key = keymap::vk_to_token(key_code)?;
+    if zoom_active {
+        if let Some(index) = definitions.iter().position(|definition| {
+            definition
+                .binding(ShortcutScope::Zoom)
+                .is_some_and(|binding| binding.matches(key, modifiers))
+        }) {
+            return Some((index, HookScope::Zoom));
+        }
+    }
+    if annotation_active {
+        return definitions
+            .iter()
+            .position(|definition| {
+                definition
+                    .binding(ShortcutScope::Annotation)
+                    .is_some_and(|binding| binding.matches(key, modifiers))
+            })
+            .map(|index| (index, HookScope::Annotation));
+    }
+    None
 }
 
 unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -197,9 +280,15 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
         let (key_index, physical_key_code) = physical_key(event)?;
 
         if is_key_up {
-            let definition_index = state.pressed[key_index].take()?;
-            let posted =
-                post_hook_event(state.hwnd, physical_key_code, definition_index, true, true);
+            let (definition_index, scope) = state.pressed[key_index].take()?;
+            let posted = post_hook_event(
+                state.hwnd,
+                physical_key_code,
+                definition_index,
+                scope,
+                true,
+                true,
+            );
             return Some(posted);
         }
 
@@ -209,8 +298,13 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
         }
 
         let modifiers = current_modifiers();
-        let definition_index =
-            matching_annotation_definition(&state.definitions, event.vkCode, modifiers)?;
+        let (definition_index, scope) = matching_mode_definition(
+            &state.definitions,
+            event.vkCode,
+            modifiers,
+            state.annotation_active,
+            state.zoom_active,
+        )?;
         if TEXT_INPUT_ACTIVE.load(Ordering::Acquire)
             && !matches!(
                 state.definitions[definition_index].command,
@@ -228,11 +322,12 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
             state.hwnd,
             physical_key_code,
             definition_index,
+            scope,
             false,
             consumed,
         );
         if consumed && posted {
-            state.pressed[key_index] = Some(definition_index);
+            state.pressed[key_index] = Some((definition_index, scope));
         }
         Some(consumed && posted)
     });
@@ -259,6 +354,7 @@ fn post_hook_event(
     hwnd: HWND,
     key_code: u32,
     definition_index: usize,
+    scope: HookScope,
     is_key_up: bool,
     consumed: bool,
 ) -> bool {
@@ -268,6 +364,9 @@ fn post_hook_event(
     }
     if consumed {
         payload |= CONSUMED_FLAG;
+    }
+    if scope == HookScope::Zoom {
+        payload |= ZOOM_SCOPE_FLAG;
     }
     // SAFETY: WM_APP_KEY carries only integer values and hwnd belongs to the UI thread.
     unsafe {
@@ -305,7 +404,7 @@ fn key_is_down(key: u16) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::matching_annotation_definition;
+    use super::{matching_annotation_definition, matching_mode_definition, HookScope};
     use crate::render::px_per_dip;
     use edutools_core::settings::AppSettings;
     use edutools_core::shortcut::{ShortcutCatalog, ShortcutModifiers};
@@ -335,5 +434,39 @@ mod tests {
             );
         }
         assert!((3.0 * px_per_dip(144) - 4.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn zoom_scope_precedes_annotation_scope_table() {
+        let definitions = ShortcutCatalog::resolved_definitions(&AppSettings::default().shortcuts);
+        let cases = [
+            (
+                0x20,
+                ShortcutModifiers::empty(),
+                true,
+                true,
+                Some(HookScope::Zoom),
+            ),
+            (
+                0x50,
+                ShortcutModifiers::empty(),
+                true,
+                true,
+                Some(HookScope::Zoom),
+            ),
+            (
+                0x42,
+                ShortcutModifiers::empty(),
+                true,
+                true,
+                Some(HookScope::Annotation),
+            ),
+            (0x42, ShortcutModifiers::empty(), false, true, None),
+        ];
+        for (vk, modifiers, annotation, zoom, expected_scope) in cases {
+            let actual = matching_mode_definition(&definitions, vk, modifiers, annotation, zoom)
+                .map(|(_, scope)| scope);
+            assert_eq!(actual, expected_scope, "VK {vk:#x}");
+        }
     }
 }

@@ -4,6 +4,8 @@ mod app;
 mod app_icon;
 #[cfg(windows)]
 mod break_screen;
+#[cfg(windows)]
+mod capture;
 #[cfg(any(windows, test))]
 mod help;
 #[cfg(any(windows, test))]
@@ -44,6 +46,8 @@ mod text_entry;
 mod tray;
 #[cfg(windows)]
 mod z_bands;
+#[cfg(windows)]
+mod zoom_view;
 
 #[cfg(windows)]
 fn main() {
