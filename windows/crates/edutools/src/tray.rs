@@ -24,6 +24,7 @@ pub const MENU_EXIT: u16 = 2;
 pub const MENU_DISPLAY_PRESET_BASE: u16 = 100;
 pub const MENU_SETTINGS: u16 = 3;
 pub const MENU_DISPLAY_SETTINGS: u16 = 4;
+pub const MENU_CLEAR_ALL: u16 = 5;
 pub const APP_ICON_RESOURCE_ID: u16 = 1;
 pub const ALL_ICON_RESOURCE_IDS: [u16; 5] = [APP_ICON_RESOURCE_ID, 101, 102, 103, 104];
 
@@ -140,6 +141,14 @@ impl Tray {
                 usize::from(MENU_TOGGLE_ANNOTATION),
                 w!("판서 모드"),
             )
+            .and_then(|_| {
+                AppendMenuW(
+                    menu,
+                    MF_STRING,
+                    usize::from(MENU_CLEAR_ALL),
+                    w!("전체 지우기"),
+                )
+            })
             .and_then(|_| AppendMenuW(menu, MF_POPUP, display_menu.0 as usize, w!("화면 구성")))
             .and_then(|_| AppendMenuW(menu, MF_STRING, usize::from(MENU_SETTINGS), w!("설정…")))
             .and_then(|_| AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null()))
