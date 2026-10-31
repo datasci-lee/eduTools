@@ -32,11 +32,16 @@ use crate::monitor::{
     monitor_at_point, ConnectionSetOutcome, DisplayChangeState, DisplayConfiguration,
     DisplayTargetKey, Monitor,
 };
+use crate::mousehook::{MouseHook, MouseHookEvent, MouseHookSubscriber, WM_APP_PRESENTER_MOUSE};
 use crate::music::{BreakMusicManager, WM_APP_MUSIC_LAUNCH_RESULT, WM_APP_MUSIC_PAUSE_RESULT};
 use crate::overlay::{OverlayManager, SYNC_MESSAGE};
 use crate::palette::{
     command_for_item, item_enabled, PaletteItemId, PaletteManager, WM_APP_PALETTE_ACTION,
     WM_APP_PALETTE_REDRAW, WM_APP_PALETTE_SAVE_POSITION, WM_APP_PALETTE_TOGGLE_ORIENTATION,
+};
+use crate::pass_through::{key_poll_decision, KeyPollDecision, PassThroughTimerPlan};
+use crate::presenter::{
+    PresenterEffects, PRESENTER_FRAME_INTERVAL_MS, PRESENTER_FRAME_TIMER_ID, WM_APP_PRESENTER_KEY,
 };
 use crate::radial_palette::{
     RadialPaletteManager, WM_APP_RADIAL_ACTION, WM_APP_RADIAL_COLLAPSE, WM_APP_RADIAL_REDRAW,
@@ -90,7 +95,9 @@ use edutools_core::settings_transfer::{SettingsBundle, SettingsTransfer};
 use edutools_core::shortcut::{
     ShortcutCatalog, ShortcutCommand, ShortcutDefinition, ShortcutModifiers, ShortcutScope,
 };
-use edutools_core::state::{AppState, FavoriteSaveResult, SettingsMutation};
+use edutools_core::state::{
+    AppState, FavoriteSaveResult, PassThroughDefaults, PassThroughModeSource, SettingsMutation,
+};
 use edutools_core::zoom::{
     stop_or_cancel_preview_action, zoom_gesture_control_locked, Point as ZoomPoint,
     Rect as ZoomRect, Size as ZoomSize, ZoomFollowMode, ZoomGeometry, ZoomGestureControl,
@@ -118,6 +125,9 @@ use windows::Win32::UI::HiDpi::{
     GetAwarenessFromDpiAwarenessContext, GetThreadDpiAwarenessContext,
     DPI_AWARENESS_PER_MONITOR_AWARE,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON, VK_XBUTTON1, VK_XBUTTON2,
+};
 use windows::Win32::UI::Input::Pointer::EnableMouseInPointer;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow, DispatchMessageW, FindWindowW,
@@ -138,6 +148,9 @@ const DISPLAY_SYNC_TIMER_ID: usize = 0xED31;
 const DISPLAY_STABILITY_TIMER_ID: usize = 0xED32;
 const DISPLAY_RETRY_TIMER_ID: usize = 0xED33;
 const RADIAL_KEY_CAP_TIMER_ID: usize = 0xE118;
+const PASS_THROUGH_IDLE_TIMER_ID: usize = 0xED42;
+const PASS_THROUGH_MAXIMUM_HOLD_TIMER_ID: usize = 0xED43;
+const PASS_THROUGH_KEY_POLL_TIMER_ID: usize = 0xED44;
 const DISPLAY_SYNC_INTERVAL_MS: u32 = 300;
 
 pub fn run() -> i32 {
@@ -365,6 +378,12 @@ struct App {
     hotkeys: Option<HotkeyCenter>,
     shortcut_recording: bool,
     keyboard_hook: Option<KeyboardHook>,
+    mouse_hook: MouseHook,
+    presenter: PresenterEffects,
+    presenter_frame_pending: bool,
+    pass_through_runtime_enabled: bool,
+    pass_through_key_started_at: Option<f64>,
+    pass_through_key_polling_disabled: bool,
     pressed_shortcuts: PressedShortcuts,
     radial_key_cap_state: RadialKeyCapState,
     overlays: Option<OverlayManager>,
@@ -407,6 +426,18 @@ impl Drop for ZoomRuntime {
         self.preview_original_frame = None;
         self.view.clear_frame();
     }
+}
+
+fn async_key_is_down(vk: u32) -> bool {
+    i32::try_from(vk)
+        .ok()
+        .is_some_and(|vk| unsafe { GetAsyncKeyState(vk) as u16 & 0x8000 != 0 })
+}
+
+fn mouse_buttons_pressed() -> bool {
+    [VK_LBUTTON, VK_RBUTTON, VK_MBUTTON, VK_XBUTTON1, VK_XBUTTON2]
+        .into_iter()
+        .any(|vk| unsafe { GetAsyncKeyState(i32::from(vk.0)) as u16 & 0x8000 != 0 })
 }
 
 impl App {
@@ -1532,6 +1563,30 @@ impl App {
                 definition.id
             ));
             self.apply_display_preset(*index, DisplayApplySource::Manual);
+        } else if matches!(
+            definition.command,
+            ShortcutCommand::ToggleSpotlight
+                | ShortcutCommand::ToggleCursorHighlight
+                | ShortcutCommand::ToggleKeystrokeDisplay
+        ) {
+            let context = DispatchContext {
+                scope: ShortcutScope::Global,
+                spotlight_adjusted_width: self.presenter.spotlight_enabled(),
+                now: monotonic_seconds(),
+                ..DispatchContext::default()
+            };
+            let result = dispatch(
+                &definition.command,
+                &mut self.state.borrow_mut(),
+                &self.settings,
+                context,
+            );
+            match result {
+                Ok(effects) => self.apply_effects(effects, &format!("전역 키 {}", definition.id)),
+                Err(error) => self
+                    .logger
+                    .event(&format!("{} core dispatch 실패: {error}", definition.id)),
+            }
         } else if definition.command == ShortcutCommand::ToggleLessonTimer
             || definition.command == ShortcutCommand::ShowBreakTimerSetup
         {
@@ -1652,6 +1707,9 @@ impl App {
                     .is_empty()
             }),
             help_visible: self.help.as_ref().is_some_and(HelpManager::is_visible),
+            spotlight_adjusted_width: self.presenter.spotlight_enabled(),
+            now: monotonic_seconds(),
+            pass_through_monitor_available: true,
             ..DispatchContext::default()
         };
         let dispatch = if event.is_key_up {
@@ -1915,6 +1973,273 @@ impl App {
         self.pressed_shortcuts = PressedShortcuts::new();
     }
 
+    fn synchronize_presenter_mouse_hook(&mut self, reason: &str) -> bool {
+        let desired = [
+            (
+                MouseHookSubscriber::Spotlight,
+                self.presenter.spotlight_enabled(),
+            ),
+            (
+                MouseHookSubscriber::CursorHighlight,
+                self.presenter.cursor_highlight_enabled(),
+            ),
+            (
+                MouseHookSubscriber::PassThrough,
+                self.state.borrow().is_pass_through_mode_enabled(),
+            ),
+        ];
+        for (subscriber, enabled) in desired {
+            match self.mouse_hook.set_subscriber(subscriber, enabled) {
+                Ok(true) => self.logger.event(&format!(
+                    "전역 마우스 훅 구독 변경: subscriber={subscriber:?} enabled={enabled} count={} installed={} reason={reason}",
+                    self.mouse_hook.subscriber_count(),
+                    self.mouse_hook.is_installed()
+                )),
+                Ok(false) => {}
+                Err(error) => {
+                    let message = format!(
+                        "전역 마우스 훅 구독 실패: subscriber={subscriber:?} enabled={enabled} count={} reason={reason} error={error}",
+                        self.mouse_hook.subscriber_count()
+                    );
+                    self.logger.event(&message);
+                    if let Some(tray) = self.tray.as_ref() {
+                        tray.show_warning("전역 마우스 훅 오류", &message);
+                    }
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    fn prepare_pass_through_mouse_hook(&mut self, reason: &str) -> bool {
+        match self
+            .mouse_hook
+            .set_subscriber(MouseHookSubscriber::PassThrough, true)
+        {
+            Ok(changed) => {
+                if changed {
+                    self.logger.event(&format!(
+                        "전역 마우스 훅 통과 모드 사전 설치: count={} reason={reason}",
+                        self.mouse_hook.subscriber_count()
+                    ));
+                }
+                true
+            }
+            Err(error) => {
+                let message = format!("통과 모드 전역 마우스 훅 설치 실패: {error}");
+                self.logger.event(&message);
+                if let Some(tray) = self.tray.as_ref() {
+                    tray.show_warning("통과 모드 훅 오류", &message);
+                }
+                false
+            }
+        }
+    }
+
+    fn schedule_presenter_frame(&mut self) {
+        if self.presenter_frame_pending {
+            return;
+        }
+        let timer = unsafe {
+            SetTimer(
+                Some(self.hwnd),
+                PRESENTER_FRAME_TIMER_ID,
+                PRESENTER_FRAME_INTERVAL_MS,
+                None,
+            )
+        };
+        if timer == 0 {
+            self.logger.event("발표 효과 16ms 프레임 타이머 설정 실패");
+        } else {
+            self.presenter_frame_pending = true;
+        }
+    }
+
+    fn render_presenter(&mut self, reason: &str) {
+        let _ = unsafe { KillTimer(Some(self.hwnd), PRESENTER_FRAME_TIMER_ID) };
+        self.presenter_frame_pending = false;
+        if let Err(error) = self.presenter.render() {
+            let message = format!("발표 효과 렌더 실패: reason={reason} error={error}");
+            self.logger.event(&message);
+            if let Some(tray) = self.tray.as_ref() {
+                tray.show_warning("발표 효과 오류", &message);
+            }
+            return;
+        }
+        if self.presenter.needs_animation() {
+            self.schedule_presenter_frame();
+        }
+    }
+
+    fn handle_presenter_mouse(&mut self, event: MouseHookEvent) {
+        let radius_adjusted = self.presenter.handle_mouse_event(event);
+        if radius_adjusted {
+            self.logger.event(&format!(
+                "스포트라이트 반지름 변경: radius={}",
+                self.presenter.spotlight_radius()
+            ));
+        }
+        if event.is_interaction() && self.state.borrow().is_pass_through_mode_enabled() {
+            let now = monotonic_seconds();
+            if self.state.borrow_mut().record_pass_through_interaction(now) {
+                self.logger
+                    .event("통과 모드 타이머 재설정: reason=mouse interaction");
+                self.schedule_pass_through_timers("마우스 상호작용");
+            }
+        }
+        self.schedule_presenter_frame();
+    }
+
+    fn handle_presenter_key(&mut self, vk: u32) {
+        self.presenter.handle_key(vk);
+        self.schedule_presenter_frame();
+    }
+
+    fn schedule_pass_through_timers(&mut self, reason: &str) {
+        let _ = unsafe { KillTimer(Some(self.hwnd), PASS_THROUGH_IDLE_TIMER_ID) };
+        let _ = unsafe { KillTimer(Some(self.hwnd), PASS_THROUGH_MAXIMUM_HOLD_TIMER_ID) };
+        let _ = unsafe { KillTimer(Some(self.hwnd), PASS_THROUGH_KEY_POLL_TIMER_ID) };
+        let now = monotonic_seconds();
+        let (source, deadlines) = {
+            let state = self.state.borrow();
+            (
+                state.pass_through_mode_source(),
+                state.pass_through_deadlines(),
+            )
+        };
+        let plan = PassThroughTimerPlan::from_core(now, source, deadlines);
+        if let Some(delay) = plan.idle_ms {
+            if unsafe { SetTimer(Some(self.hwnd), PASS_THROUGH_IDLE_TIMER_ID, delay, None) } == 0 {
+                self.logger.event("통과 모드 idle SetTimer 실패");
+            }
+        }
+        if let Some(delay) = plan.maximum_hold_ms {
+            if unsafe {
+                SetTimer(
+                    Some(self.hwnd),
+                    PASS_THROUGH_MAXIMUM_HOLD_TIMER_ID,
+                    delay,
+                    None,
+                )
+            } == 0
+            {
+                self.logger.event("통과 모드 maximum-hold SetTimer 실패");
+            }
+        }
+        let poll_enabled = plan.poll_key.is_some() && !self.pass_through_key_polling_disabled;
+        if poll_enabled {
+            if self.pass_through_key_started_at.is_none() {
+                self.pass_through_key_started_at = Some(now);
+            }
+            let interval = (PassThroughDefaults::KEY_STATE_POLLING_INTERVAL * 1_000.0)
+                .ceil()
+                .max(1.0) as u32;
+            if unsafe {
+                SetTimer(
+                    Some(self.hwnd),
+                    PASS_THROUGH_KEY_POLL_TIMER_ID,
+                    interval,
+                    None,
+                )
+            } == 0
+            {
+                self.logger.event("통과 모드 key-poll SetTimer 실패");
+            }
+        } else if plan.poll_key.is_none() {
+            self.pass_through_key_started_at = None;
+            self.pass_through_key_polling_disabled = false;
+        }
+        self.logger.event(&format!(
+            "통과 모드 타이머 설정: reason={reason} idleMs={:?} maximumHoldMs={:?} keyPoll={}",
+            plan.idle_ms, plan.maximum_hold_ms, poll_enabled
+        ));
+    }
+
+    fn cancel_pass_through_timers(&mut self) {
+        let _ = unsafe { KillTimer(Some(self.hwnd), PASS_THROUGH_IDLE_TIMER_ID) };
+        let _ = unsafe { KillTimer(Some(self.hwnd), PASS_THROUGH_MAXIMUM_HOLD_TIMER_ID) };
+        let _ = unsafe { KillTimer(Some(self.hwnd), PASS_THROUGH_KEY_POLL_TIMER_ID) };
+        self.pass_through_key_started_at = None;
+        self.pass_through_key_polling_disabled = false;
+    }
+
+    fn finish_pass_through_runtime(&mut self, reason: &str) {
+        let was_enabled = self.pass_through_runtime_enabled;
+        self.pass_through_runtime_enabled = false;
+        self.cancel_pass_through_timers();
+        if let Some(overlays) = self.overlays.as_mut() {
+            if let Err(error) = overlays.set_pass_through(false) {
+                self.report_overlay_error("통과 모드 종료 반영", &error);
+            }
+        }
+        self.synchronize_presenter_mouse_hook(reason);
+        if was_enabled {
+            self.logger
+                .event(&format!("통과 모드 종료: reason={reason}"));
+        }
+    }
+
+    fn handle_pass_through_expiry(&mut self, maximum_hold: bool) {
+        let timer_id = if maximum_hold {
+            PASS_THROUGH_MAXIMUM_HOLD_TIMER_ID
+        } else {
+            PASS_THROUGH_IDLE_TIMER_ID
+        };
+        let _ = unsafe { KillTimer(Some(self.hwnd), timer_id) };
+        let now = monotonic_seconds();
+        let pressed = mouse_buttons_pressed();
+        let ended = self.state.borrow_mut().expire_pass_through(now, pressed);
+        if ended {
+            self.finish_pass_through_runtime(if maximum_hold {
+                "maximum hold timeout"
+            } else {
+                "interaction idle timeout"
+            });
+        } else if self.state.borrow().is_pass_through_mode_enabled() {
+            self.logger.event(&format!(
+                "통과 모드 타이머 만료 후 유지: reason={} mouseButtonsPressed={pressed}",
+                if maximum_hold { "maximum hold" } else { "idle" }
+            ));
+            self.schedule_pass_through_timers("눌린 마우스 버튼으로 재설정");
+        }
+    }
+
+    fn poll_pass_through_key(&mut self) {
+        let source = self.state.borrow().pass_through_mode_source();
+        let Some(PassThroughModeSource::Key(vk)) = source else {
+            let _ = unsafe { KillTimer(Some(self.hwnd), PASS_THROUGH_KEY_POLL_TIMER_ID) };
+            self.pass_through_key_started_at = None;
+            return;
+        };
+        let started = self
+            .pass_through_key_started_at
+            .unwrap_or_else(monotonic_seconds);
+        let elapsed = monotonic_seconds() - started;
+        let key_is_down = async_key_is_down(vk);
+        match key_poll_decision(
+            key_is_down,
+            elapsed,
+            PassThroughDefaults::KEY_STATE_POLLING_TRUST_WINDOW,
+        ) {
+            KeyPollDecision::Continue => {}
+            KeyPollDecision::DisableDuringTrustWindow => {
+                let _ = unsafe { KillTimer(Some(self.hwnd), PASS_THROUGH_KEY_POLL_TIMER_ID) };
+                self.pass_through_key_started_at = None;
+                self.pass_through_key_polling_disabled = true;
+                self.logger.event(&format!(
+                    "통과 모드 키 폴링 종료: reason=trust-window releasedWithinMs={}",
+                    (PassThroughDefaults::KEY_STATE_POLLING_TRUST_WINDOW * 1_000.0) as u32
+                ));
+            }
+            KeyPollDecision::EndPassThrough => {
+                if self.state.borrow_mut().end_key_pass_through(vk) {
+                    self.finish_pass_through_runtime("key polling observed release");
+                }
+            }
+        }
+    }
+
     fn apply_effects(&mut self, effects: Vec<Effect>, source: &str) {
         let mut runtime_state_changed = false;
         for effect in effects {
@@ -1932,6 +2257,9 @@ impl App {
                     if !enabled {
                         self.cancel_text_entry("판서 끔");
                         self.reset_radial_key_caps("판서 끔");
+                        if self.pass_through_runtime_enabled {
+                            self.finish_pass_through_runtime("annotation mode ended");
+                        }
                     }
                     self.synchronize_keyboard_hook();
                     if let Some(tray) = self.tray.as_mut() {
@@ -1966,10 +2294,17 @@ impl App {
                     ));
                 }
                 Effect::PassThroughModeChanged(enabled) => {
-                    if let Some(overlays) = self.overlays.as_mut() {
-                        if let Err(error) = overlays.set_pass_through(enabled) {
-                            self.report_overlay_error("통과 모드 반영", &error);
+                    if enabled {
+                        self.pass_through_runtime_enabled = true;
+                        if let Some(overlays) = self.overlays.as_mut() {
+                            if let Err(error) = overlays.set_pass_through(true) {
+                                self.report_overlay_error("통과 모드 반영", &error);
+                            }
                         }
+                        self.synchronize_presenter_mouse_hook("통과 모드 시작");
+                        self.schedule_pass_through_timers("core deadline 시작");
+                    } else {
+                        self.finish_pass_through_runtime("keyUp/core effect");
                     }
                     self.logger.event(&format!(
                         "효과 ({source}): 통과 모드 {}",
@@ -2191,6 +2526,53 @@ impl App {
                     } else {
                         self.start_zoom();
                     }
+                }
+                Effect::ToggleSpotlight => {
+                    let enabled = self.presenter.toggle_spotlight();
+                    self.synchronize_presenter_mouse_hook("스포트라이트 토글");
+                    self.logger.event(&format!(
+                        "효과 ({source}): 스포트라이트 {}",
+                        if enabled { "켜짐" } else { "꺼짐" }
+                    ));
+                    self.render_presenter("스포트라이트 토글");
+                }
+                Effect::ToggleCursorHighlight => {
+                    let enabled = self.presenter.toggle_cursor_highlight();
+                    self.synchronize_presenter_mouse_hook("커서 강조 토글");
+                    self.logger.event(&format!(
+                        "효과 ({source}): 커서 강조 {}",
+                        if enabled { "켜짐" } else { "꺼짐" }
+                    ));
+                    self.render_presenter("커서 강조 토글");
+                }
+                Effect::ToggleKeystrokeDisplay => match self.presenter.toggle_keystroke_display() {
+                    Ok(enabled) => {
+                        self.logger.event(&format!(
+                            "효과 ({source}): 키 입력 표시 {}",
+                            if enabled { "켜짐" } else { "꺼짐" }
+                        ));
+                        self.render_presenter("키 입력 표시 토글");
+                    }
+                    Err(error) => {
+                        let message = format!("키 입력 표시 훅 토글 실패: {error}");
+                        self.logger.event(&message);
+                        if let Some(tray) = self.tray.as_ref() {
+                            tray.show_warning("키 입력 표시 오류", &message);
+                        }
+                    }
+                },
+                Effect::AdjustSpotlightWidth(steps) => {
+                    let applied = self.presenter.adjust_radius(steps);
+                    self.logger.event(&format!(
+                        "스포트라이트 반지름 변경: steps={steps} applied={applied} radius={}",
+                        self.presenter.spotlight_radius()
+                    ));
+                    if applied {
+                        self.render_presenter("스포트라이트 반지름 명령");
+                    }
+                }
+                Effect::OpenSettings => {
+                    self.show_settings(SettingsTab::General, source);
                 }
                 Effect::AdjustZoom(steps) => self.adjust_zoom(steps),
                 Effect::ResetZoom => self.reset_zoom(),
@@ -3285,6 +3667,8 @@ impl App {
 
     fn handle_display_retry_timer(&mut self) {
         let _ = unsafe { KillTimer(Some(self.hwnd), DISPLAY_RETRY_TIMER_ID) };
+        let _ = unsafe { KillTimer(Some(self.hwnd), PRESENTER_FRAME_TIMER_ID) };
+        self.cancel_pass_through_timers();
         let configuration = match current_display_configuration() {
             Ok(configuration) => configuration,
             Err(error) => {
@@ -3371,10 +3755,18 @@ impl App {
             }
             None => None,
         };
+        let pass_through_command = matches!(&command, ShortcutCommand::TogglePassThroughMode);
+        let pass_through_already_enabled = self.state.borrow().is_pass_through_mode_enabled();
+        let pass_through_monitor_available = !pass_through_command
+            || pass_through_already_enabled
+            || self.prepare_pass_through_mouse_hook("선형 팔레트 통과 모드");
         let context = DispatchContext {
             scope: ShortcutScope::Annotation,
             display_id: display_id.as_deref(),
             board_display_id: display_id.as_deref(),
+            spotlight_adjusted_width: self.presenter.spotlight_enabled(),
+            now: monotonic_seconds(),
+            pass_through_monitor_available,
             ..DispatchContext::default()
         };
         let result = dispatch(
@@ -3388,6 +3780,9 @@ impl App {
             Err(error) => self.logger.event(&format!(
                 "팔레트 core dispatch 실패: item={item:?} command={command:?}: {error}"
             )),
+        }
+        if pass_through_command {
+            self.synchronize_presenter_mouse_hook("선형 팔레트 dispatch 완료");
         }
     }
 
@@ -3426,11 +3821,20 @@ impl App {
             .as_ref()
             .and_then(|overlays| overlays.monitor_key_at_cursor().ok())
             .flatten();
+        let pass_through_command =
+            matches!(&definition.command, ShortcutCommand::TogglePassThroughMode);
+        let pass_through_already_enabled = self.state.borrow().is_pass_through_mode_enabled();
+        let pass_through_monitor_available = !pass_through_command
+            || pass_through_already_enabled
+            || self.prepare_pass_through_mouse_hook("도움말 통과 모드");
         let context = DispatchContext {
             scope,
             display_id: display_id.as_deref(),
             board_display_id: display_id.as_deref(),
             help_visible: true,
+            spotlight_adjusted_width: self.presenter.spotlight_enabled(),
+            now: monotonic_seconds(),
+            pass_through_monitor_available,
             ..DispatchContext::default()
         };
         let dispatched = dispatch(
@@ -3446,6 +3850,9 @@ impl App {
                 definition.id,
                 scope.as_str()
             )),
+        }
+        if pass_through_command {
+            self.synchronize_presenter_mouse_hook("도움말 dispatch 완료");
         }
         if let Some(help) = self.help.as_mut() {
             help.close(&self.state.borrow(), "항목 실행");
@@ -3608,7 +4015,7 @@ impl App {
                 }
             }
             RadialPaletteIntent::OpenSettings => {
-                self.show_settings(SettingsTab::General, "원형 팔레트");
+                self.apply_effects(vec![Effect::OpenSettings], "원형 팔레트");
             }
             RadialPaletteIntent::SaveFavorite => {
                 let result = self.state.borrow().save_current_favorite(&self.settings);
@@ -3694,6 +4101,11 @@ impl App {
             }
             None => None,
         };
+        let pass_through_command = matches!(&command, ShortcutCommand::TogglePassThroughMode);
+        let pass_through_already_enabled = self.state.borrow().is_pass_through_mode_enabled();
+        let pass_through_monitor_available = !pass_through_command
+            || pass_through_already_enabled
+            || self.prepare_pass_through_mouse_hook("원형 팔레트 통과 모드");
         let context = DispatchContext {
             scope: ShortcutScope::Annotation,
             display_id: display_id.as_deref(),
@@ -3702,6 +4114,9 @@ impl App {
                 .radial_palette
                 .as_ref()
                 .is_some_and(RadialPaletteManager::is_expanded),
+            spotlight_adjusted_width: self.presenter.spotlight_enabled(),
+            now: monotonic_seconds(),
+            pass_through_monitor_available,
             ..DispatchContext::default()
         };
         let dispatched = dispatch(
@@ -3727,13 +4142,24 @@ impl App {
                 "원형 팔레트 core dispatch 실패: target={target} command={command:?}: {error}"
             )),
         }
+        if pass_through_command {
+            self.synchronize_presenter_mouse_hook("원형 팔레트 dispatch 완료");
+        }
     }
 
     fn refresh_radial_palette(&mut self, reason: &str) {
         let (hidden, error) = if let Some(radial) = self.radial_palette.as_mut() {
-            let error = radial
+            let mut error = radial
                 .refresh(&self.state.borrow(), &self.settings, reason)
                 .err();
+            if error.is_none() {
+                error = radial
+                    .set_presenter_effects(
+                        self.presenter.spotlight_enabled(),
+                        self.presenter.cursor_highlight_enabled(),
+                    )
+                    .err();
+            }
             (!radial.is_visible(), error)
         } else {
             (true, None)
@@ -4154,6 +4580,16 @@ impl App {
         self.zoom = None;
         self.state.borrow_mut().end_zoom();
         self.uninstall_keyboard_hook_for_shutdown();
+        if let Err(error) = self.presenter.shutdown() {
+            self.logger
+                .event(&format!("앱 종료 중 발표 키보드 훅 해제 실패: {error}"));
+        }
+        if let Err(error) = self.mouse_hook.uninstall() {
+            self.logger
+                .event(&format!("앱 종료 중 전역 마우스 훅 해제 실패: {error}"));
+        } else {
+            self.logger.event("전역 마우스 훅 해제: reason=앱 종료");
+        }
         // Overlay HWNDs and graphics resources must be released on the UI thread before the tray
         // and hidden owner window go away.
         self.radial_palette = None;
@@ -4270,6 +4706,12 @@ fn run_message_loop(logger: Logger, initial_import_path: Option<PathBuf>) -> Res
         hotkeys: None,
         shortcut_recording: false,
         keyboard_hook: None,
+        mouse_hook: MouseHook::new(hwnd),
+        presenter: PresenterEffects::new(hwnd, hinstance, logger.clone()),
+        presenter_frame_pending: false,
+        pass_through_runtime_enabled: false,
+        pass_through_key_started_at: None,
+        pass_through_key_polling_disabled: false,
         pressed_shortcuts: PressedShortcuts::new(),
         radial_key_cap_state: RadialKeyCapState::Idle,
         overlays: None,
@@ -4383,12 +4825,40 @@ unsafe extern "system" fn window_proc(
                 app.handle_display_retry_timer();
                 return LRESULT(0);
             }
+            WM_TIMER if wparam.0 == PRESENTER_FRAME_TIMER_ID => {
+                app.render_presenter("16ms 프레임 타이머");
+                return LRESULT(0);
+            }
+            WM_TIMER if wparam.0 == PASS_THROUGH_IDLE_TIMER_ID => {
+                app.handle_pass_through_expiry(false);
+                return LRESULT(0);
+            }
+            WM_TIMER if wparam.0 == PASS_THROUGH_MAXIMUM_HOLD_TIMER_ID => {
+                app.handle_pass_through_expiry(true);
+                return LRESULT(0);
+            }
+            WM_TIMER if wparam.0 == PASS_THROUGH_KEY_POLL_TIMER_ID => {
+                app.poll_pass_through_key();
+                return LRESULT(0);
+            }
             WM_HOTKEY => {
                 app.handle_hotkey(wparam.0 as i32);
                 return LRESULT(0);
             }
             WM_APP_KEY => {
                 app.handle_mode_key(HookKeyEvent::decode(wparam, lparam));
+                return LRESULT(0);
+            }
+            WM_APP_PRESENTER_MOUSE => {
+                if let Some(event) = MouseHookEvent::decode(wparam, lparam) {
+                    app.handle_presenter_mouse(event);
+                } else {
+                    app.logger.event("발표 마우스 훅 메시지 디코딩 실패");
+                }
+                return LRESULT(0);
+            }
+            WM_APP_PRESENTER_KEY => {
+                app.handle_presenter_key(wparam.0 as u32);
                 return LRESULT(0);
             }
             WM_APP_DISPLAY_DECISION => {
@@ -4604,6 +5074,7 @@ unsafe extern "system" fn window_proc(
                 if let Some(tray) = app.tray.as_mut() {
                     tray.refresh_display("WM_DPICHANGED");
                 }
+                app.schedule_presenter_frame();
                 return LRESULT(0);
             }
             WM_DISPLAYCHANGE => {
@@ -4611,6 +5082,7 @@ unsafe extern "system" fn window_proc(
                     tray.refresh_display("WM_DISPLAYCHANGE");
                 }
                 app.schedule_sync("WM_DISPLAYCHANGE");
+                app.schedule_presenter_frame();
                 return LRESULT(0);
             }
             WM_DEVICECHANGE
@@ -4718,6 +5190,10 @@ fn run_selftest(logger: &Logger) -> bool {
             logger.clone(),
         ));
         failures.extend(crate::zoom_view::selftest_failures(
+            hinstance,
+            logger.clone(),
+        ));
+        failures.extend(crate::presenter::selftest_failures(
             hinstance,
             logger.clone(),
         ));

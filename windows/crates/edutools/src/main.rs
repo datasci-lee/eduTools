@@ -32,12 +32,18 @@ mod lesson_badge;
 mod log;
 #[cfg(any(windows, test))]
 mod monitor;
+#[cfg(windows)]
+mod mousehook;
 #[cfg(any(windows, test))]
 mod music;
 #[cfg(windows)]
 mod overlay;
 #[cfg(any(windows, test))]
 mod palette;
+#[cfg(any(windows, test))]
+mod pass_through;
+#[cfg(any(windows, test))]
+mod presenter;
 #[cfg(windows)]
 mod radial_palette;
 #[cfg(windows)]
