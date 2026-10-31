@@ -452,7 +452,9 @@ mod windows_impl {
     use std::time::Duration;
     use windows::core::{w, Error, Interface, Result, BOOL, PCWSTR, PWSTR};
     use windows::Graphics::SizeInt32;
-    use windows::Win32::Foundation::{E_FAIL, HANDLE, HGLOBAL, HWND, LPARAM, SYSTEMTIME};
+    use windows::Win32::Foundation::{
+        E_FAIL, HANDLE, HGLOBAL, HINSTANCE, HWND, LPARAM, SYSTEMTIME,
+    };
     use windows::Win32::Graphics::Direct2D::{D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_PROPERTIES1};
     use windows::Win32::Graphics::Dwm::DwmFlush;
     use windows::Win32::Graphics::Dxgi::IDXGISurface;
@@ -472,6 +474,7 @@ mod windows_impl {
     use windows::Win32::System::DataExchange::{
         CloseClipboard, EmptyClipboard, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
     };
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::System::Memory::{
         GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
     };
@@ -479,9 +482,10 @@ mod windows_impl {
     use windows::Win32::System::Variant::{VARIANT, VT_R4};
     use windows::Win32::UI::Shell::{FOLDERID_Pictures, SHCreateMemStream, SHGetKnownFolderPath};
     use windows::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetWindowDisplayAffinity, GetWindowThreadProcessId, IsWindowVisible,
-        KillTimer, MessageBoxW, SetTimer, SetWindowDisplayAffinity, MB_ICONWARNING, MB_OK,
-        WDA_EXCLUDEFROMCAPTURE, WINDOW_DISPLAY_AFFINITY,
+        EnumWindows, GetClassInfoExW, GetClassNameW, GetWindowDisplayAffinity,
+        GetWindowThreadProcessId, IsWindowVisible, KillTimer, MessageBoxW, SetTimer,
+        SetWindowDisplayAffinity, MB_ICONWARNING, MB_OK, WDA_EXCLUDEFROMCAPTURE,
+        WINDOW_DISPLAY_AFFINITY, WNDCLASSEXW,
     };
 
     pub const EXPORT_CAPTURE_TIMEOUT_TIMER_ID: usize = 0xED70;
@@ -1011,14 +1015,19 @@ mod windows_impl {
 
     struct ExclusionEnumeration {
         process_id: u32,
+        module_instance: HINSTANCE,
         changed: Vec<(HWND, WINDOW_DISPLAY_AFFINITY)>,
         failure: Option<String>,
     }
 
     impl CaptureExclusion {
         fn begin(logger: Logger) -> std::result::Result<Self, String> {
+            let module_instance: HINSTANCE = unsafe { GetModuleHandleW(None) }
+                .map_err(|error| format!("GetModuleHandleW 실패: {error}"))?
+                .into();
             let mut enumeration = ExclusionEnumeration {
                 process_id: std::process::id(),
+                module_instance,
                 changed: Vec::new(),
                 failure: None,
             };
@@ -1070,7 +1079,10 @@ mod windows_impl {
         let enumeration = unsafe { &mut *(lparam.0 as *mut ExclusionEnumeration) };
         let mut process_id = 0_u32;
         unsafe { GetWindowThreadProcessId(hwnd, Some(&mut process_id)) };
-        if process_id != enumeration.process_id || !unsafe { IsWindowVisible(hwnd) }.as_bool() {
+        if process_id != enumeration.process_id
+            || !unsafe { IsWindowVisible(hwnd) }.as_bool()
+            || !unsafe { is_process_window_class(hwnd, enumeration.module_instance) }
+        {
             return BOOL(1);
         }
         let mut previous = 0_u32;
@@ -1095,6 +1107,25 @@ mod windows_impl {
             }
         }
         BOOL(1)
+    }
+
+    unsafe fn is_process_window_class(hwnd: HWND, module_instance: HINSTANCE) -> bool {
+        let mut class_name = [0_u16; 256];
+        if unsafe { GetClassNameW(hwnd, &mut class_name) } == 0 {
+            return false;
+        }
+        let mut class = WNDCLASSEXW {
+            cbSize: size_of::<WNDCLASSEXW>() as u32,
+            ..Default::default()
+        };
+        unsafe {
+            GetClassInfoExW(
+                Some(module_instance),
+                PCWSTR(class_name.as_ptr()),
+                &mut class,
+            )
+        }
+        .is_ok()
     }
 
     fn restore_window_affinities(
