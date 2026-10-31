@@ -299,6 +299,16 @@ pub fn hash_prefix8(value: &str) -> String {
     format!("{:08x}", (hash >> 32) as u32)
 }
 
+/// 보관 파일은 포트 이름보다 EDID 일련번호를 우선해 같은 물리 화면을 다시 찾는다.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn archive_key_for_display(display: &OnlineDisplay) -> String {
+    if display.serial != 0 {
+        format!("{}:{}:{}", display.vendor, display.model, display.serial)
+    } else {
+        display.uuid.clone()
+    }
+}
+
 pub fn edid_identity(edid: &[u8]) -> Option<(u32, u32, u32)> {
     (edid.len() >= 16).then(|| {
         let vendor = u32::from(u16::from_be_bytes([edid[8], edid[9]]));
@@ -374,8 +384,9 @@ mod windows_impl {
     };
     use windows::Win32::Devices::Display::{
         DisplayConfigGetDeviceInfo, GetDisplayConfigBufferSizes, QueryDisplayConfig,
-        DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME, DISPLAYCONFIG_MODE_INFO,
-        DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE, DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_SOURCE_MODE,
+        DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME,
+        DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE, DISPLAYCONFIG_PATH_INFO,
+        DISPLAYCONFIG_SOURCE_DEVICE_NAME, DISPLAYCONFIG_SOURCE_MODE,
         DISPLAYCONFIG_TARGET_DEVICE_NAME, GUID_DEVINTERFACE_MONITOR, QDC_ONLY_ACTIVE_PATHS,
         QDC_VIRTUAL_MODE_AWARE,
     };
@@ -403,6 +414,7 @@ mod windows_impl {
         pub inactive_count: usize,
         pub mirror_group_count: usize,
         pub unavailable_target_count: usize,
+        session_identities: HashMap<String, (String, String)>,
         diagnostics: Vec<DisplayDiagnostic>,
     }
 
@@ -420,6 +432,22 @@ mod windows_impl {
     }
 
     impl DisplayConfiguration {
+        pub fn identity_for_session(&self, session_key: &str) -> Option<(&str, &str)> {
+            self.session_identities
+                .get(&session_key.to_ascii_lowercase())
+                .map(|(uuid, archive_key)| (uuid.as_str(), archive_key.as_str()))
+        }
+
+        pub fn archive_key_for_uuid(&self, uuid: &str) -> Option<&str> {
+            self.session_identities
+                .values()
+                .find_map(|(candidate, archive_key)| {
+                    candidate
+                        .eq_ignore_ascii_case(uuid)
+                        .then_some(archive_key.as_str())
+                })
+        }
+
         pub fn diagnostic_line(&self) -> String {
             let mut stages = [0_usize; 4];
             for diagnostic in &self.diagnostics {
@@ -501,6 +529,7 @@ mod windows_impl {
             .collect::<HashMap<_, _>>();
         let (paths, modes) = query_active_display_config()?;
         let mut records = Vec::with_capacity(paths.len());
+        let mut active_source_names = Vec::with_capacity(paths.len());
         for path in &paths {
             let target_available = path.targetInfo.targetAvailable.as_bool();
             if !target_available {
@@ -522,6 +551,7 @@ mod windows_impl {
                 continue;
             }
             let source_mode = source_mode(path, &modes)?;
+            let source_name = source_device_name(path)?.to_ascii_lowercase();
             let target_name = target_device_name(path)?;
             let device_path = wide_string(&target_name.monitorDevicePath).to_ascii_lowercase();
             let friendly_name = wide_string(&target_name.monitorFriendlyDeviceName);
@@ -566,6 +596,7 @@ mod windows_impl {
                 serial,
                 name,
             });
+            active_source_names.push(source_name);
         }
 
         let mut source_counts = HashMap::<DisplaySourceKey, usize>::new();
@@ -575,6 +606,20 @@ mod windows_impl {
         let mirror_group_count = source_counts.values().filter(|count| **count > 1).count();
         let conversion =
             online_displays_from_paths(&records).map_err(|detail| Error::new(E_FAIL, detail))?;
+        let session_identities = active_source_names
+            .iter()
+            .zip(conversion.displays.iter())
+            .filter(|(_, record)| record.display.current_mirror_master_id.is_none())
+            .map(|(source_name, record)| {
+                (
+                    source_name.clone(),
+                    (
+                        record.display.uuid.clone(),
+                        super::archive_key_for_display(&record.display),
+                    ),
+                )
+            })
+            .collect::<HashMap<_, _>>();
         let active_uuids = conversion
             .displays
             .iter()
@@ -629,6 +674,7 @@ mod windows_impl {
             inactive_count,
             mirror_group_count,
             unavailable_target_count: conversion.unavailable_target_count,
+            session_identities,
             diagnostics,
         })
     }
@@ -716,6 +762,24 @@ mod windows_impl {
             ));
         }
         Ok(name)
+    }
+
+    fn source_device_name(path: &DISPLAYCONFIG_PATH_INFO) -> Result<String> {
+        let mut name = DISPLAYCONFIG_SOURCE_DEVICE_NAME::default();
+        name.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+        name.header.size = u32::try_from(size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>())
+            .expect("DISPLAYCONFIG_SOURCE_DEVICE_NAME size fits u32");
+        name.header.adapterId = path.sourceInfo.adapterId;
+        name.header.id = path.sourceInfo.id;
+        // SAFETY: header is the first field and size identifies the full writable packet.
+        let status = unsafe { DisplayConfigGetDeviceInfo(&mut name.header) };
+        if status != 0 {
+            return Err(win32_error(
+                "DisplayConfigGetDeviceInfo(GET_SOURCE_NAME)",
+                WIN32_ERROR(status as u32),
+            ));
+        }
+        Ok(wide_string(&name.viewGdiDeviceName))
     }
 
     fn enumerate_present_monitors() -> Result<Vec<PresentMonitor>> {
@@ -910,6 +974,8 @@ mod windows_impl {
         pub dpi: (u32, u32),
         pub is_primary: bool,
         pub session_key: String,
+        pub display_uuid: String,
+        pub archive_key: String,
     }
 
     impl Monitor {
@@ -954,6 +1020,19 @@ mod windows_impl {
         }
         if !completed.as_bool() {
             return Err(Error::from_thread());
+        }
+        let configuration = current_display_configuration()?;
+        for monitor in &mut context.monitors {
+            let Some((display_uuid, archive_key)) =
+                configuration.identity_for_session(&monitor.session_key)
+            else {
+                return Err(Error::new(
+                    E_FAIL,
+                    "EnumDisplayMonitors source was not present in QueryDisplayConfig",
+                ));
+            };
+            monitor.display_uuid = display_uuid.to_owned();
+            monitor.archive_key = archive_key.to_owned();
         }
         Ok(context.monitors)
     }
@@ -1018,6 +1097,8 @@ mod windows_impl {
             // `szDevice` is only a session-local reconciliation key. W10 DisplayIdentity owns
             // the persistent identity because DISPLAY1-style names can change.
             session_key,
+            display_uuid: String::new(),
+            archive_key: String::new(),
         })
     }
 

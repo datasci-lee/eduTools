@@ -392,6 +392,53 @@ impl AppState {
         true
     }
 
+    /// Swift `hasRestorableScreenState`의 화면별 Windows 레이어 대응.
+    pub fn has_restorable_screen_state(layer: &InkLayerState) -> bool {
+        layer.has_unscoped_restorable_state()
+    }
+
+    /// 보관 문서를 화면별 Windows 레이어에 복원한다.
+    pub fn restore_screen_ink(
+        &mut self,
+        display_id: &str,
+        layer: &mut InkLayerState,
+        archived: &InkLayerState,
+    ) -> bool {
+        if !archived.has_unscoped_restorable_state() {
+            return false;
+        }
+        *layer = archived.clone();
+        self.clear_selection(display_id);
+        true
+    }
+
+    /// 화면별 Windows 레이어와 선택을 함께 버린다.
+    pub fn discard_screen_ink(&mut self, display_id: &str, layer: &mut InkLayerState) {
+        *layer = InkLayerState::new();
+        self.clear_selection(display_id);
+    }
+
+    /// 사라지는 화면의 현재 획을 대상 뒤에 한 undo 단위로 합친다.
+    pub fn move_screen_ink(
+        &mut self,
+        source_display_id: &str,
+        source: &mut InkLayerState,
+        destination_display_id: &str,
+        destination: &mut InkLayerState,
+    ) -> bool {
+        if source_display_id == destination_display_id || source.strokes().is_empty() {
+            return false;
+        }
+        let before = destination.strokes().to_vec();
+        let mut after = before.clone();
+        after.extend_from_slice(source.strokes());
+        destination.execute(InkCommand::ReplaceStrokes { before, after });
+        *source = InkLayerState::new();
+        self.clear_selection(source_display_id);
+        self.clear_selection(destination_display_id);
+        true
+    }
+
     fn reconcile_selection_after_ink_change(&mut self, display_id: &str, strokes: &[InkStroke]) {
         let selected = self.selected_stroke_ids(display_id);
         self.set_selected_stroke_ids(display_id, selected, strokes);

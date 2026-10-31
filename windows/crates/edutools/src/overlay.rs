@@ -1,10 +1,12 @@
+use crate::archive::{disconnect_action, ArchiveController, DisconnectAction};
 use crate::ink_view::{
     pointer_id_from_wparam, stroke_shape_label, InkInputConfig, InkInputController,
     InkInputMapping, InputOutcome, StrokeReplacementKind, TextEntrySeed,
 };
 use crate::log::Logger;
 use crate::monitor::{
-    enumerate_monitors, monitor_at_point, monitor_by_key, plan_monitor_sync, Monitor,
+    current_display_configuration, enumerate_monitors, hash_prefix8, monitor_at_point,
+    monitor_by_key, plan_monitor_sync, Monitor,
 };
 use crate::render::{BoardRenderState, GraphicsDevice, OverlayRenderer};
 use crate::text_entry::{TextEntryCommit, TextEntryRequest, WM_APP_TEXT_ENTRY_OPEN};
@@ -68,8 +70,8 @@ pub struct OverlayManager {
     annotation_enabled: bool,
     input_config: InkInputConfig,
     debug_overlay: bool,
-    pending_preset_archive_display_ids: HashSet<String>,
-    preset_restoration_deferred: bool,
+    pending_preset_archive_keys: HashSet<String>,
+    archive: ArchiveController,
     logger: Logger,
 }
 
@@ -79,6 +81,7 @@ impl OverlayManager {
         hinstance: HINSTANCE,
         input_config: InkInputConfig,
         app_state: SharedAppState,
+        settings: &AppSettings,
         logger: Logger,
     ) -> Result<Self> {
         register_window_class(hinstance)?;
@@ -98,8 +101,8 @@ impl OverlayManager {
             annotation_enabled: false,
             input_config,
             debug_overlay,
-            pending_preset_archive_display_ids: HashSet::new(),
-            preset_restoration_deferred: false,
+            pending_preset_archive_keys: HashSet::new(),
+            archive: ArchiveController::new(owner, settings, logger.clone()),
             logger,
         };
         manager.synchronize("시작")?;
@@ -117,20 +120,32 @@ impl OverlayManager {
             .collect::<Vec<_>>();
         let discovered = monitors.iter().map(Monitor::snapshot).collect::<Vec<_>>();
         let plan = plan_monitor_sync(&current, &discovered);
-
-        if !plan.removed.is_empty() && !self.pending_preset_archive_display_ids.is_empty() {
-            self.logger.event(&format!(
-                "화면 프리셋 제거 직전 보관 훅: removedOverlays={} displayIds={} status=보관 구현 미완",
-                plan.removed.len(),
-                self.pending_preset_archive_display_ids.len()
-            ));
-            self.pending_preset_archive_display_ids.clear();
-        }
-
+        let primary_session_key = monitors
+            .iter()
+            .find(|monitor| monitor.is_primary)
+            .map(|monitor| monitor.session_key.clone());
         for key in &plan.removed {
-            if let Some(mut overlay) = self.overlays.remove(key) {
+            if let Some(overlay) = self.overlays.get_mut(key) {
                 overlay.finish_active("모니터 제거")?;
             }
+        }
+        for key in &plan.removed {
+            let archive_key = self
+                .overlays
+                .get(key)
+                .map(|overlay| overlay.monitor().archive_key.clone());
+            if archive_key
+                .as_ref()
+                .is_some_and(|value| self.pending_preset_archive_keys.remove(value))
+            {
+                self.logger.event(&format!(
+                    "화면 프리셋 제거 직전 보관 훅 적용: monitorHash={}",
+                    hash_prefix8(archive_key.as_deref().expect("checked archive key"))
+                ));
+            } else {
+                self.display_was_removed(key, primary_session_key.as_deref());
+            }
+            self.overlays.remove(key);
         }
 
         for monitor in &monitors {
@@ -164,6 +179,13 @@ impl OverlayManager {
             self.overlays.insert(monitor.session_key.clone(), overlay);
         }
 
+        for monitor in &monitors {
+            self.restore_disconnected_display_if_needed(
+                &monitor.session_key,
+                &monitor.archive_key,
+            )?;
+        }
+
         self.logger.event(&format!(
             "오버레이 모니터 동기화 ({reason}): 추가={} 제거={} 이동={} 유지={} 총={}, 보관 레이어={}",
             plan.added.len(),
@@ -180,20 +202,136 @@ impl OverlayManager {
     pub fn archive_disconnected_displays_for_preset(
         &mut self,
         display_ids: &HashSet<String>,
-    ) -> HashSet<String> {
-        self.pending_preset_archive_display_ids = display_ids.clone();
+    ) -> Option<HashSet<String>> {
+        let configuration = match current_display_configuration() {
+            Ok(configuration) => configuration,
+            Err(error) => {
+                self.archive
+                    .report_failure("프리셋 보관 대상 확인", "display configuration unavailable");
+                self.logger
+                    .event(&format!("프리셋 보관 대상 확인 실패: {error}"));
+                return None;
+            }
+        };
+        let mut archived = HashSet::new();
+        let mut requested = display_ids.iter().collect::<Vec<_>>();
+        requested.sort();
+        for display_id in requested {
+            let Some(archive_key) = configuration.archive_key_for_uuid(display_id) else {
+                self.archive
+                    .report_failure("프리셋 보관 대상 연결", "display identity was unavailable");
+                self.restore_displays_archived_for_failed_preset(&archived);
+                return None;
+            };
+            let Some((session_key, resolution)) = self
+                .overlays
+                .values()
+                .find(|overlay| overlay.monitor().archive_key == archive_key)
+                .map(|overlay| {
+                    (
+                        overlay.monitor().session_key.clone(),
+                        monitor_size(overlay.monitor()),
+                    )
+                })
+            else {
+                self.archive
+                    .report_failure("프리셋 보관 대상 연결", "display overlay was unavailable");
+                self.restore_displays_archived_for_failed_preset(&archived);
+                return None;
+            };
+            if let Some(overlay) = self.overlays.get_mut(&session_key) {
+                if let Err(error) = overlay.finish_active("화면 프리셋 적용 전 보관") {
+                    self.archive.report_failure(
+                        "프리셋 보관 입력 종료",
+                        "active interaction could not be finished",
+                    );
+                    self.logger
+                        .event(&format!("프리셋 보관 입력 종료 실패: {error}"));
+                    self.restore_displays_archived_for_failed_preset(&archived);
+                    return None;
+                }
+            }
+            let layer = self
+                .layers
+                .borrow()
+                .get(&session_key)
+                .cloned()
+                .unwrap_or_default();
+            match self
+                .archive
+                .store_disconnected(archive_key, &layer, resolution, "preset")
+            {
+                Ok(false) => continue,
+                Ok(true) => {
+                    self.archive.display_was_removed(archive_key);
+                    if let Some(current) = self.layers.borrow_mut().get_mut(&session_key) {
+                        AppState::discard_screen_ink(
+                            &mut self.app_state.borrow_mut(),
+                            &session_key,
+                            current,
+                        );
+                    }
+                    archived.insert(archive_key.to_owned());
+                    self.pending_preset_archive_keys
+                        .insert(archive_key.to_owned());
+                    if let Err(error) = self.rebuild_monitor(&session_key) {
+                        self.logger
+                            .event(&format!("프리셋 보관 후 화면 갱신 실패: {error}"));
+                    }
+                }
+                Err(error) => {
+                    self.archive.report_failure("프리셋 화면 보관", &error);
+                    self.restore_displays_archived_for_failed_preset(&archived);
+                    return None;
+                }
+            }
+        }
         self.logger.event(&format!(
-            "archive_disconnected_displays_for_preset: displayIds={} status=보관 구현 미완",
-            display_ids.len()
+            "archive_disconnected_displays_for_preset: requested={} archived={}",
+            display_ids.len(),
+            archived.len()
         ));
-        display_ids.clone()
+        Some(archived)
     }
 
-    pub fn restore_displays_archived_for_failed_preset(&mut self, display_ids: &HashSet<String>) {
-        self.pending_preset_archive_display_ids.clear();
+    pub fn restore_displays_archived_for_failed_preset(&mut self, archive_keys: &HashSet<String>) {
+        let mut keys = archive_keys.iter().collect::<Vec<_>>();
+        keys.sort();
+        for archive_key in keys {
+            let Some(session_key) = self
+                .overlays
+                .values()
+                .find(|overlay| overlay.monitor().archive_key == *archive_key)
+                .map(|overlay| overlay.monitor().session_key.clone())
+            else {
+                continue;
+            };
+            match self.archive.restore_stored(archive_key) {
+                Ok(Some(archived)) => {
+                    let restored = {
+                        let mut layers = self.layers.borrow_mut();
+                        let layer = layers.entry(session_key.clone()).or_default();
+                        self.app_state.borrow_mut().restore_screen_ink(
+                            &session_key,
+                            layer,
+                            &archived,
+                        )
+                    };
+                    if restored {
+                        if let Err(error) = self.rebuild_monitor(&session_key) {
+                            self.logger
+                                .event(&format!("프리셋 실패 복원 화면 갱신 실패: {error}"));
+                        }
+                    }
+                    self.pending_preset_archive_keys.remove(archive_key);
+                }
+                Ok(None) => {}
+                Err(error) => self.archive.report_failure("프리셋 실패 화면 복원", &error),
+            }
+        }
         self.logger.event(&format!(
-            "restore_displays_archived_for_failed_preset: displayIds={} status=보관 구현 미완",
-            display_ids.len()
+            "restore_displays_archived_for_failed_preset: requested={}",
+            archive_keys.len()
         ));
     }
 
@@ -202,10 +340,197 @@ impl OverlayManager {
         deferred: bool,
         resume_pending: bool,
     ) {
-        self.preset_restoration_deferred = deferred;
+        let pending = self
+            .archive
+            .set_preset_restoration_deferred(deferred, resume_pending);
+        for archive_key in pending {
+            let Some(session_key) = self
+                .overlays
+                .values()
+                .find(|overlay| overlay.monitor().archive_key == archive_key)
+                .map(|overlay| overlay.monitor().session_key.clone())
+            else {
+                continue;
+            };
+            if let Err(error) =
+                self.restore_disconnected_display_if_needed(&session_key, &archive_key)
+            {
+                self.logger
+                    .event(&format!("보류된 화면 복원 갱신 실패: {error}"));
+            }
+        }
+    }
+
+    pub fn update_archive_settings(&mut self, settings: &AppSettings) {
+        self.archive.update_settings(settings);
+    }
+
+    fn display_was_removed(&mut self, session_key: &str, primary_session_key: Option<&str>) {
+        let Some((archive_key, resolution)) = self.overlays.get(session_key).map(|overlay| {
+            (
+                overlay.monitor().archive_key.clone(),
+                monitor_size(overlay.monitor()),
+            )
+        }) else {
+            return;
+        };
+        self.archive.display_was_removed(&archive_key);
+        let has_state = self
+            .layers
+            .borrow()
+            .get(session_key)
+            .is_some_and(AppState::has_restorable_screen_state);
+        let policy = self.archive.policy();
+        let mut moved = false;
+        if policy == edutools_core::state::DisplayDisconnectPolicy::MoveToPrimary {
+            if let Some(primary_key) = primary_session_key.filter(|key| *key != session_key) {
+                let mut layers = self.layers.borrow_mut();
+                let mut source = layers.remove(session_key).unwrap_or_default();
+                let destination = layers.entry(primary_key.to_owned()).or_default();
+                moved = self.app_state.borrow_mut().move_screen_ink(
+                    session_key,
+                    &mut source,
+                    primary_key,
+                    destination,
+                );
+                layers.insert(session_key.to_owned(), source);
+                drop(layers);
+                if moved {
+                    if let Err(error) = self.rebuild_monitor(primary_key) {
+                        self.logger
+                            .event(&format!("화면 이동 후 주 화면 갱신 실패: {error}"));
+                    }
+                }
+            }
+        }
+        let action = disconnect_action(policy, has_state, primary_session_key.is_some(), moved);
+        match action {
+            DisconnectAction::None | DisconnectAction::MoveToPrimary => {}
+            DisconnectAction::Delete => {
+                if let Some(layer) = self.layers.borrow_mut().get_mut(session_key) {
+                    self.app_state
+                        .borrow_mut()
+                        .discard_screen_ink(session_key, layer);
+                }
+            }
+            DisconnectAction::Archive => {
+                let layer = self
+                    .layers
+                    .borrow()
+                    .get(session_key)
+                    .cloned()
+                    .unwrap_or_default();
+                match self.archive.store_disconnected(
+                    &archive_key,
+                    &layer,
+                    resolution,
+                    "disconnect-policy",
+                ) {
+                    Ok(true) => {
+                        if let Some(current) = self.layers.borrow_mut().get_mut(session_key) {
+                            self.app_state
+                                .borrow_mut()
+                                .discard_screen_ink(session_key, current);
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(error) => self.archive.report_failure("연결 해제 화면 보관", &error),
+                }
+            }
+        }
         self.logger.event(&format!(
-            "set_display_preset_restoration_deferred: deferred={deferred} resumePending={resume_pending} status=복원 질문 구현 미완"
+            "화면 사라짐 정책 적용: policy={} action={action:?} monitorHash={}",
+            policy.as_str(),
+            hash_prefix8(&archive_key)
         ));
+    }
+
+    fn restore_disconnected_display_if_needed(
+        &mut self,
+        session_key: &str,
+        archive_key: &str,
+    ) -> Result<()> {
+        let archived = match self.archive.restore_if_needed(archive_key) {
+            Ok(archived) => archived,
+            Err(error) => {
+                self.archive.report_failure("연결 화면 복원", &error);
+                return Ok(());
+            }
+        };
+        let Some(archived) = archived else {
+            return Ok(());
+        };
+        let restored = {
+            let mut layers = self.layers.borrow_mut();
+            let layer = layers.entry(session_key.to_owned()).or_default();
+            self.app_state
+                .borrow_mut()
+                .restore_screen_ink(session_key, layer, &archived)
+        };
+        if restored {
+            self.rebuild_monitor(session_key)?;
+        }
+        Ok(())
+    }
+
+    pub fn archive_all_for_sleep(&mut self) -> Result<usize> {
+        self.finish_all_active("PBT_APMSUSPEND")?;
+        let targets = self
+            .overlays
+            .values()
+            .map(|overlay| {
+                (
+                    overlay.monitor().session_key.clone(),
+                    overlay.monitor().archive_key.clone(),
+                    monitor_size(overlay.monitor()),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut archived_count = 0;
+        let mut failed = false;
+        let mut changed_keys = Vec::new();
+        for (session_key, archive_key, resolution) in targets {
+            let layer = self
+                .layers
+                .borrow()
+                .get(&session_key)
+                .cloned()
+                .unwrap_or_default();
+            match self.archive.store_disconnected(
+                &archive_key,
+                &layer,
+                resolution,
+                "PBT_APMSUSPEND",
+            ) {
+                Ok(true) => {
+                    self.archive.display_was_removed(&archive_key);
+                    if let Some(current) = self.layers.borrow_mut().get_mut(&session_key) {
+                        self.app_state
+                            .borrow_mut()
+                            .discard_screen_ink(&session_key, current);
+                    }
+                    archived_count += 1;
+                    changed_keys.push(session_key);
+                }
+                Ok(false) => {}
+                Err(_) => failed = true,
+            }
+        }
+        if failed {
+            self.archive
+                .report_failure("잠자기 전 화면 보관", "one or more displays failed");
+            return Err(Error::new(
+                E_FAIL,
+                "sleep archive failed for one or more displays",
+            ));
+        }
+        for session_key in changed_keys {
+            self.rebuild_monitor(&session_key)?;
+        }
+        self.logger.event(&format!(
+            "잠자기 전 화면 보관 완료: archived={archived_count}"
+        ));
+        Ok(archived_count)
     }
 
     pub fn set_annotation_mode(
@@ -420,6 +745,68 @@ impl OverlayManager {
             .borrow()
             .presented_board()
             .map(|board| board.display_id.clone());
+        if self.archive.auto_archive_enabled() {
+            let visible_keys = if let Some(key) = board_display.as_ref() {
+                let has_visible = self.layers.borrow().get(key).is_some_and(|layer| {
+                    !self.app_state.borrow().strokes_for(key, layer).is_empty()
+                });
+                has_visible.then(|| vec![key.clone()]).unwrap_or_default()
+            } else {
+                let layers = self.layers.borrow();
+                let app_state = self.app_state.borrow();
+                self.overlays
+                    .keys()
+                    .filter(|key| {
+                        layers
+                            .get(*key)
+                            .is_some_and(|layer| !app_state.strokes_for(key, layer).is_empty())
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
+            for key in visible_keys {
+                let Some((archive_key, resolution)) = self.overlays.get(&key).map(|overlay| {
+                    (
+                        overlay.monitor().archive_key.clone(),
+                        monitor_size(overlay.monitor()),
+                    )
+                }) else {
+                    self.archive.report_failure(
+                        "자동 보관 대상 연결",
+                        "visible display overlay was unavailable",
+                    );
+                    return Err(Error::new(E_FAIL, "automatic archive target unavailable"));
+                };
+                let archived_state = {
+                    let layers = self.layers.borrow();
+                    let layer = layers.get(&key).cloned().unwrap_or_default();
+                    let app_state = self.app_state.borrow();
+                    if app_state
+                        .presented_board()
+                        .is_some_and(|board| board.display_id == key)
+                    {
+                        let mut visible = InkLayerState::new();
+                        for stroke in app_state.strokes_for(&key, &layer) {
+                            visible.execute(InkCommand::AddStroke(stroke.clone()));
+                        }
+                        visible
+                    } else {
+                        layer
+                    }
+                };
+                if let Err(error) =
+                    self.archive
+                        .archive_visible(&archive_key, &archived_state, resolution)
+                {
+                    self.archive
+                        .report_failure("전체 지우기 전 자동 보관", &error);
+                    return Err(Error::new(
+                        E_FAIL,
+                        "automatic archive failed; clear was cancelled",
+                    ));
+                }
+            }
+        }
         let changed_keys = if let Some(key) = board_display {
             let mut layers = self.layers.borrow_mut();
             let mut app_state = self.app_state.borrow_mut();
@@ -440,6 +827,9 @@ impl OverlayManager {
             let changed = layers
                 .iter_mut()
                 .filter_map(|(key, layer)| {
+                    if !self.overlays.contains_key(key) {
+                        return None;
+                    }
                     if app_state.strokes_for(key, layer).is_empty() {
                         return None;
                     }
@@ -591,6 +981,13 @@ impl OverlayManager {
             }
         }
         failures
+    }
+}
+
+fn monitor_size(monitor: &Monitor) -> Size {
+    Size {
+        width: f64::from(monitor.rect.width()),
+        height: f64::from(monitor.rect.height()),
     }
 }
 

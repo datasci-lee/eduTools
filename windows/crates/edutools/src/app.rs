@@ -406,7 +406,7 @@ struct App {
     pending_display_apply: Option<usize>,
     expected_after_apply: Option<ExpectedDisplayConfiguration>,
     display_applier: DisplayApplier,
-    pending_archived_display_uuids: HashSet<String>,
+    pending_archived_display_keys: HashSet<String>,
     logger: Logger,
     shutting_down: bool,
 }
@@ -466,6 +466,7 @@ impl App {
             self.hinstance,
             input_config,
             self.state.clone(),
+            &self.settings,
             self.logger.clone(),
         ) {
             Ok(overlays) => self.overlays = Some(overlays),
@@ -608,6 +609,21 @@ impl App {
         if previous.general.launch_at_login != current.general.launch_at_login {
             self.synchronize_launch_at_login("설정 변경");
             targets.push("launch-at-login-registry");
+        }
+
+        if previous.general.auto_archive_enabled != current.general.auto_archive_enabled
+            || previous.general.archive_folder_path != current.general.archive_folder_path
+            || previous.general.display_disconnect_policy
+                != current.general.display_disconnect_policy
+            || previous
+                .general
+                .automatically_restores_disconnected_displays
+                != current.general.automatically_restores_disconnected_displays
+        {
+            if let Some(overlays) = self.overlays.as_mut() {
+                overlays.update_archive_settings(current);
+            }
+            targets.push("archive-policy+paths");
         }
 
         if previous.shortcuts != current.shortcuts {
@@ -3293,11 +3309,21 @@ impl App {
             })
             .map(|display| display.uuid.clone())
             .collect::<HashSet<_>>();
-        let archived = self
+        let Some(archived) = self
             .overlays
             .as_mut()
-            .map(|overlays| overlays.archive_disconnected_displays_for_preset(&disappearing))
-            .unwrap_or_default();
+            .and_then(|overlays| overlays.archive_disconnected_displays_for_preset(&disappearing))
+        else {
+            self.logger
+                .event("화면 구성 적용 중단: 사라질 화면 보관 실패");
+            if source == DisplayApplySource::Manual {
+                self.show_display_apply_warning(
+                    "화면 구성을 적용할 수 없습니다",
+                    "사라질 화면의 판서를 보관하지 못했습니다.",
+                );
+            }
+            return None;
+        };
         if let Some(overlays) = self.overlays.as_mut() {
             overlays.set_display_preset_restoration_deferred(true, true);
         }
@@ -3307,12 +3333,12 @@ impl App {
                 let active_uuids = completion.expected.active_uuids();
                 self.expected_after_apply = Some(completion.expected);
                 if completion.awaiting_confirmation {
-                    self.pending_archived_display_uuids = archived;
+                    self.pending_archived_display_keys = archived;
                 } else {
                     if let Some(overlays) = self.overlays.as_mut() {
                         overlays.set_display_preset_restoration_deferred(false, true);
                     }
-                    self.pending_archived_display_uuids.clear();
+                    self.pending_archived_display_keys.clear();
                 }
                 Some(active_uuids)
             }
@@ -3321,7 +3347,7 @@ impl App {
                     overlays.restore_displays_archived_for_failed_preset(&archived);
                     overlays.set_display_preset_restoration_deferred(false, true);
                 }
-                self.pending_archived_display_uuids.clear();
+                self.pending_archived_display_keys.clear();
                 self.expected_after_apply =
                     current_display_configuration().ok().map(|configuration| {
                         ExpectedDisplayConfiguration::capture(&configuration.online)
@@ -3373,14 +3399,14 @@ impl App {
         if resolution.restored_previous || !resolution.success {
             if let Some(overlays) = self.overlays.as_mut() {
                 overlays.restore_displays_archived_for_failed_preset(
-                    &self.pending_archived_display_uuids,
+                    &self.pending_archived_display_keys,
                 );
             }
         }
         if let Some(overlays) = self.overlays.as_mut() {
             overlays.set_display_preset_restoration_deferred(false, resume_pending);
         }
-        self.pending_archived_display_uuids.clear();
+        self.pending_archived_display_keys.clear();
         self.expected_after_apply = resolution.expected;
         if let Some(message) = resolution.message.as_deref() {
             let rollback_failed = resolution
@@ -4734,7 +4760,7 @@ fn run_message_loop(logger: Logger, initial_import_path: Option<PathBuf>) -> Res
         pending_display_apply: None,
         expected_after_apply: None,
         display_applier,
-        pending_archived_display_uuids: HashSet::new(),
+        pending_archived_display_keys: HashSet::new(),
         logger,
         shutting_down: false,
     });
@@ -5125,6 +5151,15 @@ unsafe extern "system" fn window_proc(
                 }
                 return LRESULT(0);
             }
+            WM_POWERBROADCAST if wparam.0 == 0x4 => {
+                if let Some(overlays) = app.overlays.as_mut() {
+                    if let Err(error) = overlays.archive_all_for_sleep() {
+                        app.logger
+                            .event(&format!("PBT_APMSUSPEND 화면 보관 실패: {error}"));
+                    }
+                }
+                return LRESULT(1);
+            }
             WM_POWERBROADCAST if wparam.0 == 0x12 => {
                 app.schedule_sync("PBT_APMRESUMEAUTOMATIC");
                 app.synchronize_lesson_badge("PBT_APMRESUMEAUTOMATIC");
@@ -5173,6 +5208,7 @@ fn run_selftest(logger: &Logger) -> bool {
     failures.extend(crate::display_apply::selftest_failures());
     failures.extend(crate::launch_at_login::selftest_failures());
     failures.extend(crate::monitor::online_display_selftest_failures());
+    failures.extend(crate::archive::selftest_failures());
     failures.extend(crate::music::selftest_failures());
     failures.extend(crate::settings_file::selftest_failures());
     // SAFETY: None requests the current executable module handle.
@@ -5233,6 +5269,7 @@ fn run_selftest(logger: &Logger) -> bool {
             hinstance,
             input_config,
             state,
+            &settings,
             logger.clone(),
         ) {
             Ok(mut overlays) => failures.extend(overlays.selftest_failures()),
