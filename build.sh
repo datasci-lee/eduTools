@@ -4,8 +4,8 @@ set -euo pipefail
 
 APP_NAME="EduTools"
 BUNDLE_ID="kr.datasci.edutools"
-APP_VERSION="0.1.1"
-BUILD_VERSION="2"
+APP_VERSION="0.1.2"
+BUILD_VERSION="3"
 MIN_MACOS_VERSION="26.0"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
