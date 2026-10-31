@@ -2,8 +2,9 @@ use crate::break_screen::{
     BreakStartOutcome, BreakTimerManager, WM_APP_BREAK_ACTION, WM_APP_BREAK_TICK,
 };
 use crate::capture::{
-    CapturedFrame, ZoomCapture, WM_APP_EXPORT_CAPTURE_FAILED, WM_APP_EXPORT_FRAME,
-    WM_APP_EXPORT_RECREATE, WM_APP_ZOOM_CAPTURE_FAILED, WM_APP_ZOOM_FRAME, WM_APP_ZOOM_RECREATE,
+    CapturedFrame, ZoomCapture, WM_APP_EXPORT_CAPTURE_FAILED, WM_APP_EXPORT_COMPLETE,
+    WM_APP_EXPORT_FRAME, WM_APP_EXPORT_RECREATE, WM_APP_ZOOM_CAPTURE_FAILED, WM_APP_ZOOM_FRAME,
+    WM_APP_ZOOM_RECREATE,
 };
 use crate::display_apply::{
     decision_from_command, is_console_session, recover_pending_display_configuration,
@@ -4629,6 +4630,7 @@ impl App {
         }
         self.cancel_text_entry("앱 종료");
         self.export.shutdown();
+        self.show_export_fallback_notice();
         self.zoom = None;
         self.state.borrow_mut().end_zoom();
         self.uninstall_keyboard_hook_for_shutdown();
@@ -5008,6 +5010,11 @@ unsafe extern "system" fn window_proc(
             }
             WM_APP_EXPORT_RECREATE => {
                 app.export.handle_capture_recreate();
+                app.show_export_fallback_notice();
+                return LRESULT(0);
+            }
+            WM_APP_EXPORT_COMPLETE => {
+                app.export.handle_worker_completion();
                 app.show_export_fallback_notice();
                 return LRESULT(0);
             }

@@ -27,6 +27,7 @@ pub const WM_APP_ZOOM_RECREATE: u32 = 0x8000 + 144;
 pub const WM_APP_EXPORT_FRAME: u32 = 0x8000 + 330;
 pub const WM_APP_EXPORT_CAPTURE_FAILED: u32 = 0x8000 + 331;
 pub const WM_APP_EXPORT_RECREATE: u32 = 0x8000 + 332;
+pub const WM_APP_EXPORT_COMPLETE: u32 = 0x8000 + 333;
 
 #[derive(Clone, Copy)]
 struct CaptureConfig {

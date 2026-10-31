@@ -437,7 +437,7 @@ mod windows_impl {
         build_pdf, composite_premultiplied, dibv5_bytes, export_base_name, unique_export_path,
         BgraImage, ExportTimestamp, PdfPage,
     };
-    use crate::capture::{CapturedFrame, OneFrameCapture};
+    use crate::capture::{CapturedFrame, OneFrameCapture, WM_APP_EXPORT_COMPLETE};
     use crate::log::Logger;
     use crate::overlay::OverlayManager;
     use crate::render::{pixel_format, read_bitmap_bgra, GraphicsDevice};
@@ -445,15 +445,17 @@ mod windows_impl {
     use edutools_core::settings::AppSettings;
     use edutools_core::state::AppState;
     use std::cell::RefCell;
+    use std::ffi::c_void;
     use std::fs;
     use std::mem::size_of;
     use std::path::{Path, PathBuf};
     use std::rc::Rc;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use windows::core::{w, Error, Interface, Result, BOOL, PCWSTR, PWSTR};
     use windows::Graphics::SizeInt32;
     use windows::Win32::Foundation::{
-        E_FAIL, HANDLE, HGLOBAL, HINSTANCE, HWND, LPARAM, SYSTEMTIME,
+        E_FAIL, HANDLE, HGLOBAL, HINSTANCE, HWND, LPARAM, SYSTEMTIME, WPARAM,
     };
     use windows::Win32::Graphics::Direct2D::{D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_PROPERTIES1};
     use windows::Win32::Graphics::Dwm::DwmFlush;
@@ -483,7 +485,7 @@ mod windows_impl {
     use windows::Win32::UI::Shell::{FOLDERID_Pictures, SHCreateMemStream, SHGetKnownFolderPath};
     use windows::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GetClassInfoExW, GetClassNameW, GetWindowDisplayAffinity,
-        GetWindowThreadProcessId, IsWindowVisible, KillTimer, MessageBoxW, SetTimer,
+        GetWindowThreadProcessId, IsWindowVisible, KillTimer, MessageBoxW, PostMessageW, SetTimer,
         SetWindowDisplayAffinity, MB_ICONWARNING, MB_OK, WDA_EXCLUDEFROMCAPTURE,
         WINDOW_DISPLAY_AFFINITY, WNDCLASSEXW,
     };
@@ -496,6 +498,8 @@ mod windows_impl {
         owner: HWND,
         logger: Logger,
         pending: Option<PendingCapture>,
+        worker: Option<ExportWorker>,
+        completion_notice: Option<(String, String)>,
         fallback_notice: Option<(String, String)>,
     }
 
@@ -510,6 +514,30 @@ mod windows_impl {
     enum ExportDestination {
         Png(PathBuf),
         Clipboard,
+    }
+
+    struct ExportWorker {
+        handle: std::thread::JoinHandle<()>,
+        completion: Arc<Mutex<Option<ExportWorkerCompletion>>>,
+    }
+
+    enum ExportWorkerCompletion {
+        Png {
+            image: BgraImage,
+            file_name: String,
+            ink_only: bool,
+            capture_ms: Option<(u128, u128)>,
+            encode_ms: u128,
+            write_ms: Option<u128>,
+            result: std::result::Result<(), String>,
+        },
+        Clipboard {
+            image: BgraImage,
+            ink_only: bool,
+            capture_ms: Option<(u128, u128)>,
+            encode_ms: u128,
+            png: std::result::Result<Vec<u8>, String>,
+        },
     }
 
     impl ExportDestination {
@@ -537,6 +565,8 @@ mod windows_impl {
                 owner,
                 logger,
                 pending: None,
+                worker: None,
+                completion_notice: None,
                 fallback_notice: None,
             }
         }
@@ -630,6 +660,15 @@ mod windows_impl {
         }
 
         pub fn handle_capture_frame(&mut self) {
+            let ui_started = std::time::Instant::now();
+            self.handle_capture_frame_inner();
+            self.logger.event(&format!(
+                "내보내기 UI 점유(ms): ui_blocked={}",
+                ui_started.elapsed().as_millis()
+            ));
+        }
+
+        fn handle_capture_frame_inner(&mut self) {
             let Some(mut pending) = self.take_pending() else {
                 self.logger
                     .event("내보내기 프레임 메시지 무시: 대기 작업 없음");
@@ -723,6 +762,25 @@ mod windows_impl {
             if let Some(mut pending) = self.take_pending() {
                 pending.exclusion.restore();
             }
+            if self.worker.is_some() {
+                let started = std::time::Instant::now();
+                self.logger
+                    .event("앱 종료: 진행 중인 내보내기 작업 대기 시작");
+                self.finish_worker();
+                self.logger.event(&format!(
+                    "앱 종료: 내보내기 작업 대기 완료 elapsed={}",
+                    started.elapsed().as_millis()
+                ));
+            }
+        }
+
+        pub fn handle_worker_completion(&mut self) {
+            if self.worker.is_none() {
+                self.logger
+                    .event("내보내기 완료 메시지 무시: 대기 작업 없음");
+                return;
+            }
+            self.finish_worker();
         }
 
         fn begin_screen_capture(
@@ -888,30 +946,93 @@ mod windows_impl {
         }
 
         fn complete(
-            &self,
+            &mut self,
             destination: ExportDestination,
             image: BgraImage,
             ink_only: bool,
             capture_ms: Option<(u128, u128)>,
         ) -> bool {
             let file_name = destination.file_name();
-            let capture_stages = capture_ms
-                .map(|(frame_read_ms, composite_ms)| {
-                    format!("frame_read={frame_read_ms} composite={composite_ms} ")
-                })
-                .unwrap_or_default();
-            match destination {
-                ExportDestination::Png(path) => {
-                    let encode_started = std::time::Instant::now();
-                    let encoded = encode_png(&image).map_err(|error| error.to_string());
-                    let encode_ms = encode_started.elapsed().as_millis();
-                    let mut write_ms = None;
-                    let result = encoded.and_then(|data| {
-                        let write_started = std::time::Instant::now();
-                        let result = atomic_write(&path, &data);
-                        write_ms = Some(write_started.elapsed().as_millis());
-                        result
-                    });
+            let failure_title = match &destination {
+                ExportDestination::Png(_) => "PNG 저장 작업을 시작하지 못했습니다",
+                ExportDestination::Clipboard => "클립보드 복사 작업을 시작하지 못했습니다",
+            };
+            let owner_value = self.owner.0 as isize;
+            let completion = Arc::new(Mutex::new(None));
+            let worker_completion = Arc::clone(&completion);
+            let worker_logger = self.logger.clone();
+            let handle = match std::thread::Builder::new()
+                .name("edutools-export".to_owned())
+                .spawn(move || {
+                    let result =
+                        run_export_worker(destination, image, file_name, ink_only, capture_ms);
+                    *worker_completion
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result);
+                    let owner = HWND(owner_value as *mut c_void);
+                    if let Err(error) = unsafe {
+                        PostMessageW(Some(owner), WM_APP_EXPORT_COMPLETE, WPARAM(0), LPARAM(0))
+                    } {
+                        worker_logger
+                            .event(&format!("내보내기 작업 완료 PostMessage 실패: {error}"));
+                    }
+                }) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    self.report_failure(failure_title, &error.to_string());
+                    return false;
+                }
+            };
+            self.worker = Some(ExportWorker { handle, completion });
+            true
+        }
+
+        fn finish_worker(&mut self) {
+            let Some(ExportWorker { handle, completion }) = self.worker.take() else {
+                return;
+            };
+            if handle.join().is_err() {
+                self.completion_notice = None;
+                self.report_failure(
+                    "내보내기 작업이 중단되었습니다",
+                    "작업 스레드가 예기치 않게 종료되었습니다.",
+                );
+                return;
+            }
+            let result = completion
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            let Some(result) = result else {
+                self.completion_notice = None;
+                self.report_failure(
+                    "내보내기 결과를 받지 못했습니다",
+                    "작업 스레드가 완료 결과를 남기지 않았습니다.",
+                );
+                return;
+            };
+            let succeeded = self.finish_worker_result(result);
+            if succeeded {
+                if let Some(notice) = self.completion_notice.take() {
+                    self.fallback_notice = Some(notice);
+                }
+            } else {
+                self.completion_notice = None;
+            }
+        }
+
+        fn finish_worker_result(&self, result: ExportWorkerCompletion) -> bool {
+            match result {
+                ExportWorkerCompletion::Png {
+                    image,
+                    file_name,
+                    ink_only,
+                    capture_ms,
+                    encode_ms,
+                    write_ms,
+                    result,
+                } => {
+                    let capture_stages = format_capture_stages(capture_ms);
                     let write_ms =
                         write_ms.map_or_else(|| "-".to_owned(), |value| value.to_string());
                     self.logger.event(&format!(
@@ -928,14 +1049,19 @@ mod windows_impl {
                         }
                     }
                 }
-                ExportDestination::Clipboard => {
-                    let encode_started = std::time::Instant::now();
-                    let encoded = encode_png(&image);
-                    let encode_ms = encode_started.elapsed().as_millis();
+                ExportWorkerCompletion::Clipboard {
+                    image,
+                    ink_only,
+                    capture_ms,
+                    encode_ms,
+                    png,
+                } => {
+                    let capture_stages = format_capture_stages(capture_ms);
                     let mut clipboard_ms = None;
-                    let result = encoded.and_then(|png| {
+                    let result = png.and_then(|png| {
                         let clipboard_started = std::time::Instant::now();
-                        let result = set_clipboard(self.owner, &image, &png);
+                        let result = set_clipboard(self.owner, &image, &png)
+                            .map_err(|error| error.to_string());
                         clipboard_ms = Some(clipboard_started.elapsed().as_millis());
                         result
                     });
@@ -975,7 +1101,7 @@ mod windows_impl {
             self.logger
                 .event(&format!("내보내기 폴백: kind=ink-only reason={reason}"));
             if self.complete(destination, ink, true, None) {
-                self.fallback_notice = Some((
+                self.completion_notice = Some((
                     "배경 없이 판서만 내보냈습니다".to_owned(),
                     format!("화면 캡처 권한과 상태를 확인해 주세요.\n{reason}"),
                 ));
@@ -1020,10 +1146,10 @@ mod windows_impl {
         }
 
         fn reject_if_busy(&self) -> bool {
-            if self.pending.is_some() {
+            if self.pending.is_some() || self.worker.is_some() {
                 self.report_failure(
                     "내보내기가 이미 진행 중입니다",
-                    "현재 화면 캡처가 끝난 뒤 다시 시도해 주세요.",
+                    "현재 내보내기가 끝난 뒤 다시 시도해 주세요.",
                 );
                 true
             } else {
@@ -1050,6 +1176,56 @@ mod windows_impl {
             self.logger.event(&format!("내보내기 실패: {title}"));
             show_warning(self.owner, title, message);
         }
+    }
+
+    fn run_export_worker(
+        destination: ExportDestination,
+        image: BgraImage,
+        file_name: String,
+        ink_only: bool,
+        capture_ms: Option<(u128, u128)>,
+    ) -> ExportWorkerCompletion {
+        let encode_started = std::time::Instant::now();
+        let png = match ComApartment::initialize() {
+            Ok(_apartment) => encode_png(&image).map_err(|error| error.to_string()),
+            Err(error) => Err(error.to_string()),
+        };
+        let encode_ms = encode_started.elapsed().as_millis();
+        match destination {
+            ExportDestination::Png(path) => {
+                let mut write_ms = None;
+                let result = png.and_then(|data| {
+                    let write_started = std::time::Instant::now();
+                    let result = atomic_write(&path, &data);
+                    write_ms = Some(write_started.elapsed().as_millis());
+                    result
+                });
+                ExportWorkerCompletion::Png {
+                    image,
+                    file_name,
+                    ink_only,
+                    capture_ms,
+                    encode_ms,
+                    write_ms,
+                    result,
+                }
+            }
+            ExportDestination::Clipboard => ExportWorkerCompletion::Clipboard {
+                image,
+                ink_only,
+                capture_ms,
+                encode_ms,
+                png,
+            },
+        }
+    }
+
+    fn format_capture_stages(capture_ms: Option<(u128, u128)>) -> String {
+        capture_ms
+            .map(|(frame_read_ms, composite_ms)| {
+                format!("frame_read={frame_read_ms} composite={composite_ms} ")
+            })
+            .unwrap_or_default()
     }
 
     struct CaptureExclusion {
