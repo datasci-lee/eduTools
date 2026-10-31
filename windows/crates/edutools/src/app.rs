@@ -36,7 +36,10 @@ use crate::monitor::{
     DisplayTargetKey, Monitor,
 };
 use crate::mousehook::{MouseHook, MouseHookEvent, MouseHookSubscriber, WM_APP_PRESENTER_MOUSE};
-use crate::music::{BreakMusicManager, WM_APP_MUSIC_LAUNCH_RESULT, WM_APP_MUSIC_PAUSE_RESULT};
+use crate::music::{
+    BreakMusicManager, WM_APP_MUSIC_FOLDER_EVENT, WM_APP_MUSIC_LAUNCH_RESULT,
+    WM_APP_MUSIC_PAUSE_RESULT,
+};
 use crate::overlay::{OverlayManager, SYNC_MESSAGE};
 use crate::palette::{
     command_for_item, item_enabled, PaletteItemId, PaletteManager, WM_APP_PALETTE_ACTION,
@@ -698,6 +701,10 @@ impl App {
             || previous.timer.default_playlist_index != current.timer.default_playlist_index
             || previous.timer.music_enabled != current.timer.music_enabled
             || previous.timer.music_browser != current.timer.music_browser
+            || previous.timer.music_source != current.timer.music_source
+            || previous.timer.music_folder_path != current.timer.music_folder_path
+            || previous.timer.music_order != current.timer.music_order
+            || previous.timer.music_repeat != current.timer.music_repeat
             || previous.timer.fade_enabled != current.timer.fade_enabled
             || previous.timer.fade_duration != current.timer.fade_duration;
         if break_music_changed {
@@ -4364,6 +4371,16 @@ impl App {
             self.update_settings("break-screen-music-toggle", move |settings| {
                 settings.timer.set_music_enabled(enabled);
             });
+        } else if BreakTimerManager::action_next_track(action) {
+            let notice = self
+                .music
+                .as_mut()
+                .and_then(BreakMusicManager::next_folder_track);
+            if let (Some(notice), Some(timer)) = (notice, self.break_timer.as_mut()) {
+                if let Err(error) = timer.show_music_notice(&notice) {
+                    self.report_break_timer_error("음악 안내 표시", &error);
+                }
+            }
         } else if let Some(index) = BreakTimerManager::playlist_index_from_action(action) {
             if let Some(index) =
                 BreakMusicManager::validated_playlist_selection(&self.settings, index)
@@ -5140,6 +5157,18 @@ unsafe extern "system" fn window_proc(
             WM_APP_MUSIC_PAUSE_RESULT => {
                 if let Some(music) = app.music.as_ref() {
                     music.handle_pause_result_message(lparam);
+                }
+                return LRESULT(0);
+            }
+            WM_APP_MUSIC_FOLDER_EVENT => {
+                let notice = app
+                    .music
+                    .as_mut()
+                    .and_then(|music| music.handle_folder_event_message(lparam));
+                if let (Some(notice), Some(timer)) = (notice, app.break_timer.as_mut()) {
+                    if let Err(error) = timer.show_music_notice(&notice) {
+                        app.report_break_timer_error("음악 안내 표시", &error);
+                    }
                 }
                 return LRESULT(0);
             }

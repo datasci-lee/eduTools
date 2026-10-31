@@ -17,6 +17,8 @@ use crate::keymap::{self, RecorderOutcome};
 use crate::log::Logger;
 #[cfg(windows)]
 use crate::z_bands::{raise_band_order, Band, BandRegistration};
+#[cfg(windows)]
+use edutools_core::music::{collect_music_tracks, FileSystemMusicDirectoryReader, MusicCollection};
 use edutools_core::settings::{
     AppModifierSetting, AppSettings, PaletteStyle, RadialPaletteGlassStyle, SettingsColor,
     SettingsRanges, SettingsValidator,
@@ -84,9 +86,8 @@ use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 #[cfg(windows)]
 use windows::Win32::UI::Shell::{
     DefSubclassProc, FileOpenDialog, FileSaveDialog, IFileOpenDialog, IFileSaveDialog,
-    SHBrowseForFolderW, SHGetPathFromIDListW, SetWindowSubclass, BIF_NEWDIALOGSTYLE,
-    BIF_RETURNONLYFSDIRS, BROWSEINFOW, FOS_FORCEFILESYSTEM, FOS_PATHMUSTEXIST, FOS_STRICTFILETYPES,
-    SIGDN_FILESYSPATH,
+    SetWindowSubclass, FOS_FORCEFILESYSTEM, FOS_PATHMUSTEXIST, FOS_PICKFOLDERS,
+    FOS_STRICTFILETYPES, SIGDN_FILESYSPATH,
 };
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -117,6 +118,8 @@ const WM_APP_PAGE_WHEEL: u32 = 0x8000 + 240;
 pub const WM_APP_SETTINGS_ACTION: u32 = 0x8000 + 242;
 #[cfg(windows)]
 const WM_APP_SHORTCUT_KEY: u32 = 0x8000 + 243;
+#[cfg(windows)]
+const WM_APP_SETTINGS_MUSIC_SCAN: u32 = 0x8000 + 244;
 
 #[cfg(windows)]
 const WINDOW_CLASS: PCWSTR = w!("EduToolsSettingsWindow");
@@ -251,6 +254,18 @@ const BROWSER_OPTIONS: &[ComboOption] = &[
     ComboOption::new("Chrome", "chrome"),
     ComboOption::new("YouTube Music 앱", "youtubeMusicApp"),
     ComboOption::new("기본 브라우저", "defaultBrowser"),
+];
+const MUSIC_SOURCE_OPTIONS: &[ComboOption] = &[
+    ComboOption::new("YouTube Music", "youtube"),
+    ComboOption::new("로컬 폴더", "folder"),
+];
+const MUSIC_ORDER_OPTIONS: &[ComboOption] = &[
+    ComboOption::new("이름순", "name"),
+    ComboOption::new("무작위", "shuffle"),
+];
+const MUSIC_REPEAT_OPTIONS: &[ComboOption] = &[
+    ComboOption::new("전체 반복", "all"),
+    ComboOption::new("한 곡 반복", "one"),
 ];
 const BADGE_SIZE_OPTIONS: &[ComboOption] = &[
     ComboOption::new("작게", "small"),
@@ -521,6 +536,14 @@ string_accessors!(
 );
 string_accessors!(get_break_message, set_break_message, timer.break_message);
 string_accessors!(get_music_browser, set_music_browser, timer.music_browser);
+string_accessors!(get_music_source, set_music_source, timer.music_source);
+string_accessors!(
+    get_music_folder_path,
+    set_music_folder_path,
+    timer.music_folder_path
+);
+string_accessors!(get_music_order, set_music_order, timer.music_order);
+string_accessors!(get_music_repeat, set_music_repeat, timer.music_repeat);
 string_accessors!(get_badge_size, set_badge_size, timer.lesson_badge_size);
 string_accessors!(
     get_display_mode,
@@ -1369,6 +1392,16 @@ const TIMER_FIELDS: &[Field] = &[
         set: set_break_color,
     },
     Field {
+        id: "timer.musicSource",
+        label: "음악 소스",
+        help: None,
+        kind: FieldKind::Combo {
+            options: MUSIC_SOURCE_OPTIONS,
+        },
+        get: get_music_source,
+        set: set_music_source,
+    },
+    Field {
         id: "timer.playlist",
         label: "음악 재생목록",
         help: Some(
@@ -1395,6 +1428,34 @@ const TIMER_FIELDS: &[Field] = &[
         },
         get: get_music_browser,
         set: set_music_browser,
+    },
+    Field {
+        id: "timer.musicFolderPath",
+        label: "음악 폴더",
+        help: Some("폴더를 찾을 수 없습니다"),
+        kind: FieldKind::Folder,
+        get: get_music_folder_path,
+        set: set_music_folder_path,
+    },
+    Field {
+        id: "timer.musicOrder",
+        label: "재생 순서",
+        help: None,
+        kind: FieldKind::Combo {
+            options: MUSIC_ORDER_OPTIONS,
+        },
+        get: get_music_order,
+        set: set_music_order,
+    },
+    Field {
+        id: "timer.musicRepeat",
+        label: "반복",
+        help: None,
+        kind: FieldKind::Combo {
+            options: MUSIC_REPEAT_OPTIONS,
+        },
+        get: get_music_repeat,
+        set: set_music_repeat,
     },
     Field {
         id: "timer.fadeEnabled",
@@ -1690,6 +1751,14 @@ pub fn apply_change(
 }
 
 fn validate_value_for_field(field: &Field, value: &Value) -> std::result::Result<(), String> {
+    if field.id == "timer.musicFolderPath"
+        && matches!(
+            value,
+            Value::Text(path) if SettingsValidator::is_unsupported_music_folder_path(path)
+        )
+    {
+        return Err("네트워크 경로는 지원하지 않습니다. 이 PC의 폴더를 선택하세요".to_owned());
+    }
     let accepted = match (field.kind, value) {
         (FieldKind::Check, Value::Bool(_)) => true,
         (FieldKind::Slider { range, .. }, Value::Number(value)) => range.contains(value),
@@ -1766,7 +1835,16 @@ struct WindowState {
     font: HFONT,
     dpi: u32,
     label_width: i32,
+    music_scan_token: u64,
+    music_folder_status: String,
     logger: Logger,
+}
+
+#[cfg(windows)]
+struct MusicFolderScanResult {
+    token: u64,
+    path: String,
+    collection: MusicCollection,
 }
 
 #[cfg(windows)]
@@ -1910,6 +1988,8 @@ impl SettingsWindow {
             font: HFONT::default(),
             dpi: target.dpi,
             label_width: 0,
+            music_scan_token: 0,
+            music_folder_status: "폴더를 찾을 수 없습니다".to_owned(),
             logger,
         });
         let state_ptr = state.as_mut() as *mut WindowState;
@@ -1957,6 +2037,7 @@ impl SettingsWindow {
         self.state.display_apply_availability = availability;
         self.state.select_tab(tab.index());
         self.state.refresh_controls(true);
+        self.state.start_music_folder_scan();
         self.state.clear_error();
         let _ = unsafe { ShowWindow(self.state.hwnd, SW_RESTORE) };
         let _ = unsafe { ShowWindow(self.state.hwnd, SW_SHOW) };
@@ -1981,6 +2062,7 @@ impl SettingsWindow {
         self.state.settings = settings.clone();
         self.state.runtime_shortcut_warnings = runtime_shortcut_warnings.clone();
         self.state.refresh_controls(false);
+        self.state.start_music_folder_scan();
         self.state
             .logger
             .event(&format!("설정 창 외부 변경 반영: source={source}"));
@@ -2022,6 +2104,9 @@ impl SettingsWindow {
         self.state.settings = settings.clone();
         self.state.runtime_shortcut_warnings = runtime_shortcut_warnings.clone();
         self.state.refresh_controls(false);
+        if matches!(field_id, "timer.musicSource" | "timer.musicFolderPath") {
+            self.state.start_music_folder_scan();
+        }
         self.state.clear_error();
         self.state
             .logger
@@ -2512,7 +2597,11 @@ impl WindowState {
                 page,
                 self.hinstance,
                 w!("BUTTON"),
-                w!("선택…"),
+                if field.id == "timer.musicFolderPath" {
+                    w!("폴더 선택…")
+                } else {
+                    w!("선택…")
+                },
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
                 WINDOW_EX_STYLE(0),
                 control_id + 2_000,
@@ -2723,7 +2812,14 @@ impl WindowState {
                     update_page_scrollbar(page, page_height);
                 }
             } else {
-                layout_page(page, page_width, page_height, self.dpi, self.label_width);
+                layout_page(
+                    page,
+                    page_width,
+                    page_height,
+                    self.dpi,
+                    self.label_width,
+                    &self.settings,
+                );
             }
         }
         let button_gap = dip(8, self.dpi);
@@ -2782,7 +2878,109 @@ impl WindowState {
                 self.show_error(&format!("화면 탭 갱신 실패: {error}"));
             }
         }
+        self.refresh_music_folder_help();
         self.layout();
+    }
+
+    fn refresh_music_folder_help(&self) {
+        let row = self
+            .pages
+            .iter()
+            .flat_map(|page| &page.rows)
+            .find(|row| row.field.id == "timer.musicFolderPath");
+        if let Some(help) = row.and_then(|row| row.help) {
+            set_text(help, &self.music_folder_status);
+        }
+    }
+
+    fn start_music_folder_scan(&mut self) {
+        self.music_scan_token = self.music_scan_token.wrapping_add(1).max(1);
+        let token = self.music_scan_token;
+        if self.settings.timer.music_source != "folder"
+            || self.settings.timer.music_folder_path.is_empty()
+        {
+            self.music_folder_status = "폴더를 찾을 수 없습니다".to_owned();
+            self.refresh_music_folder_help();
+            return;
+        }
+        let path = self.settings.timer.music_folder_path.clone();
+        self.music_folder_status = "곡을 확인하는 중…".to_owned();
+        self.refresh_music_folder_help();
+        let hwnd_value = self.hwnd.0 as isize;
+        let worker_path = path.clone();
+        let logger = self.logger.clone();
+        let worker_logger = logger.clone();
+        let spawn = std::thread::Builder::new()
+            .name("edutools-settings-music-scan".to_owned())
+            .spawn(move || {
+                let collection = collect_music_tracks(
+                    PathBuf::from(&worker_path).as_path(),
+                    &FileSystemMusicDirectoryReader,
+                );
+                let result = Box::new(MusicFolderScanResult {
+                    token,
+                    path: worker_path,
+                    collection,
+                });
+                let raw = Box::into_raw(result);
+                let hwnd = HWND(hwnd_value as *mut c_void);
+                if let Err(error) = unsafe {
+                    PostMessageW(
+                        Some(hwnd),
+                        WM_APP_SETTINGS_MUSIC_SCAN,
+                        WPARAM(0),
+                        LPARAM(raw as isize),
+                    )
+                } {
+                    // SAFETY: the message was not queued, so the worker retains ownership.
+                    unsafe { drop(Box::from_raw(raw)) };
+                    worker_logger.event(&format!("설정 음악 폴더 스캔 결과 전달 실패: {error}"));
+                }
+            });
+        if let Err(error) = spawn {
+            self.music_folder_status = "폴더를 찾을 수 없습니다".to_owned();
+            self.refresh_music_folder_help();
+            logger.event(&format!(
+                "설정 음악 폴더 스캔 작업 스레드 생성 실패: {error}"
+            ));
+        } else {
+            self.logger.event(&format!(
+                "설정 음악 폴더 백그라운드 스캔 시작 path={path:?} token={token}"
+            ));
+        }
+    }
+
+    fn handle_music_folder_scan(&mut self, lparam: LPARAM) {
+        if lparam.0 == 0 {
+            self.logger
+                .event("설정 음악 폴더 스캔 결과 포인터가 null임");
+            return;
+        }
+        // SAFETY: the scan worker posts exactly one Box<MusicFolderScanResult> pointer.
+        let result = unsafe { *Box::from_raw(lparam.0 as *mut MusicFolderScanResult) };
+        if result.token != self.music_scan_token
+            || result.path != self.settings.timer.music_folder_path
+            || self.settings.timer.music_source != "folder"
+        {
+            self.logger.event(&format!(
+                "설정 음악 폴더 오래된 스캔 결과 무시 token={}",
+                result.token
+            ));
+            return;
+        }
+        if let Some(reason) = result.collection.failure_reason {
+            self.music_folder_status = "폴더를 찾을 수 없습니다".to_owned();
+            self.logger
+                .event(&format!("설정 음악 폴더 읽기 실패: {reason}"));
+        } else {
+            self.music_folder_status = format!("곡 {}개", result.collection.tracks.len());
+            self.logger.event(&format!(
+                "설정 음악 폴더 스캔 완료 tracks={} token={}",
+                result.collection.tracks.len(),
+                result.token
+            ));
+        }
+        self.refresh_music_folder_help();
     }
 
     fn refresh_shortcut_controls(&mut self) {
@@ -3039,9 +3237,33 @@ impl WindowState {
 
     fn choose_row_folder(&mut self, page_index: usize, row_index: usize) {
         let row = &self.pages[page_index].rows[row_index];
-        if let Some(path) = choose_folder(self.hwnd) {
-            set_text(row.control, &path);
-            self.post_change(row.field, Value::Text(path));
+        let title = if row.field.id == "timer.musicFolderPath" {
+            "쉬는 시간 음악 폴더 선택"
+        } else {
+            "자동 보관 폴더 선택"
+        };
+        match choose_folder(self.hwnd, title) {
+            Ok(Some(path)) => {
+                let value = Value::Text(path);
+                if let Err(reason) = validate_value_for_field(row.field, &value) {
+                    self.show_error(&reason);
+                    self.logger.event(&format!(
+                        "설정 창 필드 변경 거부: id={} reason={reason}",
+                        row.field.id
+                    ));
+                    return;
+                }
+                let Value::Text(path) = &value else {
+                    unreachable!();
+                };
+                set_text(row.control, path);
+                self.post_change(row.field, value);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                self.show_error(&format!("폴더 선택 창을 열 수 없습니다: {error}"));
+                self.logger.event(&format!("설정 폴더 선택 실패: {error}"));
+            }
         }
     }
 
@@ -3349,7 +3571,14 @@ impl WindowState {
                 update_page_scrollbar(page, height);
             }
         } else {
-            layout_page(page, width, height, self.dpi, self.label_width);
+            layout_page(
+                page,
+                width,
+                height,
+                self.dpi,
+                self.label_width,
+                &self.settings,
+            );
         }
     }
 }
@@ -3363,7 +3592,14 @@ fn display_event_handled(event: &DisplayPageEvent) -> bool {
 }
 
 #[cfg(windows)]
-fn layout_page(page: &mut PageState, width: i32, height: i32, dpi: u32, label_width: i32) {
+fn layout_page(
+    page: &mut PageState,
+    width: i32,
+    height: i32,
+    dpi: u32,
+    label_width: i32,
+    settings: &AppSettings,
+) {
     if page.shortcuts.is_some() {
         layout_shortcut_page(page, width, height, dpi);
         return;
@@ -3375,23 +3611,33 @@ fn layout_page(page: &mut PageState, width: i32, height: i32, dpi: u32, label_wi
     let label_width = label_width.max(dip(80, dpi));
     let control_x = padding + label_width + gap;
     let control_width = (width - control_x - padding - metrics.scrollbar_gutter).max(1);
-    page.content_height = page.rows.iter().fold(padding * 2, |height, row| {
-        let base_height = if matches!(row.field.kind, FieldKind::StringList) {
-            metrics.multiline_height
-        } else {
-            control_height
-        };
-        let help_height = if row.help.is_some() {
-            metrics.help_height
-        } else {
-            0
-        };
-        height + base_height + help_height + gap
-    });
+    for row in &page.rows {
+        set_row_visibility(row, field_visible(settings, row.field.id));
+    }
+    page.content_height = page
+        .rows
+        .iter()
+        .filter(|row| field_visible(settings, row.field.id))
+        .fold(padding * 2, |height, row| {
+            let base_height = if matches!(row.field.kind, FieldKind::StringList) {
+                metrics.multiline_height
+            } else {
+                control_height
+            };
+            let help_height = if row.help.is_some() {
+                metrics.help_height
+            } else {
+                0
+            };
+            height + base_height + help_height + gap
+        });
     let maximum = (page.content_height - height).max(0);
     page.scroll_position = page.scroll_position.clamp(0, maximum);
     let mut y = padding - page.scroll_position;
     for row in &page.rows {
+        if !field_visible(settings, row.field.id) {
+            continue;
+        }
         let base_height = if matches!(row.field.kind, FieldKind::StringList) {
             metrics.multiline_height
         } else {
@@ -3498,6 +3744,30 @@ fn layout_page(page: &mut PageState, width: i32, height: i32, dpi: u32, label_wi
         y += base_height + help_height + gap;
     }
     update_page_scrollbar(page, height);
+}
+
+#[cfg(windows)]
+fn field_visible(settings: &AppSettings, id: &str) -> bool {
+    match id {
+        "timer.playlist" | "timer.musicBrowser" => settings.timer.music_source == "youtube",
+        "timer.musicFolderPath" | "timer.musicOrder" | "timer.musicRepeat" => {
+            settings.timer.music_source == "folder"
+        }
+        _ => true,
+    }
+}
+
+#[cfg(windows)]
+fn set_row_visibility(row: &ControlRow, visible: bool) {
+    let command = if visible { SW_SHOW } else { SW_HIDE };
+    let _ = unsafe { ShowWindow(row.label, command) };
+    let _ = unsafe { ShowWindow(row.control, command) };
+    if let Some(auxiliary) = row.auxiliary {
+        let _ = unsafe { ShowWindow(auxiliary, command) };
+    }
+    if let Some(help) = row.help {
+        let _ = unsafe { ShowWindow(help, command) };
+    }
 }
 
 #[cfg(windows)]
@@ -3852,29 +4122,22 @@ fn choose_color(owner: HWND, current: &SettingsColor) -> Option<SettingsColor> {
 }
 
 #[cfg(windows)]
-fn choose_folder(owner: HWND) -> Option<String> {
-    let title = wide("자동 보관 폴더 선택");
-    let info = BROWSEINFOW {
-        hwndOwner: owner,
-        lpszTitle: PCWSTR(title.as_ptr()),
-        ulFlags: BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE,
-        ..Default::default()
-    };
-    let list = unsafe { SHBrowseForFolderW(&info) };
-    if list.is_null() {
-        return None;
+fn choose_folder(owner: HWND, title: &str) -> Result<Option<String>> {
+    let dialog: IFileOpenDialog =
+        unsafe { CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER) }?;
+    let title = wide(title);
+    unsafe {
+        dialog.SetTitle(PCWSTR(title.as_ptr()))?;
+        dialog.SetOptions(
+            dialog.GetOptions()? | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_PICKFOLDERS,
+        )?;
     }
-    let mut path = [0_u16; 260];
-    let success = unsafe { SHGetPathFromIDListW(list, &mut path) }.as_bool();
-    unsafe { CoTaskMemFree(Some(list.cast())) };
-    success.then(|| {
-        String::from_utf16_lossy(
-            &path[..path
-                .iter()
-                .position(|value| *value == 0)
-                .unwrap_or(path.len())],
-        )
-    })
+    match unsafe { dialog.Show(Some(owner)) } {
+        Ok(()) => shell_item_path(unsafe { dialog.GetResult()? })
+            .map(|path| Some(path.to_string_lossy().into_owned())),
+        Err(error) if error.code() == ERROR_CANCELLED.to_hresult() => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(windows)]
@@ -4772,6 +5035,10 @@ unsafe extern "system" fn settings_window_proc(
                 state.handle_shortcut_key(wparam.0 as u32);
                 return LRESULT(0);
             }
+            WM_APP_SETTINGS_MUSIC_SCAN => {
+                state.handle_music_folder_scan(lparam);
+                return LRESULT(0);
+            }
             WM_GETMINMAXINFO => {
                 let info = lparam.0 as *mut MINMAXINFO;
                 if !info.is_null() {
@@ -5276,6 +5543,10 @@ fn expected_field_and_exclusion_ids() -> BTreeSet<&'static str> {
         "timer.defaultPlaylistIndex",
         "timer.musicEnabled",
         "timer.musicBrowser",
+        "timer.musicSource",
+        "timer.musicFolderPath",
+        "timer.musicOrder",
+        "timer.musicRepeat",
         "timer.fadeEnabled",
         "timer.fadeDuration",
         "timer.autoStartBreak",
