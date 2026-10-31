@@ -24,6 +24,7 @@ private final class SettingsSelection: ObservableObject {
 private struct SettingsActions {
     let updateLaunchAtLogin: (Bool) -> Void
     let chooseArchiveFolder: () -> Void
+    let chooseMusicFolder: () -> Void
     let editPlaylists: () -> Void
     let exportSettings: () -> Void
     let importSettings: () -> Void
@@ -71,6 +72,7 @@ final class SettingsController: NSObject {
                 self?.updateLaunchAtLogin(enabled)
             },
             chooseArchiveFolder: { [weak self] in self?.chooseArchiveFolder() },
+            chooseMusicFolder: { [weak self] in self?.chooseMusicFolder() },
             editPlaylists: { [weak self] in self?.editPlaylists() },
             exportSettings: { [weak self] in self?.exportSettings() },
             importSettings: { [weak self] in self?.chooseSettingsToImport() },
@@ -244,6 +246,17 @@ final class SettingsController: NSObject {
         panel.allowsMultipleSelection = false
         guard panel.runAboveOverlay() == .OK, let url = panel.url else { return }
         settingsStore.update { $0.general.archiveFolderPath = url.path }
+    }
+
+    private func chooseMusicFolder() {
+        let panel = NSOpenPanel()
+        panel.title = "쉬는 시간 음악 폴더 선택"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = false
+        panel.allowsMultipleSelection = false
+        guard panel.runAboveOverlay() == .OK, let url = panel.url else { return }
+        settingsStore.update { $0.timer.musicFolderPath = url.path }
     }
 
     private func editPlaylists() {
@@ -435,6 +448,7 @@ private final class SettingsExportOptionsView: NSStackView {
 private struct SettingsRootView: View {
     @ObservedObject var store: SettingsStore
     @ObservedObject var selection: SettingsSelection
+    @State private var musicFolderStatus = "폴더를 찾을 수 없습니다"
     let actions: SettingsActions
 
     var body: some View {
@@ -740,15 +754,46 @@ private struct SettingsRootView: View {
                 )
                 TextField("화면 문구", text: binding(\.timer.breakMessage))
                 ColorPicker("배경색", selection: colorBinding(\.timer.breakBackgroundColor))
-                HStack {
-                    Text("음악 재생목록 \(store.settings.timer.playlistURLs.count)개")
-                    Spacer()
-                    Button("편집…", action: actions.editPlaylists)
+                Picker("음악 소스", selection: binding(\.timer.musicSource)) {
+                    Text("YouTube Music").tag(BreakMusicSource.youtube.rawValue)
+                    Text("로컬 폴더").tag(BreakMusicSource.folder.rawValue)
                 }
-                Picker("열 브라우저", selection: binding(\.timer.musicBrowser)) {
-                    Text("Chrome").tag("chrome")
-                    Text("YouTube Music 앱").tag("youtubeMusicApp")
-                    Text("기본 브라우저").tag("defaultBrowser")
+                .pickerStyle(.segmented)
+                if store.settings.timer.musicSource == BreakMusicSource.folder.rawValue {
+                    HStack {
+                        Text("음악 폴더")
+                        Spacer()
+                        Text(
+                            store.settings.timer.musicFolderPath.isEmpty
+                                ? "선택되지 않음"
+                                : store.settings.timer.musicFolderPath
+                        )
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        Button("폴더 선택…", action: actions.chooseMusicFolder)
+                    }
+                    Text(musicFolderStatus)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Picker("재생 순서", selection: binding(\.timer.musicOrder)) {
+                        Text("이름순").tag(BreakMusicOrder.name.rawValue)
+                        Text("무작위").tag(BreakMusicOrder.shuffle.rawValue)
+                    }
+                    Picker("반복", selection: binding(\.timer.musicRepeat)) {
+                        Text("전체 반복").tag(BreakMusicRepeatMode.all.rawValue)
+                        Text("한 곡 반복").tag(BreakMusicRepeatMode.one.rawValue)
+                    }
+                } else {
+                    HStack {
+                        Text("음악 재생목록 \(store.settings.timer.playlistURLs.count)개")
+                        Spacer()
+                        Button("편집…", action: actions.editPlaylists)
+                    }
+                    Picker("열 브라우저", selection: binding(\.timer.musicBrowser)) {
+                        Text("Chrome").tag("chrome")
+                        Text("YouTube Music 앱").tag("youtubeMusicApp")
+                        Text("기본 브라우저").tag("defaultBrowser")
+                    }
                 }
                 Toggle("종료 전 페이드아웃", isOn: binding(\.timer.fadeEnabled))
                 slider(
@@ -757,12 +802,30 @@ private struct SettingsRootView: View {
                     range: SettingsRanges.fadeDuration,
                     step: 1
                 )
-                Text("YouTube Premium이 아니면 재생 중 광고가 나올 수 있습니다.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                if store.settings.timer.musicSource == BreakMusicSource.youtube.rawValue {
+                    Text("YouTube Premium이 아니면 재생 중 광고가 나올 수 있습니다.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .padding()
+        .task(id: store.settings.timer.musicFolderPath) {
+            let path = store.settings.timer.musicFolderPath
+            guard !path.isEmpty else {
+                musicFolderStatus = "폴더를 찾을 수 없습니다"
+                return
+            }
+            musicFolderStatus = "확인 중…"
+            let count = await Task.detached(priority: .userInitiated) { () -> Int? in
+                let result = MusicPlaylistCollector().collect(
+                    root: URL(fileURLWithPath: path, isDirectory: true)
+                )
+                return result.failureReason == nil ? result.tracks.count : nil
+            }.value
+            guard !Task.isCancelled else { return }
+            musicFolderStatus = count.map { "곡 \($0)개" } ?? "폴더를 찾을 수 없습니다"
+        }
     }
 
     private var shortcutsTab: some View {

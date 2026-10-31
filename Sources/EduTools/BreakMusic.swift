@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import CoreAudio
 import Foundation
 
@@ -76,6 +77,20 @@ final class BreakMusicSettings {
     var isFadeEnabled: Bool { settingsStore.settings.timer.fadeEnabled }
     var fadeDuration: TimeInterval { settingsStore.settings.timer.fadeDuration }
     var isMusicEnabled: Bool { settingsStore.settings.timer.musicEnabled }
+    var source: BreakMusicSource {
+        BreakMusicSource(rawValue: settingsStore.settings.timer.musicSource) ?? .youtube
+    }
+    var musicFolderURL: URL? {
+        let path = settingsStore.settings.timer.musicFolderPath
+        guard !path.isEmpty else { return nil }
+        return URL(fileURLWithPath: path, isDirectory: true)
+    }
+    var order: BreakMusicOrder {
+        BreakMusicOrder(rawValue: settingsStore.settings.timer.musicOrder) ?? .name
+    }
+    var repeatMode: BreakMusicRepeatMode {
+        BreakMusicRepeatMode(rawValue: settingsStore.settings.timer.musicRepeat) ?? .all
+    }
 
     init(settingsStore: SettingsStore) {
         self.settingsStore = settingsStore
@@ -223,20 +238,33 @@ private struct ActiveBreakMusicPlayback {
     var chromeTabReference: ChromeTabReference?
 }
 
-final class BreakMusicController {
+final class BreakMusicController: NSObject, AVAudioPlayerDelegate {
     let settings: BreakMusicSettings
     var bringBreakScreenToFront: (() -> Void)?
+    var showMessage: ((String) -> Void)?
 
     private let workspace: NSWorkspace
+    private let playlistCollector: MusicPlaylistCollector
     private let volumeController = CoreAudioVolumeController()
     private var volumeSnapshot: SystemVolumeSnapshot?
     private var activePlayback: ActiveBreakMusicPlayback?
+    private var playbackSource: BreakMusicSource?
+    private var folderScanToken: UUID?
+    private var folderPlaylist: MusicPlaylist?
+    private var audioPlayer: AVAudioPlayer?
+    private var folderVolume: Float32 = 1
     private var isBreakActive = false
     private var isFadeAvailable = true
 
-    init(settings: BreakMusicSettings, workspace: NSWorkspace = .shared) {
+    init(
+        settings: BreakMusicSettings,
+        workspace: NSWorkspace = .shared,
+        playlistCollector: MusicPlaylistCollector = MusicPlaylistCollector()
+    ) {
         self.settings = settings
         self.workspace = workspace
+        self.playlistCollector = playlistCollector
+        super.init()
     }
 
     func breakDidStart() {
@@ -248,12 +276,21 @@ final class BreakMusicController {
     func breakDidUpdate(now: Date, endDate: Date) {
         guard isBreakActive,
               settings.isMusicEnabled,
-              settings.isFadeEnabled,
-              isFadeAvailable,
-              let volumeSnapshot
+              settings.isFadeEnabled
         else {
             return
         }
+        if playbackSource == .folder {
+            folderVolume = BreakMusicFade.volume(
+                originalVolume: 1,
+                now: now,
+                endDate: endDate,
+                duration: settings.fadeDuration
+            )
+            audioPlayer?.volume = folderVolume
+            return
+        }
+        guard isFadeAvailable, let volumeSnapshot else { return }
         let targetVolume = BreakMusicFade.volume(
             originalVolume: volumeSnapshot.volume,
             now: now,
@@ -268,7 +305,15 @@ final class BreakMusicController {
     }
 
     func breakDidEnd() {
-        guard isBreakActive || activePlayback != nil || volumeSnapshot != nil else { return }
+        guard isBreakActive
+                || activePlayback != nil
+                || volumeSnapshot != nil
+                || folderScanToken != nil
+                || folderPlaylist != nil
+                || audioPlayer != nil
+        else {
+            return
+        }
         isBreakActive = false
         stopPlayback()
         restoreVolume()
@@ -296,7 +341,31 @@ final class BreakMusicController {
         startPlayback(captureVolume: volumeSnapshot == nil)
     }
 
+    func skipToNextTrack() {
+        guard isBreakActive,
+              settings.isMusicEnabled,
+              playbackSource == .folder,
+              let folderPlaylist
+        else {
+            return
+        }
+        audioPlayer?.delegate = nil
+        audioPlayer?.stop()
+        audioPlayer = nil
+        _ = folderPlaylist.advance(userSkip: true)
+        playCurrentFolderTrack()
+    }
+
     private func startPlayback(captureVolume: Bool = true) {
+        switch settings.source {
+        case .youtube:
+            startYouTubePlayback(captureVolume: captureVolume)
+        case .folder:
+            startFolderPlayback()
+        }
+    }
+
+    private func startYouTubePlayback(captureVolume: Bool) {
         guard activePlayback == nil else { return }
         guard let playlistURL = settings.selectedPlaylistURL else {
             NSLog("EduTools: break music is enabled but no valid playlist URL is configured")
@@ -312,6 +381,7 @@ final class BreakMusicController {
         }
 
         let token = UUID()
+        playbackSource = .youtube
         let shouldUseChrome = settings.browser != .defaultBrowser
         activePlayback = ActiveBreakMusicPlayback(
             token: token,
@@ -336,6 +406,150 @@ final class BreakMusicController {
             updatePlaybackMode(token: token, usesChrome: false)
             openWithDefaultBrowser(playlistURL, token: token)
         }
+    }
+
+    private func startFolderPlayback() {
+        guard folderScanToken == nil, folderPlaylist == nil, audioPlayer == nil else { return }
+        guard let root = settings.musicFolderURL else {
+            showMessage?("재생할 음악 파일이 없습니다")
+            return
+        }
+
+        let token = UUID()
+        let collector = playlistCollector
+        let order = settings.order
+        let repeatMode = settings.repeatMode
+        playbackSource = .folder
+        folderScanToken = token
+        folderVolume = 1
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = collector.collect(root: root)
+            DispatchQueue.main.async {
+                guard let self,
+                      self.folderScanToken == token,
+                      self.isBreakActive,
+                      self.settings.isMusicEnabled,
+                      self.settings.source == .folder
+                else {
+                    return
+                }
+                self.folderScanToken = nil
+                guard !result.tracks.isEmpty else {
+                    self.playbackSource = nil
+                    self.showMessage?("재생할 음악 파일이 없습니다")
+                    return
+                }
+                self.folderPlaylist = MusicPlaylist(
+                    tracks: result.tracks,
+                    order: order,
+                    repeat: repeatMode
+                )
+                self.playCurrentFolderTrack()
+            }
+        }
+    }
+
+    private func playCurrentFolderTrack() {
+        guard playbackSource == .folder, let folderPlaylist else { return }
+        while let track = folderPlaylist.current {
+            do {
+                let player = try AVAudioPlayer(contentsOf: track.url)
+                player.delegate = self
+                player.volume = folderVolume
+                guard player.prepareToPlay() else {
+                    throw NSError(
+                        domain: "kr.datasci.edutools.break-music",
+                        code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "오디오 재생을 시작하지 못했습니다"]
+                    )
+                }
+                audioPlayer = player
+                guard player.play() else {
+                    audioPlayer = nil
+                    player.delegate = nil
+                    throw NSError(
+                        domain: "kr.datasci.edutools.break-music",
+                        code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "오디오 재생을 시작하지 못했습니다"]
+                    )
+                }
+                folderPlaylist.reportSuccess()
+                bringBreakScreenToFront?()
+                return
+            } catch {
+                NSLog(
+                    "EduTools: break music file could not be played at %@: %@",
+                    track.url.path,
+                    String(describing: error)
+                )
+                folderPlaylist.reportFailure()
+                if folderPlaylist.exhausted {
+                    folderPlaybackDidExhaust()
+                    return
+                }
+                _ = folderPlaylist.advance(userSkip: true)
+            }
+        }
+    }
+
+    private func folderTrackDidFail(_ player: AVAudioPlayer, error: Error?) {
+        guard player === audioPlayer, let folderPlaylist else { return }
+        player.delegate = nil
+        player.stop()
+        audioPlayer = nil
+        NSLog(
+            "EduTools: break music playback failed: %@",
+            error.map { String(describing: $0) } ?? "decoder stopped"
+        )
+        folderPlaylist.reportFailure()
+        if folderPlaylist.exhausted {
+            folderPlaybackDidExhaust()
+            return
+        }
+        _ = folderPlaylist.advance(userSkip: true)
+        playCurrentFolderTrack()
+    }
+
+    private func folderPlaybackDidExhaust() {
+        audioPlayer?.delegate = nil
+        audioPlayer?.stop()
+        audioPlayer = nil
+        folderPlaylist = nil
+        folderScanToken = nil
+        playbackSource = nil
+        showMessage?("음악을 재생하지 못했습니다")
+    }
+
+    private func stopPlayback() {
+        stopFolderPlayback()
+        stopYouTubePlayback()
+        playbackSource = nil
+    }
+
+    private func stopFolderPlayback() {
+        folderScanToken = nil
+        audioPlayer?.delegate = nil
+        audioPlayer?.stop()
+        audioPlayer = nil
+        folderPlaylist = nil
+        folderVolume = 1
+    }
+
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        guard player === audioPlayer, let folderPlaylist else { return }
+        guard flag else {
+            folderTrackDidFail(player, error: nil)
+            return
+        }
+        player.delegate = nil
+        audioPlayer = nil
+        folderPlaylist.reportSuccess()
+        _ = folderPlaylist.advance(userSkip: false)
+        playCurrentFolderTrack()
+    }
+
+    func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        folderTrackDidFail(player, error: error)
     }
 
     private func openWithChrome(
@@ -387,6 +601,7 @@ final class BreakMusicController {
                     NSLog("EduTools: the default browser could not open break music: %@", String(describing: error))
                     if self.isCurrentPlayback(token: token) {
                         self.activePlayback = nil
+                        self.playbackSource = nil
                         self.restoreVolume()
                         self.bringBreakScreenToFront?()
                     }
@@ -425,7 +640,7 @@ final class BreakMusicController {
         bringBreakScreenToFront?()
     }
 
-    private func stopPlayback() {
+    private func stopYouTubePlayback() {
         guard let playback = activePlayback else { return }
         activePlayback = nil
         guard playback.launchState == .opened else { return }
