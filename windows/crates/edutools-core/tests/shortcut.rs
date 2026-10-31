@@ -104,7 +104,7 @@ fn catalog_matches_shared_fixture_and_is_unique_within_scope() {
         .collect::<Vec<_>>();
 
     assert_eq!(definitions.len(), 58);
-    assert_eq!(uniqueness.len(), 47);
+    assert_eq!(uniqueness.len(), 48);
     assert_eq!(
         uniqueness.iter().collect::<HashSet<_>>().len(),
         uniqueness.len()

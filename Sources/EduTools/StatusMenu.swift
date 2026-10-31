@@ -126,7 +126,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
             action: #selector(clearAllInk(_:)),
             keyEquivalent: ""
         )
-        applyShortcut(.clearAll, scope: .annotation, to: clearAllItem)
+        applyShortcut(.clearAll, scope: .global, to: clearAllItem)
         clearAllItem.target = self
         menu.addItem(clearAllItem)
 
@@ -449,7 +449,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     }
 
     @objc private func clearAllInk(_ sender: Any?) {
-        dispatcher.execute(.clearAll, scope: .annotation)
+        dispatcher.execute(.clearAll, scope: .global)
     }
 
     @objc private func toggleLessonTimer(_ sender: Any?) {
