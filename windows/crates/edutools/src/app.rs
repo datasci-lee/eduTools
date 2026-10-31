@@ -68,8 +68,8 @@ use crate::text_entry::{
     WM_APP_TEXT_ENTRY_COMMIT, WM_APP_TEXT_ENTRY_OPEN,
 };
 use crate::tray::{
-    self, display_preset_index, Tray, CALLBACK_MESSAGE, MENU_CLEAR_ALL, MENU_DISPLAY_SETTINGS,
-    MENU_EXIT, MENU_SETTINGS, MENU_TOGGLE_ANNOTATION,
+    self, display_preset_index, Tray, CALLBACK_MESSAGE, MENU_CLEAR_ALL, MENU_CLEAR_DISPLAY,
+    MENU_DISPLAY_SETTINGS, MENU_EXIT, MENU_SETTINGS, MENU_TOGGLE_ANNOTATION,
 };
 use crate::zoom_view::{
     decode_pointer, decode_wheel, ZoomView, WM_APP_ZOOM_INK_INPUT, WM_APP_ZOOM_POINTER,
@@ -1676,7 +1676,28 @@ impl App {
             context,
         );
         match result {
-            Ok(effects) => self.apply_effects(effects, source),
+            Ok(effects) => {
+                if effects
+                    .iter()
+                    .any(|effect| matches!(effect, Effect::AnnotationModeChanged(true)))
+                {
+                    match self
+                        .overlays
+                        .as_ref()
+                        .map(OverlayManager::monitor_key_at_cursor)
+                    {
+                        Some(Ok(Some(display_id))) => self
+                            .state
+                            .borrow_mut()
+                            .set_active_display_if_annotating(display_id),
+                        Some(Err(error)) => self
+                            .logger
+                            .event(&format!("커서 모니터 판정 실패: {error}")),
+                        Some(Ok(None)) | None => {}
+                    }
+                }
+                self.apply_effects(effects, source);
+            }
             Err(error) => self.logger.event(&format!(
                 "annotation.toggle core dispatch 실패 ({source}): {error}"
             )),
@@ -4620,6 +4641,26 @@ impl App {
             Some(MENU_CLEAR_ALL) => {
                 self.logger.event("트레이 메뉴 선택: 전체 지우기");
                 self.dispatch_clear_all("트레이 메뉴");
+            }
+            Some(MENU_CLEAR_DISPLAY) => {
+                self.logger.event("트레이 메뉴 선택: 현재 모니터만 지우기");
+                let display_id = self.state.borrow().active_display_id().map(str::to_owned);
+                if let Some(display_id) = display_id {
+                    self.apply_effects(vec![Effect::FinishAllActiveInteractions], "트레이 메뉴");
+                    let result = self
+                        .overlays
+                        .as_mut()
+                        .map(|overlays| overlays.clear_display(&display_id));
+                    match result {
+                        Some(Ok(changed_layers)) => self.logger.event(&format!(
+                            "효과 (트레이 메뉴): 현재 모니터만 지우기 monitor={display_id} layers={changed_layers}"
+                        )),
+                        Some(Err(error)) => {
+                            self.report_overlay_error("현재 모니터만 지우기", &error)
+                        }
+                        None => {}
+                    }
+                }
             }
             Some(MENU_SETTINGS) => {
                 self.logger.event("트레이 메뉴 선택: 설정");
