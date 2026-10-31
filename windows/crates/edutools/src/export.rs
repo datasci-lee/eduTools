@@ -99,6 +99,8 @@ pub struct ExportTimestamp {
 
 pub fn export_base_name(timestamp: ExportTimestamp, display_id: &str) -> String {
     let display = display_id
+        .strip_prefix(r"\\.\")
+        .unwrap_or(display_id)
         .chars()
         .map(|value| {
             if value.is_alphanumeric() || matches!(value, '-' | '_') {
@@ -490,6 +492,7 @@ mod windows_impl {
         owner: HWND,
         logger: Logger,
         pending: Option<PendingCapture>,
+        fallback_notice: Option<(String, String)>,
     }
 
     struct PendingCapture {
@@ -530,7 +533,12 @@ mod windows_impl {
                 owner,
                 logger,
                 pending: None,
+                fallback_notice: None,
             }
+        }
+
+        pub fn take_fallback_notice(&mut self) -> Option<(String, String)> {
+            self.fallback_notice.take()
         }
 
         pub fn save_current_content(
@@ -606,7 +614,7 @@ mod windows_impl {
                 {
                     Ok(image) => {
                         self.log_start("clipboard", &image, "-");
-                        self.complete(ExportDestination::Clipboard, image);
+                        self.complete(ExportDestination::Clipboard, image, false);
                     }
                     Err(error) => {
                         self.report_failure("보드 이미지를 만들지 못했습니다", &error.to_string())
@@ -645,8 +653,32 @@ mod windows_impl {
                 }
             };
             match composite_premultiplied(&background, &pending.ink) {
-                Ok(composite) => self.complete(pending.destination, composite),
+                Ok(composite) => {
+                    self.complete(pending.destination, composite, false);
+                }
                 Err(error) => self.report_failure("화면과 판서를 합치지 못했습니다", &error),
+            }
+        }
+
+        pub fn handle_capture_recreate(&mut self) {
+            let result = self
+                .pending
+                .as_ref()
+                .map(|pending| pending.capture.recreate_if_needed());
+            match result {
+                Some(Ok(true)) => self.logger.event("내보내기 WGC 프레임 풀 크기 재생성 완료"),
+                Some(Ok(false)) | None => {}
+                Some(Err(error)) => {
+                    let Some(mut pending) = self.take_pending() else {
+                        return;
+                    };
+                    pending.exclusion.restore();
+                    self.use_ink_only_fallback(
+                        pending.destination,
+                        pending.ink,
+                        &format!("Direct3D11CaptureFramePool::Recreate 실패: {error}"),
+                    );
+                }
             }
         }
 
@@ -842,15 +874,26 @@ mod windows_impl {
             ));
         }
 
-        fn complete(&self, destination: ExportDestination, image: BgraImage) {
+        fn complete(
+            &self,
+            destination: ExportDestination,
+            image: BgraImage,
+            ink_only: bool,
+        ) -> bool {
             let file_name = destination.file_name();
             match destination {
                 ExportDestination::Png(path) => match encode_png(&image)
                     .map_err(|error| error.to_string())
                     .and_then(|data| atomic_write(&path, &data))
                 {
-                    Ok(()) => self.log_complete("PNG", &image, &file_name),
-                    Err(error) => self.report_failure("PNG를 저장하지 못했습니다", &error),
+                    Ok(()) => {
+                        self.log_complete("PNG", &image, &file_name, ink_only);
+                        true
+                    }
+                    Err(error) => {
+                        self.report_failure("PNG를 저장하지 못했습니다", &error);
+                        false
+                    }
                 },
                 ExportDestination::Clipboard => match encode_png(&image)
                     .and_then(|png| set_clipboard(self.owner, &image, &png))
@@ -858,30 +901,37 @@ mod windows_impl {
                     Ok(retries) => {
                         self.logger
                             .event(&format!("클립보드 열기 재시도: count={retries}"));
-                        self.log_complete("clipboard", &image, "-");
+                        self.log_complete("clipboard", &image, "-", ink_only);
+                        true
                     }
-                    Err(error) => self.report_failure(
-                        "클립보드에 복사하지 못했습니다",
-                        &format!("클립보드가 사용 중인지 확인해 주세요.\n{error}"),
-                    ),
+                    Err(error) => {
+                        self.report_failure(
+                            "클립보드에 복사하지 못했습니다",
+                            &format!("클립보드가 사용 중인지 확인해 주세요.\n{error}"),
+                        );
+                        false
+                    }
                 },
             }
         }
 
         fn use_ink_only_fallback(
-            &self,
+            &mut self,
             destination: ExportDestination,
             ink: BgraImage,
             reason: &str,
         ) {
+            let reason = reason.lines().collect::<Vec<_>>().join(" ");
             self.logger
-                .event("내보내기 폴백: kind=ink-only reason=background-capture-failed");
-            show_warning(
-                self.owner,
-                "배경 없이 판서만 내보냅니다",
-                &format!("화면 캡처 권한과 상태를 확인해 주세요.\n{reason}"),
-            );
-            self.complete(destination, ink);
+                .event(&format!("내보내기 배경 캡처 실패: {reason}"));
+            self.logger
+                .event(&format!("내보내기 폴백: kind=ink-only reason={reason}"));
+            if self.complete(destination, ink, true) {
+                self.fallback_notice = Some((
+                    "배경 없이 판서만 내보냈습니다".to_owned(),
+                    format!("화면 캡처 권한과 상태를 확인해 주세요.\n{reason}"),
+                ));
+            }
         }
 
         fn target_display(
@@ -940,9 +990,10 @@ mod windows_impl {
             ));
         }
 
-        fn log_complete(&self, kind: &str, image: &BgraImage, file_name: &str) {
+        fn log_complete(&self, kind: &str, image: &BgraImage, file_name: &str, ink_only: bool) {
+            let mode = if ink_only { " (ink-only)" } else { "" };
             self.logger.event(&format!(
-                "내보내기 완료: kind={kind} pixels={}x{} file={file_name}",
+                "내보내기 완료: kind={kind}{mode} pixels={}x{} file={file_name}",
                 image.width, image.height
             ));
         }
@@ -978,7 +1029,9 @@ mod windows_impl {
                 )
             };
             if let Err(error) = result {
-                enumeration.failure.get_or_insert_with(|| error.to_string());
+                enumeration
+                    .failure
+                    .get_or_insert_with(|| format!("EnumWindows 실패: {error}"));
             }
             if let Some(error) = enumeration.failure {
                 restore_window_affinities(&mut enumeration.changed, &logger);
@@ -989,7 +1042,7 @@ mod windows_impl {
             if let Err(error) = unsafe { DwmFlush() } {
                 restore_window_affinities(&mut enumeration.changed, &logger);
                 return Err(format!(
-                    "EduTools 창 제외 상태를 화면 합성기에 반영하지 못했습니다: {error}"
+                    "DwmFlush 실패: EduTools 창 제외 상태를 화면 합성기에 반영하지 못했습니다: {error}"
                 ));
             }
             logger.event(&format!(
@@ -1022,7 +1075,10 @@ mod windows_impl {
         }
         let mut previous = 0_u32;
         if let Err(error) = unsafe { GetWindowDisplayAffinity(hwnd, &mut previous) } {
-            enumeration.failure = Some(error.to_string());
+            enumeration.failure = Some(format!(
+                "GetWindowDisplayAffinity(hwnd={:#x}) 실패: {error}",
+                hwnd.0 as usize
+            ));
             return BOOL(1);
         }
         let previous = WINDOW_DISPLAY_AFFINITY(previous);
@@ -1031,7 +1087,12 @@ mod windows_impl {
         }
         match unsafe { SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE) } {
             Ok(()) => enumeration.changed.push((hwnd, previous)),
-            Err(error) => enumeration.failure = Some(error.to_string()),
+            Err(error) => {
+                enumeration.failure = Some(format!(
+                    "SetWindowDisplayAffinity(hwnd={:#x}, WDA_EXCLUDEFROMCAPTURE) 실패: {error}",
+                    hwnd.0 as usize
+                ))
+            }
         }
         BOOL(1)
     }
@@ -1055,8 +1116,13 @@ mod windows_impl {
     }
 
     fn captured_frame_image(frame: &CapturedFrame, graphics: &GraphicsDevice) -> Result<BgraImage> {
-        let context = graphics.create_d2d_context()?;
-        let surface: IDXGISurface = frame.texture.cast()?;
+        let context = graphics
+            .create_d2d_context()
+            .map_err(|error| call_error("GraphicsDevice::create_d2d_context", error))?;
+        let surface: IDXGISurface = frame
+            .texture
+            .cast()
+            .map_err(|error| call_error("ID3D11Texture2D::cast<IDXGISurface>", error))?;
         let properties = D2D1_BITMAP_PROPERTIES1 {
             pixelFormat: pixel_format(),
             dpiX: 96.0,
@@ -1064,7 +1130,10 @@ mod windows_impl {
             bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
             ..Default::default()
         };
-        let bitmap = unsafe { context.CreateBitmapFromDxgiSurface(&surface, Some(&properties)) }?;
+        let bitmap = unsafe { context.CreateBitmapFromDxgiSurface(&surface, Some(&properties)) }
+            .map_err(|error| {
+                call_error("ID2D1DeviceContext::CreateBitmapFromDxgiSurface", error)
+            })?;
         let size = unsafe { bitmap.GetPixelSize() };
         if size.width != frame.size.Width as u32 || size.height != frame.size.Height as u32 {
             return Err(Error::new(
@@ -1072,9 +1141,14 @@ mod windows_impl {
                 "WGC texture and frame dimensions differ",
             ));
         }
-        let (pixels, pitch) = read_bitmap_bgra(&context, &bitmap)?;
+        let (pixels, pitch) = read_bitmap_bgra(&context, &bitmap)
+            .map_err(|error| call_error("read_bitmap_bgra", error))?;
         BgraImage::from_pitched(size.width, size.height, pitch, &pixels)
             .map_err(|error| Error::new(E_FAIL, error))
+    }
+
+    fn call_error(operation: &str, error: Error) -> Error {
+        Error::new(error.code(), format!("{operation} 실패: {error}"))
     }
 
     fn export_destination(
@@ -1419,15 +1493,15 @@ mod tests {
             minute: 8,
             second: 7,
         };
-        let base = export_base_name(timestamp, r"\\.\DISPLAY 1");
-        assert_eq!(base, "20261031-090807-____DISPLAY_1");
+        let base = export_base_name(timestamp, r"\\.\DISPLAY1");
+        assert_eq!(base, "20261031-090807-DISPLAY1");
         let occupied = [
-            "20261031-090807-____DISPLAY_1.png",
-            "20261031-090807-____DISPLAY_1-2.png",
+            "20261031-090807-DISPLAY1.png",
+            "20261031-090807-DISPLAY1-2.png",
         ];
         assert_eq!(
             unique_file_name(&base, "png", |name| occupied.contains(&name)).unwrap(),
-            "20261031-090807-____DISPLAY_1-3.png"
+            "20261031-090807-DISPLAY1-3.png"
         );
     }
 

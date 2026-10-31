@@ -3,7 +3,7 @@ use crate::break_screen::{
 };
 use crate::capture::{
     CapturedFrame, ZoomCapture, WM_APP_EXPORT_CAPTURE_FAILED, WM_APP_EXPORT_FRAME,
-    WM_APP_ZOOM_CAPTURE_FAILED, WM_APP_ZOOM_FRAME, WM_APP_ZOOM_RECREATE,
+    WM_APP_EXPORT_RECREATE, WM_APP_ZOOM_CAPTURE_FAILED, WM_APP_ZOOM_FRAME, WM_APP_ZOOM_RECREATE,
 };
 use crate::display_apply::{
     decision_from_command, is_console_session, recover_pending_display_configuration,
@@ -2486,12 +2486,14 @@ impl App {
                         self.export
                             .save_current_content(overlays, &self.state, &self.settings);
                     }
+                    self.show_export_fallback_notice();
                 }
                 Effect::CopyCurrentImage => {
                     if let Some(overlays) = self.overlays.as_mut() {
                         self.export
                             .copy_current_image(overlays, &self.state, &self.settings);
                     }
+                    self.show_export_fallback_notice();
                 }
                 Effect::StepBack(result) => self
                     .logger
@@ -3445,6 +3447,17 @@ impl App {
     fn show_display_apply_warning(&self, title: &str, message: &str) {
         if let Some(tray) = self.tray.as_ref() {
             tray.show_warning(title, message);
+        } else {
+            self.logger.event(&format!("{title}: {message}"));
+        }
+    }
+
+    fn show_export_fallback_notice(&mut self) {
+        let Some((title, message)) = self.export.take_fallback_notice() else {
+            return;
+        };
+        if let Some(tray) = self.tray.as_ref() {
+            tray.show_warning(&title, &message);
         } else {
             self.logger.event(&format!("{title}: {message}"));
         }
@@ -4867,6 +4880,7 @@ unsafe extern "system" fn window_proc(
             }
             WM_TIMER if wparam.0 == EXPORT_CAPTURE_TIMEOUT_TIMER_ID => {
                 app.export.handle_capture_timeout();
+                app.show_export_fallback_notice();
                 return LRESULT(0);
             }
             WM_TIMER if wparam.0 == PRESENTER_FRAME_TIMER_ID => {
@@ -4984,10 +4998,17 @@ unsafe extern "system" fn window_proc(
             }
             WM_APP_EXPORT_FRAME => {
                 app.export.handle_capture_frame();
+                app.show_export_fallback_notice();
                 return LRESULT(0);
             }
             WM_APP_EXPORT_CAPTURE_FAILED => {
                 app.export.handle_capture_failure();
+                app.show_export_fallback_notice();
+                return LRESULT(0);
+            }
+            WM_APP_EXPORT_RECREATE => {
+                app.export.handle_capture_recreate();
+                app.show_export_fallback_notice();
                 return LRESULT(0);
             }
             WM_APP_ZOOM_REDRAW => {
