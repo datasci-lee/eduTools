@@ -883,8 +883,14 @@ pub struct SettingsValidator;
 
 impl SettingsValidator {
     pub fn is_unsupported_music_folder_path(path: &str) -> bool {
-        let path = path.trim();
-        path.starts_with(r"\\") || path.starts_with("//")
+        let bytes = path.trim().as_bytes();
+        let is_separator = |byte| matches!(byte, b'\\' | b'/');
+        (bytes.len() >= 2 && is_separator(bytes[0]) && is_separator(bytes[1]))
+            || (bytes.len() >= 4
+                && is_separator(bytes[0])
+                && bytes[1] == b'?'
+                && bytes[2] == b'?'
+                && is_separator(bytes[3]))
     }
 
     // Swift: SettingsValidator.validate(_:)

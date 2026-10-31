@@ -291,6 +291,7 @@ mod platform {
         folder_playback: Option<FolderPlayback>,
         is_break_active: bool,
         is_fade_available: bool,
+        last_folder_fade_log_value: Option<f32>,
         next_token: u64,
         _com_apartment: ComApartmentGuard,
         _winrt_apartment: WinRtApartmentGuard,
@@ -311,6 +312,7 @@ mod platform {
                 folder_playback: None,
                 is_break_active: false,
                 is_fade_available: true,
+                last_folder_fade_log_value: None,
                 next_token: 1,
                 _com_apartment: com_apartment,
                 _winrt_apartment: winrt_apartment,
@@ -339,9 +341,17 @@ mod platform {
                 let target =
                     BreakMusicFade::volume(1.0, now, end_date, settings.timer.fade_duration);
                 match playback.player.SetVolume(f64::from(target)) {
-                    Ok(()) => self.logger.event(&format!(
-                        "로컬 쉬는 시간 음악 플레이어 페이드 적용 value={target:.3}"
-                    )),
+                    Ok(()) => {
+                        let should_log = self.last_folder_fade_log_value.map_or(true, |previous| {
+                            (previous - target).abs() >= 0.05 || (target == 0.0 && previous != 0.0)
+                        });
+                        if should_log {
+                            self.logger.event(&format!(
+                                "로컬 쉬는 시간 음악 플레이어 페이드 적용 value={target:.3}"
+                            ));
+                            self.last_folder_fade_log_value = Some(target);
+                        }
+                    }
                     Err(error) => {
                         self.is_fade_available = false;
                         self.logger.event(&format!(
@@ -563,6 +573,7 @@ mod platform {
                         Ok(playback) => {
                             self.folder_playback = Some(playback);
                             self.is_fade_available = true;
+                            self.last_folder_fade_log_value = None;
                             self.logger.event(&format!(
                                 "로컬 쉬는 시간 음악 스캔 완료 tracks={count} token={token}"
                             ));
@@ -775,6 +786,7 @@ mod platform {
         fn stop_all_playback(&mut self) {
             self.folder_scan_token = None;
             self.folder_playback = None;
+            self.last_folder_fade_log_value = None;
             self.stop_youtube_playback();
         }
 
@@ -936,11 +948,7 @@ mod platform {
             TypedEventHandler::new(
                 move |_: windows::core::Ref<MediaPlayer>,
                       args: windows::core::Ref<MediaPlayerFailedEventArgs>| {
-                    let reason = args
-                        .as_ref()
-                        .and_then(|args| args.ErrorMessage().ok())
-                        .map(|message| message.to_string_lossy())
-                        .unwrap_or_else(|| "MediaPlayer failure without details".to_owned());
+                    let reason = media_player_failure_reason(args.as_ref());
                     post_boxed_result(
                         owner_value,
                         WM_APP_MUSIC_FOLDER_EVENT,
@@ -967,6 +975,29 @@ mod platform {
             ended_event,
             failed_event,
         })
+    }
+
+    fn media_player_failure_reason(args: Option<&MediaPlayerFailedEventArgs>) -> String {
+        let Some(args) = args else {
+            return "(사유 없음) error=<이벤트 인수 없음> hr=<조회 불가>".to_owned();
+        };
+        let message = match args.ErrorMessage() {
+            Ok(message) => message.to_string_lossy().trim().to_owned(),
+            Err(error) => format!("ErrorMessage 조회 실패: {error}"),
+        };
+        let media_error = match args.Error() {
+            Ok(error) => format!("{error:?}"),
+            Err(error) => format!("<조회 실패: {error}>"),
+        };
+        let extended_error = match args.ExtendedErrorCode() {
+            Ok(error) => format!("0x{:08X}", error.0 as u32),
+            Err(error) => format!("<조회 실패: {error}>"),
+        };
+        if message.is_empty() {
+            format!("(사유 없음) error={media_error} hr={extended_error}")
+        } else {
+            format!("{message} error={media_error} hr={extended_error}")
+        }
     }
 
     fn play_folder_path(player: &MediaPlayer, path: &Path) -> std::result::Result<(), String> {
