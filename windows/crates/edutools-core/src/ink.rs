@@ -509,6 +509,11 @@ impl InkLayerState {
         &self.strokes
     }
 
+    /// 화면별 레이어가 현재 획 또는 실행 취소/다시 실행 기록을 보관하는지 판정한다.
+    pub fn has_unscoped_restorable_state(&self) -> bool {
+        !self.strokes.is_empty() || !self.undo_commands.is_empty() || !self.redo_commands.is_empty()
+    }
+
     /// Swift: InkLayerState.allDisplayStrokes
     pub fn all_display_strokes(&self) -> &BTreeMap<String, Vec<InkStroke>> {
         &self.display_strokes
@@ -652,6 +657,65 @@ impl InkLayerState {
             .filter_map(|command| command.excluding_display(display_id))
             .collect();
     }
+}
+
+/// Windows 보관 문서의 첫 버전. 새 선택 필드는 이 값을 유지한다.
+pub const WINDOWS_ARCHIVE_FORMAT_VERSION: u64 = 1;
+
+/// `InkLayerState`의 기존 serde 형식을 평탄하게 유지하면서 Windows 메타데이터를 붙인다.
+pub fn encode_windows_archive(state: &InkLayerState, resolution: Size) -> Result<Vec<u8>, String> {
+    if !resolution.width.is_finite()
+        || !resolution.height.is_finite()
+        || resolution.width <= 0.0
+        || resolution.height <= 0.0
+    {
+        return Err("archive resolution must be finite and positive".to_owned());
+    }
+    let mut value = serde_json::to_value(state).map_err(|error| error.to_string())?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| "ink layer archive must encode as an object".to_owned())?;
+    object.insert(
+        "formatVersion".to_owned(),
+        serde_json::Value::from(WINDOWS_ARCHIVE_FORMAT_VERSION),
+    );
+    object.insert(
+        "resolution".to_owned(),
+        serde_json::to_value(resolution).map_err(|error| error.to_string())?,
+    );
+    serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())
+}
+
+/// Windows 보관 문서의 버전과 해상도를 검증한 뒤 기존 판서 상태를 복원한다.
+pub fn decode_windows_archive(data: &[u8]) -> Result<(InkLayerState, Size), String> {
+    let value: serde_json::Value =
+        serde_json::from_slice(data).map_err(|error| error.to_string())?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| "archive document must be an object".to_owned())?;
+    let version = object
+        .get("formatVersion")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| "archive formatVersion is missing".to_owned())?;
+    if version != WINDOWS_ARCHIVE_FORMAT_VERSION {
+        return Err(format!("unsupported archive formatVersion {version}"));
+    }
+    let resolution: Size = serde_json::from_value(
+        object
+            .get("resolution")
+            .cloned()
+            .ok_or_else(|| "archive resolution is missing".to_owned())?,
+    )
+    .map_err(|error| error.to_string())?;
+    if !resolution.width.is_finite()
+        || !resolution.height.is_finite()
+        || resolution.width <= 0.0
+        || resolution.height <= 0.0
+    {
+        return Err("archive resolution must be finite and positive".to_owned());
+    }
+    let state = serde_json::from_value(value).map_err(|error| error.to_string())?;
+    Ok((state, resolution))
 }
 
 /// Swift: InkGeometry.laserTrailPath(_:)

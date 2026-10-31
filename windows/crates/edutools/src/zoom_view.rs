@@ -712,6 +712,8 @@ pub fn selftest_failures(hinstance: HINSTANCE, logger: Logger) -> Vec<String> {
         dpi: (96, 96),
         is_primary: false,
         session_key: "zoom-selftest".to_owned(),
+        display_uuid: "zoom-selftest".to_owned(),
+        archive_key: "zoom-selftest".to_owned(),
     };
     match ZoomView::new(HWND::default(), hinstance, &monitor, &graphics, logger) {
         Ok(mut view) => view
