@@ -618,7 +618,7 @@ mod windows_impl {
                 {
                     Ok(image) => {
                         self.log_start("clipboard", &image, "-");
-                        self.complete(ExportDestination::Clipboard, image, false);
+                        self.complete(ExportDestination::Clipboard, image, false, None);
                     }
                     Err(error) => {
                         self.report_failure("보드 이미지를 만들지 못했습니다", &error.to_string())
@@ -645,6 +645,7 @@ mod windows_impl {
                 );
                 return;
             };
+            let frame_read_started = std::time::Instant::now();
             let background = match captured_frame_image(&frame, &pending.graphics) {
                 Ok(image) => image,
                 Err(error) => {
@@ -656,9 +657,17 @@ mod windows_impl {
                     return;
                 }
             };
+            let frame_read_ms = frame_read_started.elapsed().as_millis();
+            let composite_started = std::time::Instant::now();
             match composite_premultiplied(&background, &pending.ink) {
                 Ok(composite) => {
-                    self.complete(pending.destination, composite, false);
+                    let composite_ms = composite_started.elapsed().as_millis();
+                    self.complete(
+                        pending.destination,
+                        composite,
+                        false,
+                        Some((frame_read_ms, composite_ms)),
+                    );
                 }
                 Err(error) => self.report_failure("화면과 판서를 합치지 못했습니다", &error),
             }
@@ -883,39 +892,74 @@ mod windows_impl {
             destination: ExportDestination,
             image: BgraImage,
             ink_only: bool,
+            capture_ms: Option<(u128, u128)>,
         ) -> bool {
             let file_name = destination.file_name();
+            let capture_stages = capture_ms
+                .map(|(frame_read_ms, composite_ms)| {
+                    format!("frame_read={frame_read_ms} composite={composite_ms} ")
+                })
+                .unwrap_or_default();
             match destination {
-                ExportDestination::Png(path) => match encode_png(&image)
-                    .map_err(|error| error.to_string())
-                    .and_then(|data| atomic_write(&path, &data))
-                {
-                    Ok(()) => {
-                        self.log_complete("PNG", &image, &file_name, ink_only);
-                        true
+                ExportDestination::Png(path) => {
+                    let encode_started = std::time::Instant::now();
+                    let encoded = encode_png(&image).map_err(|error| error.to_string());
+                    let encode_ms = encode_started.elapsed().as_millis();
+                    let mut write_ms = None;
+                    let result = encoded.and_then(|data| {
+                        let write_started = std::time::Instant::now();
+                        let result = atomic_write(&path, &data);
+                        write_ms = Some(write_started.elapsed().as_millis());
+                        result
+                    });
+                    let write_ms =
+                        write_ms.map_or_else(|| "-".to_owned(), |value| value.to_string());
+                    self.logger.event(&format!(
+                        "내보내기 단계(ms): {capture_stages}encode={encode_ms} write={write_ms}"
+                    ));
+                    match result {
+                        Ok(()) => {
+                            self.log_complete("PNG", &image, &file_name, ink_only);
+                            true
+                        }
+                        Err(error) => {
+                            self.report_failure("PNG를 저장하지 못했습니다", &error);
+                            false
+                        }
                     }
-                    Err(error) => {
-                        self.report_failure("PNG를 저장하지 못했습니다", &error);
-                        false
+                }
+                ExportDestination::Clipboard => {
+                    let encode_started = std::time::Instant::now();
+                    let encoded = encode_png(&image);
+                    let encode_ms = encode_started.elapsed().as_millis();
+                    let mut clipboard_ms = None;
+                    let result = encoded.and_then(|png| {
+                        let clipboard_started = std::time::Instant::now();
+                        let result = set_clipboard(self.owner, &image, &png);
+                        clipboard_ms = Some(clipboard_started.elapsed().as_millis());
+                        result
+                    });
+                    let clipboard_ms =
+                        clipboard_ms.map_or_else(|| "-".to_owned(), |value| value.to_string());
+                    self.logger.event(&format!(
+                        "내보내기 단계(ms): {capture_stages}encode={encode_ms} clipboard={clipboard_ms}"
+                    ));
+                    match result {
+                        Ok(retries) => {
+                            self.logger
+                                .event(&format!("클립보드 열기 재시도: count={retries}"));
+                            self.log_complete("clipboard", &image, "-", ink_only);
+                            true
+                        }
+                        Err(error) => {
+                            self.report_failure(
+                                "클립보드에 복사하지 못했습니다",
+                                &format!("클립보드가 사용 중인지 확인해 주세요.\n{error}"),
+                            );
+                            false
+                        }
                     }
-                },
-                ExportDestination::Clipboard => match encode_png(&image)
-                    .and_then(|png| set_clipboard(self.owner, &image, &png))
-                {
-                    Ok(retries) => {
-                        self.logger
-                            .event(&format!("클립보드 열기 재시도: count={retries}"));
-                        self.log_complete("clipboard", &image, "-", ink_only);
-                        true
-                    }
-                    Err(error) => {
-                        self.report_failure(
-                            "클립보드에 복사하지 못했습니다",
-                            &format!("클립보드가 사용 중인지 확인해 주세요.\n{error}"),
-                        );
-                        false
-                    }
-                },
+                }
             }
         }
 
@@ -930,7 +974,7 @@ mod windows_impl {
                 .event(&format!("내보내기 배경 캡처 실패: {reason}"));
             self.logger
                 .event(&format!("내보내기 폴백: kind=ink-only reason={reason}"));
-            if self.complete(destination, ink, true) {
+            if self.complete(destination, ink, true, None) {
                 self.fallback_notice = Some((
                     "배경 없이 판서만 내보냈습니다".to_owned(),
                     format!("화면 캡처 권한과 상태를 확인해 주세요.\n{reason}"),
