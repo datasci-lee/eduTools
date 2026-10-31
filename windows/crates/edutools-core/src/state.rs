@@ -960,6 +960,15 @@ impl AppState {
             .map(|kind| self.board_document(kind).page_position())
     }
 
+    // Swift: AppState.boardPages(for:)
+    pub fn board_pages(&self, kind: BoardKind) -> Vec<Vec<InkStroke>> {
+        self.board_document(kind)
+            .all_page_items()
+            .into_iter()
+            .map(<[InkStroke]>::to_vec)
+            .collect()
+    }
+
     // Swift: AppState.moveToPreviousBoardPage(on:)
     pub fn move_to_previous_board_page(&mut self, display_id: &str) -> bool {
         let Some(kind) = self.board_kind_on(display_id) else {

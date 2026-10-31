@@ -3,7 +3,7 @@ use crate::render::GraphicsDevice;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use windows::core::{factory, IInspectable, Interface, Result};
+use windows::core::{factory, Error, IInspectable, Interface, Result};
 use windows::Foundation::TypedEventHandler;
 use windows::Graphics::Capture::{
     Direct3D11CaptureFrame, Direct3D11CaptureFramePool, GraphicsCaptureItem, GraphicsCaptureSession,
@@ -24,6 +24,46 @@ use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 pub const WM_APP_ZOOM_FRAME: u32 = 0x8000 + 140;
 pub const WM_APP_ZOOM_CAPTURE_FAILED: u32 = 0x8000 + 141;
 pub const WM_APP_ZOOM_RECREATE: u32 = 0x8000 + 144;
+pub const WM_APP_EXPORT_FRAME: u32 = 0x8000 + 330;
+pub const WM_APP_EXPORT_CAPTURE_FAILED: u32 = 0x8000 + 331;
+pub const WM_APP_EXPORT_RECREATE: u32 = 0x8000 + 332;
+
+#[derive(Clone, Copy)]
+struct CaptureConfig {
+    label: &'static str,
+    buffer_count: i32,
+    cursor_enabled: bool,
+    frame_message: u32,
+    failure_message: u32,
+    recreate_message: Option<u32>,
+    one_shot: bool,
+}
+
+impl CaptureConfig {
+    const fn zoom() -> Self {
+        Self {
+            label: "줌",
+            buffer_count: 3,
+            cursor_enabled: false,
+            frame_message: WM_APP_ZOOM_FRAME,
+            failure_message: WM_APP_ZOOM_CAPTURE_FAILED,
+            recreate_message: Some(WM_APP_ZOOM_RECREATE),
+            one_shot: false,
+        }
+    }
+
+    const fn export() -> Self {
+        Self {
+            label: "내보내기",
+            buffer_count: 3,
+            cursor_enabled: true,
+            frame_message: WM_APP_EXPORT_FRAME,
+            failure_message: WM_APP_EXPORT_CAPTURE_FAILED,
+            recreate_message: Some(WM_APP_EXPORT_RECREATE),
+            one_shot: true,
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct CapturedFrame {
@@ -54,6 +94,7 @@ struct FrameSlot {
     received: AtomicU64,
     stats: Mutex<FrameStats>,
     logger: Logger,
+    config: CaptureConfig,
 }
 
 impl FrameSlot {
@@ -78,11 +119,12 @@ impl FrameSlot {
             })
             .unwrap_or(false);
         if should_post {
-            self.logger.event(&format!("줌 캡처 실패: {message}"));
+            self.logger
+                .event(&format!("{} 캡처 실패: {message}", self.config.label));
             let _ = unsafe {
                 PostMessageW(
                     Some(self.owner()),
-                    WM_APP_ZOOM_CAPTURE_FAILED,
+                    self.config.failure_message,
                     WPARAM(0),
                     LPARAM(0),
                 )
@@ -91,22 +133,31 @@ impl FrameSlot {
     }
 
     fn record_frame(&self, frame: CapturedFrame) {
-        if self.stopping.load(Ordering::Acquire) || !self.accepting.load(Ordering::Acquire) {
+        if self.stopping.load(Ordering::Acquire) {
+            return;
+        }
+        if self.config.one_shot {
+            if !self.accepting.swap(false, Ordering::AcqRel) {
+                return;
+            }
+        } else if !self.accepting.load(Ordering::Acquire) {
             return;
         }
         self.received.fetch_add(1, Ordering::Relaxed);
-        if let Ok(mut stats) = self.stats.lock() {
-            stats.interval_frames += 1;
-            let elapsed = stats.interval_started.elapsed();
-            if elapsed >= Duration::from_secs(1) {
-                let fps = stats.interval_frames as f64 / elapsed.as_secs_f64();
-                self.logger.event(&format!(
-                    "줌 캡처 프레임: fps={fps:.1} 누적={} 슬롯덮어쓰기={}",
-                    self.received.load(Ordering::Relaxed),
-                    self.overwritten.load(Ordering::Relaxed)
-                ));
-                stats.interval_started = Instant::now();
-                stats.interval_frames = 0;
+        if !self.config.one_shot {
+            if let Ok(mut stats) = self.stats.lock() {
+                stats.interval_frames += 1;
+                let elapsed = stats.interval_started.elapsed();
+                if elapsed >= Duration::from_secs(1) {
+                    let fps = stats.interval_frames as f64 / elapsed.as_secs_f64();
+                    self.logger.event(&format!(
+                        "줌 캡처 프레임: fps={fps:.1} 누적={} 슬롯덮어쓰기={}",
+                        self.received.load(Ordering::Relaxed),
+                        self.overwritten.load(Ordering::Relaxed)
+                    ));
+                    stats.interval_started = Instant::now();
+                    stats.interval_frames = 0;
+                }
             }
         }
         let should_post = match self.latest.lock() {
@@ -124,10 +175,20 @@ impl FrameSlot {
             }
         };
         if should_post {
-            if unsafe { PostMessageW(Some(self.owner()), WM_APP_ZOOM_FRAME, WPARAM(0), LPARAM(0)) }
-                .is_err()
+            if unsafe {
+                PostMessageW(
+                    Some(self.owner()),
+                    self.config.frame_message,
+                    WPARAM(0),
+                    LPARAM(0),
+                )
+            }
+            .is_err()
             {
-                self.fail("줌 프레임을 UI 스레드로 전달하지 못했습니다.".to_owned());
+                self.fail(format!(
+                    "{} 프레임을 UI 스레드로 전달하지 못했습니다.",
+                    self.config.label
+                ));
             }
         }
     }
@@ -156,7 +217,27 @@ impl ZoomCapture {
         graphics: &GraphicsDevice,
         logger: Logger,
     ) -> Result<Self> {
-        if !Self::is_supported()? {
+        Self::start_configured(
+            owner,
+            monitor,
+            physical_size,
+            graphics,
+            logger,
+            CaptureConfig::zoom(),
+        )
+    }
+
+    fn start_configured(
+        owner: HWND,
+        monitor: HMONITOR,
+        physical_size: SizeInt32,
+        graphics: &GraphicsDevice,
+        logger: Logger,
+        config: CaptureConfig,
+    ) -> Result<Self> {
+        if !Self::is_supported()
+            .map_err(|error| capture_call_error("GraphicsCaptureSession::IsSupported", error))?
+        {
             return Err(windows::core::Error::new(
                 windows::Win32::Foundation::E_FAIL,
                 "이 Windows 환경은 Windows Graphics Capture를 지원하지 않습니다.",
@@ -164,40 +245,56 @@ impl ZoomCapture {
         }
         let d3d_device = graphics.d3d_device();
         let winrt_device = create_winrt_device(&d3d_device)?;
-        let interop = factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
-        let item: GraphicsCaptureItem = unsafe { interop.CreateForMonitor(monitor) }?;
+        let interop = factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()
+            .map_err(|error| capture_call_error("GraphicsCaptureItem activation factory", error))?;
+        let item: GraphicsCaptureItem =
+            unsafe { interop.CreateForMonitor(monitor) }.map_err(|error| {
+                capture_call_error("IGraphicsCaptureItemInterop::CreateForMonitor", error)
+            })?;
         let frame_pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
             &winrt_device,
             DirectXPixelFormat::B8G8R8A8UIntNormalized,
-            3,
+            config.buffer_count,
             physical_size,
-        )?;
+        )
+        .map_err(|error| {
+            capture_call_error("Direct3D11CaptureFramePool::CreateFreeThreaded", error)
+        })?;
         let session = match frame_pool.CreateCaptureSession(&item) {
             Ok(session) => session,
             Err(error) => {
                 let _ = frame_pool.Close();
-                return Err(error);
+                return Err(capture_call_error(
+                    "Direct3D11CaptureFramePool::CreateCaptureSession",
+                    error,
+                ));
             }
         };
-        if let Err(error) = session.SetIsCursorCaptureEnabled(false) {
+        if let Err(error) = session.SetIsCursorCaptureEnabled(config.cursor_enabled) {
             let _ = frame_pool.Close();
             let _ = session.Close();
-            return Err(error);
+            return Err(capture_call_error(
+                "GraphicsCaptureSession::SetIsCursorCaptureEnabled",
+                error,
+            ));
         }
         let cursor_capture_enabled = match session.IsCursorCaptureEnabled() {
             Ok(enabled) => enabled,
             Err(error) => {
                 let _ = frame_pool.Close();
                 let _ = session.Close();
-                return Err(error);
+                return Err(capture_call_error(
+                    "GraphicsCaptureSession::IsCursorCaptureEnabled",
+                    error,
+                ));
             }
         };
-        if cursor_capture_enabled {
+        if cursor_capture_enabled != config.cursor_enabled {
             let _ = frame_pool.Close();
             let _ = session.Close();
             return Err(windows::core::Error::new(
                 windows::Win32::Foundation::E_FAIL,
-                "WGC 캡처에서 시스템 커서를 제외하지 못했습니다.",
+                "WGC 캡처의 시스템 커서 설정을 확인하지 못했습니다.",
             ));
         }
         let border_disabled = match session.SetIsBorderRequired(false) {
@@ -237,6 +334,7 @@ impl ZoomCapture {
                 interval_frames: 0,
             }),
             logger: logger.clone(),
+            config,
         });
         let callback_slot = slot.clone();
         let handler: TypedEventHandler<Direct3D11CaptureFramePool, IInspectable> =
@@ -286,27 +384,34 @@ impl ZoomCapture {
                         })
                         .unwrap_or(false);
                     if size_changed {
-                        callback_slot.logger.event(&format!(
-                            "WGC ContentSize 변경: {}x{}, 프레임 풀 재생성",
-                            size.Width, size.Height
-                        ));
-                        if let Ok(mut pending) = callback_slot.pending_size.lock() {
-                            *pending = Some(size);
-                        }
-                        if unsafe {
-                            PostMessageW(
-                                Some(callback_slot.owner()),
-                                WM_APP_ZOOM_RECREATE,
-                                WPARAM(0),
-                                LPARAM(0),
-                            )
-                        }
-                        .is_err()
-                        {
-                            callback_slot.fail(
-                                "WGC 프레임 풀 재생성 요청을 UI 스레드로 보내지 못했습니다."
-                                    .to_owned(),
-                            );
+                        if let Some(recreate_message) = callback_slot.config.recreate_message {
+                            callback_slot.logger.event(&format!(
+                                "WGC ContentSize 변경: {}x{}, 프레임 풀 재생성",
+                                size.Width, size.Height
+                            ));
+                            if let Ok(mut pending) = callback_slot.pending_size.lock() {
+                                *pending = Some(size);
+                            }
+                            if unsafe {
+                                PostMessageW(
+                                    Some(callback_slot.owner()),
+                                    recreate_message,
+                                    WPARAM(0),
+                                    LPARAM(0),
+                                )
+                            }
+                            .is_err()
+                            {
+                                callback_slot.fail(
+                                    "WGC 프레임 풀 재생성 요청을 UI 스레드로 보내지 못했습니다."
+                                        .to_owned(),
+                                );
+                            }
+                        } else {
+                            callback_slot.fail(format!(
+                                "WGC 단일 프레임 크기가 변경되었습니다: {}x{}",
+                                size.Width, size.Height
+                            ));
                         }
                         return Ok(());
                     }
@@ -334,19 +439,28 @@ impl ZoomCapture {
             Err(error) => {
                 let _ = frame_pool.Close();
                 let _ = session.Close();
-                return Err(error);
+                return Err(capture_call_error(
+                    "Direct3D11CaptureFramePool::FrameArrived",
+                    error,
+                ));
             }
         };
         if let Err(error) = session.StartCapture() {
             let _ = frame_pool.RemoveFrameArrived(token);
             let _ = frame_pool.Close();
             let _ = session.Close();
-            return Err(error);
+            return Err(capture_call_error(
+                "GraphicsCaptureSession::StartCapture",
+                error,
+            ));
         }
         logger.event(&format!(
-            "WGC 시작: physical={}x{} buffers=3 cursor=false borderRequest={}",
+            "WGC 시작: purpose={} physical={}x{} buffers={} cursor={} borderRequest={}",
+            config.label,
             physical_size.Width,
             physical_size.Height,
+            config.buffer_count,
+            config.cursor_enabled,
             if border_disabled {
                 "accepted"
             } else {
@@ -440,7 +554,8 @@ impl ZoomCapture {
         }
         self.item = None;
         self.logger.event(&format!(
-            "WGC 종료: frames={} slotOverwrites={}",
+            "WGC 종료: purpose={} frames={} slotOverwrites={}",
+            self.slot.config.label,
             self.slot.received.load(Ordering::Relaxed),
             self.slot.overwritten.load(Ordering::Relaxed)
         ));
@@ -454,8 +569,51 @@ impl Drop for ZoomCapture {
     }
 }
 
+pub struct OneFrameCapture(ZoomCapture);
+
+impl OneFrameCapture {
+    pub fn start(
+        owner: HWND,
+        monitor: HMONITOR,
+        physical_size: SizeInt32,
+        graphics: &GraphicsDevice,
+        logger: Logger,
+    ) -> Result<Self> {
+        ZoomCapture::start_configured(
+            owner,
+            monitor,
+            physical_size,
+            graphics,
+            logger,
+            CaptureConfig::export(),
+        )
+        .map(Self)
+    }
+
+    pub fn take_frame(&self) -> Option<CapturedFrame> {
+        self.0.take_latest()
+    }
+
+    pub fn take_failure(&self) -> Option<String> {
+        self.0.take_failure()
+    }
+
+    pub fn recreate_if_needed(&self) -> Result<bool> {
+        self.0.recreate_if_needed()
+    }
+}
+
 fn create_winrt_device(device: &ID3D11Device) -> Result<IDirect3DDevice> {
-    let dxgi_device: IDXGIDevice = device.cast()?;
-    let inspectable = unsafe { CreateDirect3D11DeviceFromDXGIDevice(&dxgi_device) }?;
-    inspectable.cast()
+    let dxgi_device: IDXGIDevice = device
+        .cast()
+        .map_err(|error| capture_call_error("ID3D11Device::cast<IDXGIDevice>", error))?;
+    let inspectable = unsafe { CreateDirect3D11DeviceFromDXGIDevice(&dxgi_device) }
+        .map_err(|error| capture_call_error("CreateDirect3D11DeviceFromDXGIDevice", error))?;
+    inspectable
+        .cast()
+        .map_err(|error| capture_call_error("IInspectable::cast<IDirect3DDevice>", error))
+}
+
+fn capture_call_error(operation: &str, error: Error) -> Error {
+    Error::new(error.code(), format!("{operation} 실패: {error}"))
 }
