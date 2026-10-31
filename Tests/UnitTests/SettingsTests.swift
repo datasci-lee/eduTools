@@ -8,17 +8,46 @@ import TestSupport
 struct SettingsTests {
   @Test("기본 설정은 JSON 왕복 후에도 값이 바뀌지 않는다")
   func jsonRoundTripPreservesValues() throws {
-    let data = try JSONEncoder().encode(AppSettings.default)
+    var settings = AppSettings.default
+    settings.timer.musicSource = "folder"
+    settings.timer.musicFolderPath = "/Music/Classroom"
+    settings.timer.musicOrder = "shuffle"
+    settings.timer.musicRepeat = "one"
+    let data = try JSONEncoder().encode(settings)
     let decoded = try JSONDecoder().decode(AppSettings.self, from: data)
 
-    #expect(decoded == AppSettings.default)
+    #expect(decoded == settings)
   }
 
-  @Test("최대 줌 배율은 1.25에서 8 범위 밖의 값을 거부한다")
-  func validationRejectsOutOfRangeZoom() {
+  @Test("범위 밖의 줌과 허용 목록 밖의 음악 설정을 거부한다")
+  func validationRejectsOutOfRangeZoomAndMusicValues() {
     var settings = AppSettings.default
     settings.zoom.maximumMagnification = 9
 
+    #expect(throws: SettingsValidationError.self) {
+      try SettingsValidator.validate(settings)
+    }
+
+    settings = .default
+    settings.timer.musicSource = "stream"
+    #expect(throws: SettingsValidationError.self) {
+      try SettingsValidator.validate(settings)
+    }
+
+    settings = .default
+    settings.timer.musicOrder = "recent"
+    #expect(throws: SettingsValidationError.self) {
+      try SettingsValidator.validate(settings)
+    }
+
+    settings = .default
+    settings.timer.musicRepeat = "never"
+    #expect(throws: SettingsValidationError.self) {
+      try SettingsValidator.validate(settings)
+    }
+
+    settings = .default
+    settings.timer.musicFolderPath = "/Music\nClassroom"
     #expect(throws: SettingsValidationError.self) {
       try SettingsValidator.validate(settings)
     }
@@ -45,6 +74,13 @@ struct SettingsTests {
     tools.removeValue(forKey: "paletteGlassOpacity")
     tools.removeValue(forKey: "pressureMinimumWidthRatio")
     object["tools"] = tools
+
+    var timer = try #require(object["timer"] as? [String: Any])
+    timer.removeValue(forKey: "musicSource")
+    timer.removeValue(forKey: "musicFolderPath")
+    timer.removeValue(forKey: "musicOrder")
+    timer.removeValue(forKey: "musicRepeat")
+    object["timer"] = timer
 
     let compatibleData = try JSONSerialization.data(withJSONObject: object)
     let decoded = try JSONDecoder().decode(AppSettings.self, from: compatibleData)
@@ -136,6 +172,10 @@ struct SettingsTests {
     changed.zoom.startingMagnification = 2.5
     changed.board.backgroundPattern = "grid"
     changed.timer.lessonDefaultMinutes = 45
+    changed.timer.musicSource = "folder"
+    changed.timer.musicFolderPath = "/Music/Classroom"
+    changed.timer.musicOrder = "shuffle"
+    changed.timer.musicRepeat = "one"
     changed.display.presets = [
       DisplayPreset(
         id: presetID,

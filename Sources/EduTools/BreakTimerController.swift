@@ -61,7 +61,10 @@ final class BreakTimerController: NSObject {
     private let collapseButton = NSButton()
     private let musicToggleButton = NSButton()
     private let playlistButton = NSPopUpButton()
+    private let nextTrackButton = NSButton(title: "다음 곡", target: nil, action: nil)
+    private let musicStatusLabel = NSTextField(labelWithString: "")
     private var refreshTimer: Timer?
+    private var musicStatusWorkItem: DispatchWorkItem?
     private var notificationObservers: [NSObjectProtocol] = []
     private var quickEndDate: Date?
     private var targetDisplayUUID: String?
@@ -90,6 +93,9 @@ final class BreakTimerController: NSObject {
 
         musicController.bringBreakScreenToFront = { [weak self] in
             self?.bringTimerToFront()
+        }
+        musicController.showMessage = { [weak self] message in
+            self?.showMusicStatus(message)
         }
         configureTimerPanel()
         configureSetupPanel()
@@ -209,8 +215,15 @@ final class BreakTimerController: NSObject {
         playlistButton.target = self
         playlistButton.action = #selector(selectPlaylist(_:))
         playlistButton.bezelStyle = .rounded
+        nextTrackButton.target = self
+        nextTrackButton.action = #selector(skipToNextTrack(_:))
+        nextTrackButton.bezelStyle = .rounded
+        musicStatusLabel.font = .systemFont(ofSize: 14, weight: .medium)
+        musicStatusLabel.textColor = .secondaryLabelColor
+        musicStatusLabel.alignment = .center
+        musicStatusLabel.isHidden = true
         reloadMusicControls()
-        let musicStack = NSStackView(views: [musicToggleButton, playlistButton])
+        let musicStack = NSStackView(views: [musicToggleButton, playlistButton, nextTrackButton])
         musicStack.orientation = .horizontal
         musicStack.alignment = .centerY
         musicStack.spacing = 12
@@ -222,6 +235,7 @@ final class BreakTimerController: NSObject {
                 progressView,
                 currentTimeLabel,
                 musicStack,
+                musicStatusLabel,
                 buttonStack,
             ]
         )
@@ -393,6 +407,10 @@ final class BreakTimerController: NSObject {
         reloadMusicControls()
     }
 
+    @objc private func skipToNextTrack(_ sender: Any?) {
+        musicController.skipToNextTrack()
+    }
+
     @discardableResult
     private func showTimer(on screen: NSScreen?) -> Bool {
         guard let screen else {
@@ -417,6 +435,16 @@ final class BreakTimerController: NSObject {
     private func reloadMusicControls() {
         let settings = musicController.settings
         musicToggleButton.title = settings.isMusicEnabled ? "음악 끄기" : "음악 켜기"
+        let usesFolder = settings.source == .folder
+        playlistButton.isHidden = usesFolder
+        nextTrackButton.isHidden = !usesFolder
+        if usesFolder {
+            nextTrackButton.isEnabled = settings.isMusicEnabled && settings.musicFolderURL != nil
+            musicToggleButton.toolTip = settings.musicFolderURL == nil
+                ? "설정에서 음악 폴더를 먼저 선택하세요."
+                : nil
+            return
+        }
         playlistButton.removeAllItems()
         if settings.playlistURLs.isEmpty {
             playlistButton.addItem(withTitle: "등록된 재생목록 없음")
@@ -431,6 +459,17 @@ final class BreakTimerController: NSObject {
             playlistButton.isEnabled = true
             musicToggleButton.toolTip = nil
         }
+    }
+
+    private func showMusicStatus(_ message: String) {
+        musicStatusWorkItem?.cancel()
+        musicStatusLabel.stringValue = message
+        musicStatusLabel.isHidden = false
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.musicStatusLabel.isHidden = true
+        }
+        musicStatusWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: workItem)
     }
 
     private func applyPresentationFrame() {
@@ -596,6 +635,7 @@ final class BreakTimerController: NSObject {
             settingsStore.removeObserver(settingsObserverIdentifier)
         }
         musicController.breakDidEnd()
+        musicStatusWorkItem?.cancel()
         refreshTimer?.invalidate()
         for observer in notificationObservers {
             NotificationCenter.default.removeObserver(observer)

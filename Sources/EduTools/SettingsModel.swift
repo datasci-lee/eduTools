@@ -519,12 +519,92 @@ struct TimerGroupSettings: Codable, Equatable {
     var defaultPlaylistIndex: Int
     var musicEnabled: Bool
     var musicBrowser: String
+    var musicSource: String
+    var musicFolderPath: String
+    var musicOrder: String
+    var musicRepeat: String
     var fadeEnabled: Bool
     var fadeDuration: Double
     var autoStartBreak: Bool
     var lessonBadgeSize: String
     var lessonBadgeOpacity: Double
     var lessonDisplayMode: String
+}
+
+extension TimerGroupSettings {
+    private enum CodingKeys: String, CodingKey {
+        case lessonPresets
+        case lessonDefaultMinutes
+        case breakDefaultMinutes
+        case notificationSound
+        case breakMessage
+        case breakBackgroundColor
+        case playlistURLs
+        case defaultPlaylistIndex
+        case musicEnabled
+        case musicBrowser
+        case musicSource
+        case musicFolderPath
+        case musicOrder
+        case musicRepeat
+        case fadeEnabled
+        case fadeDuration
+        case autoStartBreak
+        case lessonBadgeSize
+        case lessonBadgeOpacity
+        case lessonDisplayMode
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        lessonPresets = try container.decode([Int].self, forKey: .lessonPresets)
+        lessonDefaultMinutes = try container.decode(Int.self, forKey: .lessonDefaultMinutes)
+        breakDefaultMinutes = try container.decode(Int.self, forKey: .breakDefaultMinutes)
+        notificationSound = try container.decode(String.self, forKey: .notificationSound)
+        breakMessage = try container.decode(String.self, forKey: .breakMessage)
+        breakBackgroundColor = try container.decode(SettingsColor.self, forKey: .breakBackgroundColor)
+        playlistURLs = try container.decode([String].self, forKey: .playlistURLs)
+        defaultPlaylistIndex = try container.decode(Int.self, forKey: .defaultPlaylistIndex)
+        musicEnabled = try container.decode(Bool.self, forKey: .musicEnabled)
+        musicBrowser = try container.decode(String.self, forKey: .musicBrowser)
+        musicSource = try container.decodeIfPresent(String.self, forKey: .musicSource)
+            ?? BreakMusicSource.youtube.rawValue
+        musicFolderPath = try container.decodeIfPresent(String.self, forKey: .musicFolderPath) ?? ""
+        musicOrder = try container.decodeIfPresent(String.self, forKey: .musicOrder)
+            ?? BreakMusicOrder.name.rawValue
+        musicRepeat = try container.decodeIfPresent(String.self, forKey: .musicRepeat)
+            ?? BreakMusicRepeatMode.all.rawValue
+        fadeEnabled = try container.decode(Bool.self, forKey: .fadeEnabled)
+        fadeDuration = try container.decode(Double.self, forKey: .fadeDuration)
+        autoStartBreak = try container.decode(Bool.self, forKey: .autoStartBreak)
+        lessonBadgeSize = try container.decode(String.self, forKey: .lessonBadgeSize)
+        lessonBadgeOpacity = try container.decode(Double.self, forKey: .lessonBadgeOpacity)
+        lessonDisplayMode = try container.decode(String.self, forKey: .lessonDisplayMode)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(lessonPresets, forKey: .lessonPresets)
+        try container.encode(lessonDefaultMinutes, forKey: .lessonDefaultMinutes)
+        try container.encode(breakDefaultMinutes, forKey: .breakDefaultMinutes)
+        try container.encode(notificationSound, forKey: .notificationSound)
+        try container.encode(breakMessage, forKey: .breakMessage)
+        try container.encode(breakBackgroundColor, forKey: .breakBackgroundColor)
+        try container.encode(playlistURLs, forKey: .playlistURLs)
+        try container.encode(defaultPlaylistIndex, forKey: .defaultPlaylistIndex)
+        try container.encode(musicEnabled, forKey: .musicEnabled)
+        try container.encode(musicBrowser, forKey: .musicBrowser)
+        try container.encode(musicSource, forKey: .musicSource)
+        try container.encode(musicFolderPath, forKey: .musicFolderPath)
+        try container.encode(musicOrder, forKey: .musicOrder)
+        try container.encode(musicRepeat, forKey: .musicRepeat)
+        try container.encode(fadeEnabled, forKey: .fadeEnabled)
+        try container.encode(fadeDuration, forKey: .fadeDuration)
+        try container.encode(autoStartBreak, forKey: .autoStartBreak)
+        try container.encode(lessonBadgeSize, forKey: .lessonBadgeSize)
+        try container.encode(lessonBadgeOpacity, forKey: .lessonBadgeOpacity)
+        try container.encode(lessonDisplayMode, forKey: .lessonDisplayMode)
+    }
 }
 
 enum AppModifierSetting: String, Codable, CaseIterable, Hashable {
@@ -665,6 +745,10 @@ struct AppSettings: Codable, Equatable {
             defaultPlaylistIndex: 0,
             musicEnabled: false,
             musicBrowser: BreakMusicBrowser.chrome.rawValue,
+            musicSource: BreakMusicSource.youtube.rawValue,
+            musicFolderPath: "",
+            musicOrder: BreakMusicOrder.name.rawValue,
+            musicRepeat: BreakMusicRepeatMode.all.rawValue,
             fadeEnabled: true,
             fadeDuration: 60,
             autoStartBreak: false,
@@ -826,6 +910,12 @@ enum SettingsValidator {
               settings.timer.playlistURLs.isEmpty
                 || settings.timer.playlistURLs.indices.contains(settings.timer.defaultPlaylistIndex),
               BreakMusicBrowser(rawValue: settings.timer.musicBrowser) != nil,
+              BreakMusicSource(rawValue: settings.timer.musicSource) != nil,
+              !settings.timer.musicFolderPath.unicodeScalars.contains(where: {
+                  CharacterSet.controlCharacters.contains($0)
+              }),
+              BreakMusicOrder(rawValue: settings.timer.musicOrder) != nil,
+              BreakMusicRepeatMode(rawValue: settings.timer.musicRepeat) != nil,
               SettingsRanges.fadeDuration.contains(settings.timer.fadeDuration),
               LessonTimerController.SizePreset(
                 rawValue: settings.timer.lessonBadgeSize
