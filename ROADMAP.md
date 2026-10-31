@@ -82,7 +82,7 @@
 | Developer ID 서명·공증 | 인증서 확보 후 `EDUTOOLS_SIGN_IDENTITY`·`EDUTOOLS_NOTARY_PROFILE` 로 `./build.sh dmg` |
 | 자동 업데이트(Sparkle) | 배포 주소 확정 후 |
 | 펜 태블릿·iPad(Sidecar) 기종 실기 | 필압 최소 굵기 0.05·0.2·1 비교, iPad 위 판서와 압력·Pencil 더블탭 전달 확인 대기 |
-| Windows 버전 | 착수 — Rust 로 별도 구현(macOS 는 Swift 유지), 맥에서 core 시험 + Parallels Windows 11 ARM64 VM의 x64 에뮬레이션으로 앱 빌드·실행 — 계획·인계서 [`docs/windows-plan.md`](docs/windows-plan.md) |
+| Windows 버전 | 구현 완료, 실기 확인·열린 결정 대기(2026-10-31) — Rust 별도 구현(macOS 는 Swift 유지). core·앱 골격·판서·팔레트·줌·설정·디스플레이 구성·발표 도구·내보내기·자동 보관·설치 프로그램까지 Parallels VM 에서 실측. 계획·인계서 [`docs/windows-plan.md`](docs/windows-plan.md) |
 | 화면 구성 프리셋 후속 | 3단계 구현, 실기 확인 대기 |
 | 원형 팔레트 후속 | 펜 질감 |
 | 구조 정리 후속 | 1~6차(#70~#76) 완료. D2·D6·H1·H7 은 코드 재확인 결과 묶어도 줄지 않아 보류 — 투명 패널 설정은 값이 달라 묶으면 매개변수만 늘고, 빌드 스크립트↔Swift 는 상수를 공유할 수 없고, 외부 식별자는 모아도 그대로다 |
