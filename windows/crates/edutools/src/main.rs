@@ -13,6 +13,8 @@ mod capture;
 #[cfg(any(windows, test))]
 mod display_apply;
 #[cfg(any(windows, test))]
+mod export;
+#[cfg(any(windows, test))]
 mod help;
 #[cfg(any(windows, test))]
 mod help_state;

@@ -1,4 +1,5 @@
 use crate::app_icon::{AppIconRenderer, IconTint};
+use crate::export::BgraImage;
 use crate::ink_view::{EraserRenderState, LaserRenderState, SelectionRenderState};
 use crate::log::Logger;
 use edutools_core::board::{BoardBackgroundPattern, BoardKind, BoardPagePosition};
@@ -884,6 +885,62 @@ impl OverlayRenderer {
             true,
         );
         self.finish_offscreen_draw(result)
+    }
+
+    pub fn export_bitmap(
+        &self,
+        strokes: &[InkStroke],
+        board: Option<&BoardRenderState>,
+        minimum_ratio: f64,
+        highlighter_opacity: f64,
+    ) -> Result<BgraImage> {
+        let completed = create_completed_bitmap(&self.context, self.width, self.height)?;
+        let draw_strokes = self.draw_strokes_to_bitmap(
+            &completed,
+            strokes,
+            minimum_ratio,
+            highlighter_opacity,
+            true,
+        );
+        self.finish_offscreen_draw(draw_strokes)?;
+
+        let exported = if let Some(board) = board {
+            let target = create_completed_bitmap(&self.context, self.width, self.height)?;
+            self.set_target(&target)?;
+            let bounds = frame_bounds(self.width, self.height);
+            unsafe {
+                self.context.BeginDraw();
+                self.context.SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_COPY);
+            }
+            let draw_result = (|| -> Result<()> {
+                self.draw_board_background(board, bounds)?;
+                unsafe {
+                    self.context
+                        .SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_SOURCE_OVER)
+                };
+                self.draw_board_pattern(board, bounds)?;
+                unsafe {
+                    self.context.DrawBitmap(
+                        &completed,
+                        Some(&bounds),
+                        1.0,
+                        D2D1_INTERPOLATION_MODE_LINEAR,
+                        Some(&bounds),
+                        None,
+                    )
+                };
+                Ok(())
+            })();
+            let end_result = unsafe { self.context.EndDraw(None, None) };
+            self.finish_offscreen_draw(draw_result)?;
+            end_result?;
+            target
+        } else {
+            completed
+        };
+        let (pixels, pitch) = read_bitmap_bgra(&self.context, &exported)?;
+        BgraImage::from_pitched(self.width, self.height, pitch, &pixels)
+            .map_err(|error| Error::new(E_FAIL, error))
     }
 
     pub fn draw_frame(

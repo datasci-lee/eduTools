@@ -1,4 +1,5 @@
 use crate::archive::{disconnect_action, ArchiveController, DisconnectAction};
+use crate::export::BgraImage;
 use crate::ink_view::{
     pointer_id_from_wparam, stroke_shape_label, InkInputConfig, InkInputController,
     InkInputMapping, InputOutcome, StrokeReplacementKind, TextEntrySeed,
@@ -11,7 +12,7 @@ use crate::monitor::{
 use crate::render::{BoardRenderState, GraphicsDevice, OverlayRenderer};
 use crate::text_entry::{TextEntryCommit, TextEntryRequest, WM_APP_TEXT_ENTRY_OPEN};
 use crate::z_bands::{raise_band_order, Band, BandRegistration};
-use edutools_core::board::{BoardAppearance, BoardBackgroundPattern};
+use edutools_core::board::{BoardAppearance, BoardBackgroundPattern, BoardKind, BoardPagePosition};
 use edutools_core::dispatch::BoardPageDirection;
 use edutools_core::ink::{
     text_stroke_size, InkCommand, InkLayerState, InkPoint, InkStroke, InkStrokeContent,
@@ -573,8 +574,88 @@ impl OverlayManager {
         self.overlays.contains_key(monitor_key)
     }
 
+    pub fn monitor(&self, monitor_key: &str) -> Option<Monitor> {
+        self.overlays
+            .get(monitor_key)
+            .map(|overlay| overlay.monitor().clone())
+    }
+
     pub fn graphics_device(&self) -> GraphicsDevice {
         self.graphics.clone()
+    }
+
+    pub fn finish_export_interaction(&mut self, monitor_key: &str) -> Result<()> {
+        self.overlays
+            .get_mut(monitor_key)
+            .ok_or_else(|| {
+                Error::new(
+                    E_FAIL,
+                    format!("내보내기 대상 오버레이가 없음: {monitor_key}"),
+                )
+            })?
+            .finish_active("내보내기")
+    }
+
+    pub fn export_ink_bitmap(&mut self, monitor_key: &str) -> Result<BgraImage> {
+        let overlay = self.overlays.get_mut(monitor_key).ok_or_else(|| {
+            Error::new(
+                E_FAIL,
+                format!("내보내기 대상 오버레이가 없음: {monitor_key}"),
+            )
+        })?;
+        overlay.finish_active("내보내기")?;
+        let strokes = overlay.strokes();
+        overlay
+            .state
+            .renderer
+            .as_ref()
+            .expect("renderer lives until OverlayWindow::drop")
+            .export_bitmap(
+                &strokes,
+                None,
+                overlay.state.input.pressure_minimum_width_ratio(),
+                overlay.state.input.highlighter_opacity(),
+            )
+    }
+
+    pub fn export_board_page_bitmap(
+        &mut self,
+        monitor_key: &str,
+        strokes: &[InkStroke],
+        kind: BoardKind,
+        page_position: BoardPagePosition,
+        settings: &AppSettings,
+    ) -> Result<BgraImage> {
+        let overlay = self.overlays.get_mut(monitor_key).ok_or_else(|| {
+            Error::new(
+                E_FAIL,
+                format!("보드 내보내기 대상 오버레이가 없음: {monitor_key}"),
+            )
+        })?;
+        overlay.finish_active("보드 PDF 내보내기")?;
+        let background = BoardAppearance::settings_background_color(kind, &settings.board);
+        let pattern_color = BoardAppearance::pattern_color(kind);
+        let mut background_color = color_components(&background);
+        background_color[3] = 1.0;
+        let board = BoardRenderState {
+            kind,
+            background_color,
+            pattern: BoardBackgroundPattern::parse(&settings.board.background_pattern)
+                .expect("validated board background pattern"),
+            pattern_color: color_components(&pattern_color),
+            page_position,
+        };
+        overlay
+            .state
+            .renderer
+            .as_ref()
+            .expect("renderer lives until OverlayWindow::drop")
+            .export_bitmap(
+                strokes,
+                Some(&board),
+                overlay.state.input.pressure_minimum_width_ratio(),
+                overlay.state.input.highlighter_opacity(),
+            )
     }
 
     pub fn zoom_ink_frame(&self, monitor_key: &str) -> Option<ID2D1Bitmap1> {
