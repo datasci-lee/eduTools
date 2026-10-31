@@ -527,6 +527,14 @@ pub struct TimerGroupSettings {
     pub default_playlist_index: i64,
     pub music_enabled: bool,
     pub music_browser: String,
+    #[serde(default = "default_music_source")]
+    pub music_source: String,
+    #[serde(default)]
+    pub music_folder_path: String,
+    #[serde(default = "default_music_order")]
+    pub music_order: String,
+    #[serde(default = "default_music_repeat")]
+    pub music_repeat: String,
     pub fade_enabled: bool,
     pub fade_duration: f64,
     pub auto_start_break: bool,
@@ -554,6 +562,10 @@ impl Default for TimerGroupSettings {
             default_playlist_index: 0,
             music_enabled: false,
             music_browser: "chrome".to_owned(),
+            music_source: default_music_source(),
+            music_folder_path: String::new(),
+            music_order: default_music_order(),
+            music_repeat: default_music_repeat(),
             fade_enabled: true,
             fade_duration: 60.0,
             auto_start_break: false,
@@ -562,6 +574,18 @@ impl Default for TimerGroupSettings {
             lesson_display_mode: "remaining".to_owned(),
         }
     }
+}
+
+fn default_music_source() -> String {
+    "youtube".to_owned()
+}
+
+fn default_music_order() -> String {
+    "name".to_owned()
+}
+
+fn default_music_repeat() -> String {
+    "all".to_owned()
 }
 
 impl TimerGroupSettings {
@@ -848,6 +872,9 @@ const ARROW_STYLES: &[&str] = &["single", "double"];
 const ZOOM_FOLLOW_MODES: &[&str] = &["always", "edge", "fixed"];
 const BOARD_BACKGROUND_PATTERNS: &[&str] = &["none", "grid", "lines"];
 const MUSIC_BROWSERS: &[&str] = &["chrome", "youtubeMusicApp", "defaultBrowser"];
+const MUSIC_SOURCES: &[&str] = &["youtube", "folder"];
+const MUSIC_ORDERS: &[&str] = &["name", "shuffle"];
+const MUSIC_REPEATS: &[&str] = &["all", "one"];
 const LESSON_BADGE_SIZES: &[&str] = &["small", "medium", "large"];
 const LESSON_DISPLAY_MODES: &[&str] = &["remaining", "elapsed"];
 
@@ -997,6 +1024,14 @@ impl SettingsValidator {
                 && usize::try_from(settings.timer.default_playlist_index)
                     .map_or(true, |index| index >= settings.timer.playlist_urls.len()))
             || !MUSIC_BROWSERS.contains(&settings.timer.music_browser.as_str())
+            || !MUSIC_SOURCES.contains(&settings.timer.music_source.as_str())
+            || settings
+                .timer
+                .music_folder_path
+                .chars()
+                .any(char::is_control)
+            || !MUSIC_ORDERS.contains(&settings.timer.music_order.as_str())
+            || !MUSIC_REPEATS.contains(&settings.timer.music_repeat.as_str())
             || !SettingsRanges::FADE_DURATION.contains(&settings.timer.fade_duration)
             || !LESSON_BADGE_SIZES.contains(&settings.timer.lesson_badge_size.as_str())
             || !SettingsRanges::LESSON_BADGE_OPACITY.contains(&settings.timer.lesson_badge_opacity)

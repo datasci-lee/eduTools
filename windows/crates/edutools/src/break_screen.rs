@@ -86,6 +86,7 @@ const ACTION_CHANGE_END: usize = 2;
 const ACTION_TOGGLE_COLLAPSED: usize = 3;
 const ACTION_END_EARLY: usize = 4;
 const ACTION_TOGGLE_MUSIC: usize = 5;
+const ACTION_NEXT_TRACK: usize = 6;
 const ACTION_PLAYLIST_BASE: usize = 100;
 
 const CONTROL_QUICK_5: i32 = 201;
@@ -265,6 +266,7 @@ struct BreakSettings {
     background: [f64; 4],
     message: String,
     music_enabled: bool,
+    music_source: String,
     playlists: Vec<String>,
     selected_playlist: usize,
 }
@@ -280,6 +282,7 @@ impl BreakSettings {
             ],
             message: settings.timer.break_message.clone(),
             music_enabled: settings.timer.music_enabled,
+            music_source: settings.timer.music_source.clone(),
             playlists: settings.timer.playlist_urls.clone(),
             selected_playlist: usize::try_from(settings.timer.default_playlist_index).unwrap_or(0),
         }
@@ -307,6 +310,7 @@ struct BreakWindowState {
     pressed: Option<ButtonId>,
     focused: Option<ButtonId>,
     quick_end_date: Option<f64>,
+    music_notice: Option<(String, f64)>,
     timer_running: bool,
 }
 
@@ -317,14 +321,26 @@ impl BreakWindowState {
         let end_date = self.engine.end_date_value();
         let phase = self.engine.phase();
         let time = end_date.map(|end| local_time_string_at(end, now));
+        let music_notice = self
+            .music_notice
+            .as_ref()
+            .filter(|(_, expires)| now < *expires)
+            .map(|(message, _)| message.clone());
         let presentation = BreakPresentation {
             remaining: if phase == BreakTimerPhase::Finished {
                 "수업 재개".to_owned()
             } else {
                 formatted_duration(remaining)
             },
-            resume: break_resume_text(&self.settings.message, time.as_deref()),
-            current: format!("현재 시각 {}", current_local_time_string()),
+            resume: if self.collapsed {
+                music_notice
+                    .clone()
+                    .unwrap_or_else(|| break_resume_text(&self.settings.message, time.as_deref()))
+            } else {
+                break_resume_text(&self.settings.message, time.as_deref())
+            },
+            current: music_notice
+                .unwrap_or_else(|| format!("현재 시각 {}", current_local_time_string())),
             progress: break_progress_presentation(remaining, self.engine.initial_duration(), phase),
         };
         let Some(renderer) = self.renderer.as_mut() else {
@@ -510,6 +526,7 @@ impl BreakTimerManager {
             pressed: None,
             focused: Some(ButtonId::Music),
             quick_end_date: None,
+            music_notice: None,
             timer_running: false,
         });
         let state_ptr = state.as_mut() as *mut BreakWindowState;
@@ -756,6 +773,7 @@ impl BreakTimerManager {
     pub fn apply_settings(&mut self, settings: &AppSettings) -> Result<()> {
         self.state.settings = BreakSettings::from_app(settings);
         if self.state.focused == Some(ButtonId::Playlist)
+            && self.state.settings.music_source == "youtube"
             && self.state.settings.playlists.is_empty()
         {
             self.state.focused = Some(ButtonId::Music);
@@ -836,6 +854,21 @@ impl BreakTimerManager {
 
     pub const fn action_toggle_music(action: usize) -> bool {
         action == ACTION_TOGGLE_MUSIC
+    }
+
+    pub const fn action_next_track(action: usize) -> bool {
+        action == ACTION_NEXT_TRACK
+    }
+
+    pub fn show_music_notice(&mut self, message: &str) -> Result<()> {
+        self.state.music_notice = Some((message.to_owned(), wall_clock_timestamp() + 3.0));
+        self.state
+            .logger
+            .event(&format!("쉬는 시간 음악 안내 표시: {message}"));
+        if unsafe { IsWindowVisible(self.state.screen) }.as_bool() {
+            self.state.render_now()?;
+        }
+        Ok(())
     }
 
     pub fn pretranslate_message(&mut self, hwnd: HWND, message: u32, wparam: WPARAM) -> bool {
@@ -1127,7 +1160,9 @@ impl BreakRenderer {
                     w!("Segoe UI"),
                 )?;
             }
-            let playlist_label = if settings.playlists.is_empty() {
+            let playlist_label = if settings.music_source == "folder" {
+                "다음 곡".to_owned()
+            } else if settings.playlists.is_empty() {
                 "등록된 재생목록 없음".to_owned()
             } else {
                 format!("재생목록 {}", settings.selected_playlist.saturating_add(1))
@@ -1145,7 +1180,11 @@ impl BreakRenderer {
                 (
                     ButtonId::Playlist,
                     playlist_label.as_str(),
-                    !settings.playlists.is_empty(),
+                    if settings.music_source == "folder" {
+                        settings.music_enabled
+                    } else {
+                        !settings.playlists.is_empty()
+                    },
                 ),
                 (ButtonId::Change, "종료 시각 변경", true),
                 (
@@ -1674,6 +1713,9 @@ unsafe extern "system" fn setup_window_proc(
 fn activate_button(state: &mut BreakWindowState, button: ButtonId, hwnd: HWND) {
     match button {
         ButtonId::Music => state.post_action(ACTION_TOGGLE_MUSIC),
+        ButtonId::Playlist if state.settings.music_source == "folder" => {
+            state.post_action(ACTION_NEXT_TRACK)
+        }
         ButtonId::Playlist => show_playlist_menu(state, hwnd),
         ButtonId::Change => state.post_action(ACTION_CHANGE_END),
         ButtonId::Collapse => state.post_action(ACTION_TOGGLE_COLLAPSED),
@@ -1682,7 +1724,12 @@ fn activate_button(state: &mut BreakWindowState, button: ButtonId, hwnd: HWND) {
 }
 
 fn button_enabled(state: &BreakWindowState, button: ButtonId) -> bool {
-    button != ButtonId::Playlist || !state.settings.playlists.is_empty()
+    button != ButtonId::Playlist
+        || if state.settings.music_source == "folder" {
+            state.settings.music_enabled
+        } else {
+            !state.settings.playlists.is_empty()
+        }
 }
 
 fn show_playlist_menu(state: &BreakWindowState, hwnd: HWND) {

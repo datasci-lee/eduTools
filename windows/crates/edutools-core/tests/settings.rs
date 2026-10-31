@@ -141,6 +141,14 @@ fn compatibility_decoding_defaults_migrates_and_filters() {
         .expect("settings object")
         .remove("display");
     object_at_mut(&mut compatible, "zoom").remove("previewDimming");
+    for key in [
+        "musicSource",
+        "musicFolderPath",
+        "musicOrder",
+        "musicRepeat",
+    ] {
+        object_at_mut(&mut compatible, "timer").remove(key);
+    }
     let tools = object_at_mut(&mut compatible, "tools");
     tools.insert("penWidth".to_owned(), json!(3));
     tools.insert("highlighterWidth".to_owned(), json!(18));
@@ -155,6 +163,26 @@ fn compatibility_decoding_defaults_migrates_and_filters() {
     }
     let decoded: AppSettings = serde_json::from_value(compatible).expect("compatible settings");
     assert_eq!(decoded, AppSettings::default());
+    assert_eq!(decoded.timer.music_source, "youtube");
+    assert_eq!(decoded.timer.music_folder_path, "");
+    assert_eq!(decoded.timer.music_order, "name");
+    assert_eq!(decoded.timer.music_repeat, "all");
+
+    let mut local_music = AppSettings::default();
+    local_music.timer.music_source = "folder".to_owned();
+    local_music.timer.music_folder_path = "C:\\Class Music".to_owned();
+    local_music.timer.music_order = "shuffle".to_owned();
+    local_music.timer.music_repeat = "one".to_owned();
+    let encoded = serde_json::to_value(&local_music).expect("local music settings encode");
+    assert_eq!(encoded["timer"]["musicSource"], json!("folder"));
+    assert_eq!(
+        encoded["timer"]["musicFolderPath"],
+        json!("C:\\Class Music")
+    );
+    let round_tripped: AppSettings =
+        serde_json::from_value(encoded).expect("local music settings round trip");
+    assert_eq!(round_tripped, local_music);
+    SettingsValidator::validate(&round_tripped).expect("local music settings validate");
 
     let mut migrated = default_json();
     let tools = object_at_mut(&mut migrated, "tools");
@@ -361,6 +389,25 @@ fn rejects_bad_enums_integers_required_keys_and_ranges() {
     let mut out_of_range = AppSettings::default();
     out_of_range.zoom.maximum_magnification = 9.0;
     assert!(SettingsValidator::validate(&out_of_range).is_err());
+
+    for (name, key, invalid_value) in [
+        ("unknown music source", "musicSource", "stream"),
+        ("unknown music order", "musicOrder", "random"),
+        ("unknown music repeat", "musicRepeat", "none"),
+        (
+            "control in music folder",
+            "musicFolderPath",
+            "C:\\Music\nOther",
+        ),
+    ] {
+        let mut value = default_json();
+        object_at_mut(&mut value, "timer").insert(key.to_owned(), json!(invalid_value));
+        let decoded: AppSettings = serde_json::from_value(value).expect("music setting decode");
+        assert!(
+            SettingsValidator::validate(&decoded).is_err(),
+            "case={name}"
+        );
+    }
 
     let mut lowercase_id = default_json();
     let mut preset = preset_json();
