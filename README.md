@@ -1,6 +1,6 @@
 # eduTools
 
-수업용 macOS 메뉴바 판서 앱. 설계서: [`docs/design.md`](docs/design.md) · 진행: [`ROADMAP.md`](ROADMAP.md)
+수업용 macOS 메뉴바 판서 앱. 설계서: [`docs/design.md`](docs/design.md) · 진행: [`ROADMAP.md`](ROADMAP.md) · 문서 색인: [`docs/README.md`](docs/README.md)
 
 ## 설치
 
