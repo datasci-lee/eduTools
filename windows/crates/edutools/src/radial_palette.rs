@@ -610,6 +610,16 @@ mod windows_impl {
             Ok(())
         }
 
+        pub fn set_presenter_effects(
+            &mut self,
+            spotlight_enabled: bool,
+            cursor_highlight_enabled: bool,
+        ) -> Result<()> {
+            self.window.state.radial.is_spotlight_enabled = spotlight_enabled;
+            self.window.state.radial.is_cursor_highlight_enabled = cursor_highlight_enabled;
+            self.redraw()
+        }
+
         pub fn monitor_key(&self) -> Result<Option<String>> {
             let monitors = enumerate_monitors()?;
             Ok(

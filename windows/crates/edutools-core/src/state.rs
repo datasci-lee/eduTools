@@ -21,6 +21,10 @@ impl PassThroughDefaults {
     pub const INTERACTION_IDLE_TIMEOUT: f64 = 3.0;
     // Swift: PassThroughDefaults.keyMaximumHoldDuration
     pub const KEY_MAXIMUM_HOLD_DURATION: f64 = 30.0;
+    // Swift: PassThroughDefaults.keyStatePollingInterval
+    pub const KEY_STATE_POLLING_INTERVAL: f64 = 1.0 / 60.0;
+    // Swift: PassThroughDefaults.keyStatePollingTrustWindow
+    pub const KEY_STATE_POLLING_TRUST_WINDOW: f64 = 0.150;
 }
 
 // Swift: PassThroughModeSource
