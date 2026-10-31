@@ -1751,6 +1751,14 @@ pub fn apply_change(
 }
 
 fn validate_value_for_field(field: &Field, value: &Value) -> std::result::Result<(), String> {
+    if field.id == "timer.musicFolderPath"
+        && matches!(
+            value,
+            Value::Text(path) if SettingsValidator::is_unsupported_music_folder_path(path)
+        )
+    {
+        return Err("네트워크 경로는 지원하지 않습니다. 이 PC의 폴더를 선택하세요".to_owned());
+    }
     let accepted = match (field.kind, value) {
         (FieldKind::Check, Value::Bool(_)) => true,
         (FieldKind::Slider { range, .. }, Value::Number(value)) => range.contains(value),
@@ -3236,8 +3244,20 @@ impl WindowState {
         };
         match choose_folder(self.hwnd, title) {
             Ok(Some(path)) => {
-                set_text(row.control, &path);
-                self.post_change(row.field, Value::Text(path));
+                let value = Value::Text(path);
+                if let Err(reason) = validate_value_for_field(row.field, &value) {
+                    self.show_error(&reason);
+                    self.logger.event(&format!(
+                        "설정 창 필드 변경 거부: id={} reason={reason}",
+                        row.field.id
+                    ));
+                    return;
+                }
+                let Value::Text(path) = &value else {
+                    unreachable!();
+                };
+                set_text(row.control, path);
+                self.post_change(row.field, value);
             }
             Ok(None) => {}
             Err(error) => {

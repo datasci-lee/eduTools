@@ -399,6 +399,7 @@ fn rejects_bad_enums_integers_required_keys_and_ranges() {
             "musicFolderPath",
             "C:\\Music\nOther",
         ),
+        ("network music folder", "musicFolderPath", r"\\host\share"),
     ] {
         let mut value = default_json();
         object_at_mut(&mut value, "timer").insert(key.to_owned(), json!(invalid_value));

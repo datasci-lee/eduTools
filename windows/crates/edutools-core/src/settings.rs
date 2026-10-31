@@ -882,6 +882,11 @@ const LESSON_DISPLAY_MODES: &[&str] = &["remaining", "elapsed"];
 pub struct SettingsValidator;
 
 impl SettingsValidator {
+    pub fn is_unsupported_music_folder_path(path: &str) -> bool {
+        let path = path.trim();
+        path.starts_with(r"\\") || path.starts_with("//")
+    }
+
     // Swift: SettingsValidator.validate(_:)
     pub fn validate(settings: &AppSettings) -> Result<(), SettingsError> {
         if !DISPLAY_DISCONNECT_POLICIES
@@ -1030,6 +1035,7 @@ impl SettingsValidator {
                 .music_folder_path
                 .chars()
                 .any(char::is_control)
+            || Self::is_unsupported_music_folder_path(&settings.timer.music_folder_path)
             || !MUSIC_ORDERS.contains(&settings.timer.music_order.as_str())
             || !MUSIC_REPEATS.contains(&settings.timer.music_repeat.as_str())
             || !SettingsRanges::FADE_DURATION.contains(&settings.timer.fade_duration)
