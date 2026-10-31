@@ -849,9 +849,9 @@ impl ShortcutCatalog {
                 "전체 지우기",
                 "trash",
                 Editing,
-                [Annotation],
+                [Global, Annotation],
                 ShortcutCommand::ClearAll,
-                [annotation("Primary+Delete")]
+                [global("AppMod+E"), annotation("Primary+Delete")]
             ),
             d!(
                 "edit.delete-selection",

@@ -1595,6 +1595,7 @@ impl App {
             ShortcutCommand::ToggleSpotlight
                 | ShortcutCommand::ToggleCursorHighlight
                 | ShortcutCommand::ToggleKeystrokeDisplay
+                | ShortcutCommand::ClearAll
         ) {
             let context = DispatchContext {
                 scope: ShortcutScope::Global,
@@ -5453,9 +5454,9 @@ fn run_selftest(logger: &Logger) -> bool {
                 .map(|binding| (definition.id, binding))
         })
         .collect::<Vec<_>>();
-    if global.len() != 7 {
+    if global.len() != 8 {
         failures.push(format!(
-            "keymap: 전역 기본 바인딩 수가 7이 아님 ({})",
+            "keymap: 전역 기본 바인딩 수가 8이 아님 ({})",
             global.len()
         ));
     }

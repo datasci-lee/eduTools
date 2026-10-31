@@ -14,6 +14,7 @@
     "color.5|annotation" : "5",
     "color.6|annotation" : "6",
     "edit.clear-all|annotation" : "Primary+Delete",
+    "edit.clear-all|global" : "AppMod+E",
     "edit.delete-selection|annotation" : "Delete",
     "edit.redo|annotation" : "Shift+Primary+Z",
     "edit.undo|annotation" : "Primary+Z",

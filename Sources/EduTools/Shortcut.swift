@@ -758,9 +758,10 @@ enum ShortcutCatalog {
                 name: "전체 지우기",
                 iconName: "trash",
                 group: .editing,
-                modes: [.annotation],
+                modes: [.global, .annotation],
                 command: .clearAll,
                 bindings: [
+                    global("AppMod+E"),
                     .annotation(
                         keyCode: kVK_Delete,
                         keyEquivalent: "\u{8}",
