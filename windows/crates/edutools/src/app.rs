@@ -68,8 +68,8 @@ use crate::text_entry::{
     WM_APP_TEXT_ENTRY_COMMIT, WM_APP_TEXT_ENTRY_OPEN,
 };
 use crate::tray::{
-    self, display_preset_index, Tray, CALLBACK_MESSAGE, MENU_DISPLAY_SETTINGS, MENU_EXIT,
-    MENU_SETTINGS, MENU_TOGGLE_ANNOTATION,
+    self, display_preset_index, Tray, CALLBACK_MESSAGE, MENU_CLEAR_ALL, MENU_DISPLAY_SETTINGS,
+    MENU_EXIT, MENU_SETTINGS, MENU_TOGGLE_ANNOTATION,
 };
 use crate::zoom_view::{
     decode_pointer, decode_wheel, ZoomView, WM_APP_ZOOM_INK_INPUT, WM_APP_ZOOM_POINTER,
@@ -1540,6 +1540,27 @@ impl App {
         }
     }
 
+    fn dispatch_clear_all(&mut self, source: &str) {
+        let context = DispatchContext {
+            scope: ShortcutScope::Global,
+            spotlight_adjusted_width: self.presenter.spotlight_enabled(),
+            now: monotonic_seconds(),
+            ..DispatchContext::default()
+        };
+        let result = dispatch(
+            &ShortcutCommand::ClearAll,
+            &mut self.state.borrow_mut(),
+            &self.settings,
+            context,
+        );
+        match result {
+            Ok(effects) => self.apply_effects(effects, source),
+            Err(error) => self
+                .logger
+                .event(&format!("{source} core dispatch 실패: {error}")),
+        }
+    }
+
     fn handle_hotkey(&mut self, id: i32) {
         let definition = self
             .hotkeys
@@ -1590,12 +1611,13 @@ impl App {
                 definition.id
             ));
             self.apply_display_preset(*index, DisplayApplySource::Manual);
+        } else if definition.command == ShortcutCommand::ClearAll {
+            self.dispatch_clear_all(&format!("전역 키 {}", definition.id));
         } else if matches!(
             definition.command,
             ShortcutCommand::ToggleSpotlight
                 | ShortcutCommand::ToggleCursorHighlight
                 | ShortcutCommand::ToggleKeystrokeDisplay
-                | ShortcutCommand::ClearAll
         ) {
             let context = DispatchContext {
                 scope: ShortcutScope::Global,
@@ -4594,6 +4616,10 @@ impl App {
             Some(MENU_TOGGLE_ANNOTATION) => {
                 self.logger.event("트레이 메뉴 선택: 판서 모드");
                 self.toggle_annotation("트레이 메뉴");
+            }
+            Some(MENU_CLEAR_ALL) => {
+                self.logger.event("트레이 메뉴 선택: 전체 지우기");
+                self.dispatch_clear_all("트레이 메뉴");
             }
             Some(MENU_SETTINGS) => {
                 self.logger.event("트레이 메뉴 선택: 설정");

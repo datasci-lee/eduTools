@@ -63,7 +63,7 @@
 | T-03 | 코드 서명 인증서·Apple Developer 확보, 설치 프로그램 게시자명 결정 | 이경환 | 외부 의존 | - |
 | T-04 | 자동 업데이트 방식·배포 주소 결정 | 이경환 | 0.5일 | - |
 | T-05 | 자동 업데이트 구현(Sparkle / WinSparkle 또는 대안) | Codex(Claude 검수) | 3일 | T-04 |
-| T-06 | Windows 트레이 메뉴 "전체 지우기"·"현재 모니터만 지우기" | Codex | 0.5일 | - |
+| T-06 | Windows "현재 모니터만 지우기" 구현(트레이 "전체 지우기"는 완료) | Codex | 0.5일 | - |
 | T-07 | 성능 후보 9건 실GPU 실측(`park-edutools-windows-perf-candidates`) | 이경환 → Codex | 1일 | T-01 |
 | T-08 | 가로 팔레트 클릭 누수 재현·원인 규명 | 이경환 → Codex | 1일 | 재현 조건 |
 | T-09 | 실기 결함 수정 라운드(`v0.1.2`) | Codex(Claude 검수) | T-01 결과 | T-01, 02 |
