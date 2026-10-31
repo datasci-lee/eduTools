@@ -108,7 +108,7 @@ ROADMAP 1~4단계(#1~#13): 메뉴바 앱·오버레이·펜/형광펜/레이저�
 | 정식 릴리스 | 서명·공증, 자동 업데이트, 실기 확인 통과 | 미정 |
 
 ### 5.3 이번 릴리스 범위 밖 항목 (후순위, 2.3 비목표와 구분)
-자동 업데이트(Sparkle/WinSparkle), Windows "현재 모니터만 지우기", 펜 질감, 가로 팔레트 클릭 누수 원인 규명, 성능 최적화 후보 9건(`park-edutools-windows-perf-candidates`, 실GPU 실측 후).
+자동 업데이트(Sparkle/WinSparkle), 펜 질감, 가로 팔레트 클릭 누수 원인 규명, 성능 최적화 후보 9건(`park-edutools-windows-perf-candidates`, 실GPU 실측 후).
 
 ## 6. 의존성 및 제약
 ### 6.1 외부 시스템 의존성

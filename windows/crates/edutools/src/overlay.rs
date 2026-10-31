@@ -19,7 +19,7 @@ use edutools_core::ink::{
     InkStrokeTool, InkTextContent, Point, Size,
 };
 use edutools_core::settings::{AppSettings, SettingsColor};
-use edutools_core::state::AppState;
+use edutools_core::state::{AppState, InkRouteTarget};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{c_void, OsString};
@@ -680,6 +680,11 @@ impl OverlayManager {
         if !self.annotation_enabled || session.is_previewing {
             return Ok(());
         }
+        if message == WM_POINTERDOWN {
+            self.app_state
+                .borrow_mut()
+                .set_active_display_if_annotating(session.display_id.clone());
+        }
         let Some(overlay) = self.overlays.get_mut(&session.display_id) else {
             return Err(Error::new(
                 E_FAIL,
@@ -826,20 +831,33 @@ impl OverlayManager {
             .borrow()
             .presented_board()
             .map(|board| board.display_id.clone());
+        let (target_keys, clear_all_selections) = if let Some(key) = board_display {
+            (vec![key], false)
+        } else {
+            (self.overlays.keys().cloned().collect::<Vec<_>>(), true)
+        };
+        self.clear_display_targets(&target_keys, "전체 지우기", clear_all_selections)
+    }
+
+    pub fn clear_display(&mut self, key: &str) -> Result<usize> {
+        self.clear_display_targets(&[key.to_owned()], "현재 모니터만 지우기", false)
+    }
+
+    fn clear_display_targets(
+        &mut self,
+        target_keys: &[String],
+        operation: &str,
+        clear_all_selections: bool,
+    ) -> Result<usize> {
         if self.archive.auto_archive_enabled() {
-            let visible_keys = if let Some(key) = board_display.as_ref() {
-                let has_visible = self.layers.borrow().get(key).is_some_and(|layer| {
-                    !self.app_state.borrow().strokes_for(key, layer).is_empty()
-                });
-                has_visible.then(|| vec![key.clone()]).unwrap_or_default()
-            } else {
+            let visible_keys = {
                 let layers = self.layers.borrow();
                 let app_state = self.app_state.borrow();
-                self.overlays
-                    .keys()
+                target_keys
+                    .iter()
                     .filter(|key| {
                         layers
-                            .get(*key)
+                            .get(key.as_str())
                             .is_some_and(|layer| !app_state.strokes_for(key, layer).is_empty())
                     })
                     .cloned()
@@ -880,7 +898,7 @@ impl OverlayManager {
                         .archive_visible(&archive_key, &archived_state, resolution)
                 {
                     self.archive
-                        .report_failure("전체 지우기 전 자동 보관", &error);
+                        .report_failure(&format!("{operation} 전 자동 보관"), &error);
                     return Err(Error::new(
                         E_FAIL,
                         "automatic archive failed; clear was cancelled",
@@ -888,39 +906,47 @@ impl OverlayManager {
                 }
             }
         }
-        let changed_keys = if let Some(key) = board_display {
+        let changed_keys = {
             let mut layers = self.layers.borrow_mut();
             let mut app_state = self.app_state.borrow_mut();
-            let layer = layers.entry(key.clone()).or_default();
-            let route = app_state.ink_route(&key);
-            self.logger.event(&format!(
-                "전체 지우기 대상: monitor={key} target={}",
-                route.label()
-            ));
-            if app_state.clear_ink(&key, layer) {
-                vec![key]
-            } else {
-                Vec::new()
-            }
-        } else {
-            let mut layers = self.layers.borrow_mut();
-            let mut app_state = self.app_state.borrow_mut();
-            let changed = layers
-                .iter_mut()
-                .filter_map(|(key, layer)| {
-                    if !self.overlays.contains_key(key) {
-                        return None;
-                    }
-                    if app_state.strokes_for(key, layer).is_empty() {
-                        return None;
-                    }
-                    self.logger
-                        .event(&format!("전체 지우기 대상: monitor={key} target=ink"));
-                    app_state.clear_ink(key, layer);
-                    Some(key.clone())
-                })
+            let mut clear_keys = layers
+                .keys()
+                .filter(|key| target_keys.iter().any(|target| target == *key))
+                .cloned()
                 .collect::<Vec<_>>();
-            app_state.clear_all_selections();
+            clear_keys.extend(
+                target_keys
+                    .iter()
+                    .filter(|key| {
+                        !layers.contains_key(*key)
+                            && matches!(app_state.ink_route(key), InkRouteTarget::Board(_))
+                    })
+                    .cloned(),
+            );
+            let mut changed = Vec::new();
+            for key in clear_keys {
+                let route = app_state.ink_route(&key);
+                let board_target = matches!(route, InkRouteTarget::Board(_));
+                if board_target && !layers.contains_key(&key) {
+                    layers.entry(key.clone()).or_default();
+                }
+                let Some(layer) = layers.get_mut(&key) else {
+                    continue;
+                };
+                if !board_target && app_state.strokes_for(&key, layer).is_empty() {
+                    continue;
+                }
+                self.logger.event(&format!(
+                    "{operation} 대상: monitor={key} target={}",
+                    route.label()
+                ));
+                if app_state.clear_ink(&key, layer) {
+                    changed.push(key);
+                }
+            }
+            if clear_all_selections {
+                app_state.clear_all_selections();
+            }
             changed
         };
         for key in &changed_keys {
@@ -1341,6 +1367,11 @@ impl OverlayWindowState {
         pointer_id: u32,
         mapping: InkInputMapping,
     ) -> Result<()> {
+        if message == WM_POINTERDOWN {
+            self.app_state
+                .borrow_mut()
+                .set_active_display_if_annotating(self.monitor.session_key.clone());
+        }
         let strokes = self.current_strokes();
         let selected_ids = self
             .app_state

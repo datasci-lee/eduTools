@@ -227,6 +227,13 @@ impl AppState {
         self.active_display_id = Some(display_id.into());
     }
 
+    // Swift: OverlayController.focusPanel(displayUUID:)
+    pub fn set_active_display_if_annotating(&mut self, display_id: impl Into<String>) {
+        if self.annotation_mode_enabled && !self.is_pass_through_mode_enabled() {
+            self.set_active_display(display_id);
+        }
+    }
+
     // Swift: AppState.selectedStrokeIdentifiers(on:)
     pub fn selected_stroke_ids(&self, display_id: &str) -> BTreeSet<String> {
         self.selected_stroke_ids_by_display
