@@ -244,6 +244,10 @@ pub fn online_displays_from_paths(
 ) -> Result<OnlineDisplayConversion, String> {
     let mut conversion = OnlineDisplayConversion::default();
     let mut mirror_masters = HashMap::<DisplaySourceKey, u32>::new();
+    // QDC_VIRTUAL_MODE_AWARE 조회에서는 복제(미러) 경로마다 source id가 따로 매겨지고
+    // cloneGroupId도 무효(0xffff)로 돌아온다. 확장 데스크톱의 source끼리는 같은 사각형을
+    // 차지할 수 없으므로, 위치·크기가 완전히 같은 source도 같은 미러 그룹으로 본다.
+    let mut rect_masters = HashMap::<(i32, i32, u32, u32), u32>::new();
 
     for path in paths {
         if !path.target_available {
@@ -258,8 +262,14 @@ pub fn online_displays_from_paths(
         }
         let id = u32::try_from(conversion.displays.len() + 1)
             .map_err(|_| "too many active display targets".to_owned())?;
-        let current_mirror_master_id = mirror_masters.get(&path.source).copied();
-        mirror_masters.entry(path.source).or_insert(id);
+        let rect = (path.x, path.y, path.width, path.height);
+        let current_mirror_master_id = mirror_masters
+            .get(&path.source)
+            .or_else(|| rect_masters.get(&rect))
+            .copied();
+        let master = current_mirror_master_id.unwrap_or(id);
+        mirror_masters.entry(path.source).or_insert(master);
+        rect_masters.entry(rect).or_insert(master);
         let uuid = path.device_path.to_ascii_lowercase();
         conversion.target_table.push((id, path.target));
         conversion.displays.push(ConvertedOnlineDisplay {
@@ -469,7 +479,7 @@ mod windows_impl {
                         display.height,
                         display.x,
                         display.y,
-                        display.x == 0 && display.y == 0,
+                        display.x == 0 && display.y == 0 && display.mirror_master.is_none(),
                         display
                             .mirror_master
                             .map(|id| id.to_string())
@@ -599,13 +609,14 @@ mod windows_impl {
             active_source_names.push(source_name);
         }
 
-        let mut source_counts = HashMap::<DisplaySourceKey, usize>::new();
-        for record in records.iter().filter(|record| record.target_available) {
-            *source_counts.entry(record.source).or_default() += 1;
-        }
-        let mirror_group_count = source_counts.values().filter(|count| **count > 1).count();
         let conversion =
             online_displays_from_paths(&records).map_err(|detail| Error::new(E_FAIL, detail))?;
+        let mirror_group_count = conversion
+            .displays
+            .iter()
+            .filter_map(|record| record.display.current_mirror_master_id)
+            .collect::<HashSet<_>>()
+            .len();
         let session_identities = active_source_names
             .iter()
             .zip(conversion.displays.iter())
@@ -1278,6 +1289,20 @@ mod tests {
                     display_path(10, 101, 0, "PATH-B"),
                 ],
                 vec![(1, 0, None, true), (2, 0, Some(1), true)],
+            ),
+            (
+                // QDC_VIRTUAL_MODE_AWARE: 복제 경로가 source id를 따로 받고 사각형만 같다.
+                "virtual-mode-aware clone with extended third",
+                vec![
+                    display_path(0, 100, 0, "PATH-A"),
+                    display_path(1, 101, 0, "PATH-B"),
+                    display_path(2, 102, 1_920, "PATH-C"),
+                ],
+                vec![
+                    (1, 0, None, true),
+                    (2, 0, Some(1), true),
+                    (3, 1_920, None, false),
+                ],
             ),
         ];
 

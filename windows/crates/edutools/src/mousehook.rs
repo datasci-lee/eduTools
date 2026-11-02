@@ -15,13 +15,17 @@ pub const WM_APP_PRESENTER_MOUSE: u32 = 0x8000 + 300;
 const SUBSCRIBER_SPOTLIGHT: u8 = 1 << 0;
 const SUBSCRIBER_CURSOR_HIGHLIGHT: u8 = 1 << 1;
 const SUBSCRIBER_PASS_THROUGH: u8 = 1 << 2;
-const MOVE_SUBSCRIBERS: u8 = SUBSCRIBER_SPOTLIGHT | SUBSCRIBER_CURSOR_HIGHLIGHT;
+const SUBSCRIBER_GLOBAL_LASER: u8 = 1 << 3;
+const MOVE_SUBSCRIBERS: u8 =
+    SUBSCRIBER_SPOTLIGHT | SUBSCRIBER_CURSOR_HIGHLIGHT | SUBSCRIBER_GLOBAL_LASER;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MouseHookSubscriber {
     Spotlight,
     CursorHighlight,
     PassThrough,
+    /// 판서 모드 밖 전역 레이저: 클릭은 아래 앱으로 통과시키고 커서 이동만 관찰한다.
+    GlobalLaser,
 }
 
 impl MouseHookSubscriber {
@@ -30,6 +34,7 @@ impl MouseHookSubscriber {
             Self::Spotlight => SUBSCRIBER_SPOTLIGHT,
             Self::CursorHighlight => SUBSCRIBER_CURSOR_HIGHLIGHT,
             Self::PassThrough => SUBSCRIBER_PASS_THROUGH,
+            Self::GlobalLaser => SUBSCRIBER_GLOBAL_LASER,
         }
     }
 }

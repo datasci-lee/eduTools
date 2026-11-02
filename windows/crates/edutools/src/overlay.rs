@@ -989,6 +989,27 @@ impl OverlayManager {
         Ok(())
     }
 
+    /// 전역 레이저 커서 이동: 커서가 있는 모니터에만 점·꼬리를 그리고, 나머지 모니터는
+    /// 꼬리를 끊는다. `screen`은 전역 마우스 훅의 가상 화면 물리 픽셀 좌표다.
+    pub fn global_laser_move(&mut self, screen: Option<(i32, i32)>) -> Result<()> {
+        let mut first_error = None;
+        for overlay in self.overlays.values_mut() {
+            let rect = overlay.monitor().rect;
+            let local = screen.and_then(|(x, y)| {
+                (x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom).then(|| {
+                    Point {
+                        x: f64::from(x - rect.left),
+                        y: f64::from(y - rect.top),
+                    }
+                })
+            });
+            if let Err(error) = overlay.global_laser(local) {
+                first_error.get_or_insert(error);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+
     pub fn finish_all_active(&mut self, reason: &str) -> Result<()> {
         for overlay in self.overlays.values_mut() {
             overlay.finish_active(reason)?;
@@ -1510,6 +1531,15 @@ impl OverlayWindow {
 
     fn monitor(&self) -> &Monitor {
         &self.state.monitor
+    }
+
+    fn global_laser(&mut self, local_point: Option<Point>) -> Result<()> {
+        let outcome = match local_point {
+            Some(point) => self.state.input.global_laser_move(point)?,
+            None => self.state.input.global_laser_leave(),
+        };
+        self.state.apply_input_outcome(outcome)?;
+        self.state.sync_laser_timer(self.hwnd)
     }
 
     fn update_monitor(

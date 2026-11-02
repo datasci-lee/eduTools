@@ -17,20 +17,21 @@ use windows::Win32::Foundation::{E_FAIL, E_INVALIDARG, HMODULE, HWND, RECT};
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_COMPOSITE_MODE_SOURCE_OVER,
     D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_BEGIN_HOLLOW, D2D1_FIGURE_END_CLOSED,
-    D2D1_FIGURE_END_OPEN, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_U,
+    D2D1_FIGURE_END_OPEN, D2D1_FILL_MODE_WINDING, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_F,
+    D2D_SIZE_U,
 };
 use windows::Win32::Graphics::Direct2D::{
     CLSID_D2D1Shadow, D2D1CreateDevice, ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext, ID2D1Effect,
     ID2D1Factory, ID2D1GeometrySink, ID2D1Image, ID2D1Layer, ID2D1PathGeometry, ID2D1RenderTarget,
-    ID2D1StrokeStyle, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
-    D2D1_BITMAP_OPTIONS_CPU_READ, D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
-    D2D1_CAP_STYLE_FLAT, D2D1_CAP_STYLE_ROUND, D2D1_DASH_STYLE_CUSTOM, D2D1_DASH_STYLE_SOLID,
-    D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_ELLIPSE,
-    D2D1_INTERPOLATION_MODE_LINEAR, D2D1_LAYER_OPTIONS1_NONE, D2D1_LAYER_PARAMETERS1,
+    ID2D1StrokeStyle, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_ARC_SEGMENT, D2D1_ARC_SIZE_SMALL,
+    D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_CPU_READ, D2D1_BITMAP_OPTIONS_TARGET,
+    D2D1_BITMAP_PROPERTIES1, D2D1_CAP_STYLE_FLAT, D2D1_CAP_STYLE_ROUND, D2D1_DASH_STYLE_CUSTOM,
+    D2D1_DASH_STYLE_SOLID, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
+    D2D1_ELLIPSE, D2D1_INTERPOLATION_MODE_LINEAR, D2D1_LAYER_OPTIONS1_NONE, D2D1_LAYER_PARAMETERS1,
     D2D1_LINE_JOIN_ROUND, D2D1_MAP_OPTIONS_READ, D2D1_PRIMITIVE_BLEND_COPY,
     D2D1_PRIMITIVE_BLEND_SOURCE_OVER, D2D1_PROPERTY_TYPE_FLOAT, D2D1_PROPERTY_TYPE_VECTOR4,
     D2D1_QUADRATIC_BEZIER_SEGMENT, D2D1_ROUNDED_RECT, D2D1_SHADOW_PROP_BLUR_STANDARD_DEVIATION,
-    D2D1_SHADOW_PROP_COLOR, D2D1_STROKE_STYLE_PROPERTIES,
+    D2D1_SHADOW_PROP_COLOR, D2D1_STROKE_STYLE_PROPERTIES, D2D1_SWEEP_DIRECTION_CLOCKWISE,
 };
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
 use windows::Win32::Graphics::Direct3D11::{
@@ -1896,30 +1897,55 @@ impl OverlayRenderer {
 
         let mut scaled_stroke = stroke.clone();
         scaled_stroke.width *= width_scale;
-        let commands = InkGeometry::variable_width_path(&scaled_stroke, &samples, minimum_ratio);
+        let half_widths = samples
+            .iter()
+            .map(|sample| scaled_stroke.effective_width(sample.1, minimum_ratio) / 2.0)
+            .collect::<Vec<_>>();
+        // 필압 획은 한 장의 외곽선(왼쪽 가장자리 → 오른쪽 가장자리 역순 + 양 끝 원)으로 채우면
+        // 획이 자기 자신과 겹치는 곳, 그리고 끝 원과 몸통이 겹치는 곳이 짝홀(ALTERNATE) 규칙에서
+        // 구멍으로 뚫린다. 선분별 사다리꼴과 점별 원을 모두 같은 방향(시계)으로 감고 WINDING
+        // 규칙으로 채워 겹친 횟수와 무관하게 합집합을 칠한다. 점별 원은 둥근 이음매 역할도 한다.
         let geometry = unsafe { self.factory.CreatePathGeometry() }?;
         let sink = unsafe { geometry.Open() }?;
-        let mut figure_open = false;
-        for command in commands {
-            match command {
-                PathCommand::MoveTo(point) => {
-                    if figure_open {
-                        unsafe { sink.EndFigure(D2D1_FIGURE_END_CLOSED) };
-                    }
-                    unsafe { sink.BeginFigure(d2d_point!(point), D2D1_FIGURE_BEGIN_FILLED) };
-                    figure_open = true;
+        unsafe { sink.SetFillMode(D2D1_FILL_MODE_WINDING) };
+        for quad in pressure_segment_quads(&samples, &half_widths) {
+            unsafe {
+                sink.BeginFigure(d2d_point!(quad[0]), D2D1_FIGURE_BEGIN_FILLED);
+                for corner in &quad[1..] {
+                    sink.AddLine(d2d_point!(*corner));
                 }
-                PathCommand::LineTo(point) => unsafe { sink.AddLine(d2d_point!(point)) },
-                PathCommand::QuadTo { control, to } => unsafe {
-                    sink.AddQuadraticBezier(&D2D1_QUADRATIC_BEZIER_SEGMENT {
-                        point1: d2d_point!(control),
-                        point2: d2d_point!(to),
-                    })
-                },
+                sink.EndFigure(D2D1_FIGURE_END_CLOSED);
             }
         }
-        if figure_open {
-            unsafe { sink.EndFigure(D2D1_FIGURE_END_CLOSED) };
+        for (sample, half_width) in samples.iter().zip(&half_widths) {
+            let radius = *half_width as f32;
+            if radius.is_nan() || radius <= 0.0 {
+                continue;
+            }
+            let east = d2d_point!(Point {
+                x: sample.0.x + f64::from(radius),
+                y: sample.0.y,
+            });
+            let west = d2d_point!(Point {
+                x: sample.0.x - f64::from(radius),
+                y: sample.0.y,
+            });
+            let half_circle = |to| D2D1_ARC_SEGMENT {
+                point: to,
+                size: D2D_SIZE_F {
+                    width: radius,
+                    height: radius,
+                },
+                rotationAngle: 0.0,
+                sweepDirection: D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                arcSize: D2D1_ARC_SIZE_SMALL,
+            };
+            unsafe {
+                sink.BeginFigure(east, D2D1_FIGURE_BEGIN_FILLED);
+                sink.AddArc(&half_circle(west));
+                sink.AddArc(&half_circle(east));
+                sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+            }
         }
         unsafe {
             sink.Close()?;
@@ -2386,4 +2412,84 @@ fn valid_dimension(value: i32) -> Result<u32> {
                 "overlay dimension must be positive",
             )
         })
+}
+
+/// 필압 획 선분별 사다리꼴. 각 선분의 법선으로 양 끝 점을 반폭만큼 벌린 볼록 사각형이며,
+/// 화면 좌표(y 아래)에서 모두 시계 방향(신발끈 면적 양수)으로 감아 WINDING 채우기에서 합집합이 된다.
+fn pressure_segment_quads(samples: &[(Point, f64)], half_widths: &[f64]) -> Vec<[Point; 4]> {
+    samples
+        .windows(2)
+        .zip(half_widths.windows(2))
+        .filter_map(|(pair, widths)| {
+            let (start, end) = (pair[0].0, pair[1].0);
+            let (dx, dy) = (end.x - start.x, end.y - start.y);
+            let length = dx.hypot(dy);
+            if length.is_nan() || length <= 0.0 {
+                return None;
+            }
+            let normal = Point {
+                x: -dy / length,
+                y: dx / length,
+            };
+            let offset = |point: Point, scale: f64| Point {
+                x: point.x + normal.x * scale,
+                y: point.y + normal.y * scale,
+            };
+            let mut quad = [
+                offset(start, widths[0]),
+                offset(end, widths[1]),
+                offset(end, -widths[1]),
+                offset(start, -widths[0]),
+            ];
+            if signed_area(&quad) < 0.0 {
+                quad.reverse();
+            }
+            Some(quad)
+        })
+        .collect()
+}
+
+fn signed_area(polygon: &[Point]) -> f64 {
+    polygon
+        .iter()
+        .zip(polygon.iter().cycle().skip(1))
+        .map(|(a, b)| a.x * b.y - b.x * a.y)
+        .sum::<f64>()
+        / 2.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{pressure_segment_quads, signed_area};
+    use edutools_core::ink::Point;
+
+    #[test]
+    fn pressure_quads_wind_clockwise_in_every_direction_so_overlaps_stay_filled() {
+        // 오른쪽·왼쪽·아래·위·대각선으로 오가며 자기 자신과 겹치는 획.
+        let path = [
+            (0.0, 0.0),
+            (100.0, 0.0),
+            (0.0, 10.0),
+            (50.0, 100.0),
+            (50.0, -50.0),
+            (-30.0, -30.0),
+        ];
+        let samples = path
+            .iter()
+            .map(|&(x, y)| (Point { x, y }, 1.0))
+            .collect::<Vec<_>>();
+        let half_widths = vec![6.0; samples.len()];
+        let quads = pressure_segment_quads(&samples, &half_widths);
+        assert_eq!(quads.len(), path.len() - 1);
+        for quad in quads {
+            assert!(signed_area(&quad) > 0.0, "{quad:?}");
+        }
+    }
+
+    #[test]
+    fn pressure_quads_skip_zero_length_segments() {
+        let point = Point { x: 5.0, y: 5.0 };
+        let quads = pressure_segment_quads(&[(point, 1.0), (point, 1.0)], &[3.0, 3.0]);
+        assert!(quads.is_empty());
+    }
 }
