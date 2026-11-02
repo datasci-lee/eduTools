@@ -288,6 +288,9 @@ impl InputOwner {
     }
 }
 
+/// 전역 레이저(마우스 훅 입력)용 가상 pointerId. 실제 WM_POINTER id와 겹치지 않는다.
+const GLOBAL_LASER_POINTER_ID: u32 = u32::MAX;
+
 #[derive(Default)]
 struct LaserInputState {
     point: Option<Point>,
@@ -375,6 +378,8 @@ pub struct InkInputController {
     active_selection: Option<ActiveSelection>,
     eraser_cursor: Option<Point>,
     laser: LaserInputState,
+    /// 팜 리젝션: 마지막으로 펜(호버 포함) 입력을 받은 시각.
+    last_pen_seen: Option<f64>,
     logger: Logger,
 }
 
@@ -398,6 +403,7 @@ impl InkInputController {
             active_selection: None,
             eraser_cursor: None,
             laser: LaserInputState::default(),
+            last_pen_seen: None,
             logger,
         }
     }
@@ -558,6 +564,34 @@ impl InkInputController {
         self.laser.timer_needed()
     }
 
+    /// 판서 모드 밖 전역 레이저: 오버레이는 클릭 통과 상태이므로 WM_POINTER 대신
+    /// 전역 마우스 훅의 커서 위치(모니터 로컬 물리 픽셀)로 점과 꼬리를 그린다.
+    /// 설계서대로 클릭 없이 이동만으로 꼬리가 생긴다.
+    pub fn global_laser_move(&mut self, local_point: Point) -> Result<InputOutcome> {
+        let now = monotonic_seconds()?;
+        if self
+            .laser
+            .begin_or_append(GLOBAL_LASER_POINTER_ID, local_point, now)
+        {
+            self.logger
+                .event("레이저 상태: 전역 레이저 커서로 전환, 이전 꼬리와 분리");
+        }
+        Ok(InputOutcome {
+            redraw: true,
+            ..InputOutcome::default()
+        })
+    }
+
+    /// 커서가 이 모니터를 벗어났거나 전역 레이저가 꺼졌을 때 점을 숨기고 꼬리를 끊는다.
+    /// 이미 그려진 꼬리는 레이저 타이머가 설정 시간에 맞춰 줄인다.
+    pub fn global_laser_leave(&mut self) -> InputOutcome {
+        InputOutcome {
+            redraw: self.laser.active_pointer_id == Some(GLOBAL_LASER_POINTER_ID)
+                && self.laser.break_trail(true),
+            ..InputOutcome::default()
+        }
+    }
+
     pub fn retract_laser(&mut self) -> Result<InputOutcome> {
         let before = self
             .laser
@@ -639,11 +673,57 @@ impl InkInputController {
         }
 
         let snapshot = PointerSnapshot::read(pointer_id, monitor.rect, mapping)?;
-        if message == WM_POINTERDOWN {
+        let mut palm_outcome = InputOutcome::default();
+        if snapshot.device == PointerDevice::Pen {
+            self.last_pen_seen = Some(monotonic_seconds()?);
+            palm_outcome = self.discard_touch_owner();
+        } else if snapshot.device == PointerDevice::Touch
+            && self
+                .owner
+                .is_none_or(|owner| owner.pointer_id != snapshot.pointer_id)
+            && palm_rejects_touch(self.last_pen_seen, monotonic_seconds()?)
+        {
+            if message == WM_POINTERDOWN {
+                self.logger.event(&format!(
+                    "팜 리젝션: 펜 사용 중 터치 무시 monitor={} pointerId={}",
+                    self.monitor_key, snapshot.pointer_id
+                ));
+            }
+            return Ok(palm_outcome);
+        }
+        let mut outcome = if message == WM_POINTERDOWN {
             self.handle_down(snapshot, monitor, strokes, selected_ids, mapping)
         } else {
             self.handle_update_or_up(message, snapshot, monitor, mapping)
+        }?;
+        merge_outcome(&mut outcome, palm_outcome);
+        Ok(outcome)
+    }
+
+    /// 펜이 감지되면 그 전에 손바닥(터치)이 시작한 입력을 버린다. 획은 확정하지 않고 폐기하고,
+    /// 지우개·선택처럼 이미 화면을 바꾼 입력은 정상 종료한다. 이렇게 해야 손바닥이 쥔 입력
+    /// 소유권 때문에 펜 입력이 무시되지 않는다.
+    fn discard_touch_owner(&mut self) -> InputOutcome {
+        let Some(owner) = self
+            .owner
+            .filter(|owner| owner.device == PointerDevice::Touch)
+        else {
+            return InputOutcome::default();
+        };
+        if self.active_stroke.take().is_some() {
+            self.owner = None;
+            self.recognition_timer_waiting = false;
+            self.recognition_timer_reset_requested = false;
+            self.logger.event(&format!(
+                "팜 리젝션: 펜 감지로 터치 획 폐기 monitor={} pointerId={}",
+                self.monitor_key, owner.pointer_id
+            ));
+            return InputOutcome {
+                redraw: true,
+                ..InputOutcome::default()
+            };
         }
+        self.finish_owned("팜 리젝션: 펜 감지", true)
     }
 
     fn handle_down(
@@ -1843,6 +1923,14 @@ fn laser_action(
     }
 }
 
+/// 펜을 마지막으로 본 뒤 이 시간(초) 안의 터치는 손바닥으로 보고 무시한다.
+/// 펜이 호버 범위에 있는 동안은 WM_POINTERUPDATE가 계속 와서 창이 갱신된다.
+const PALM_REJECTION_WINDOW_SECONDS: f64 = 1.0;
+
+fn palm_rejects_touch(last_pen_seen: Option<f64>, now: f64) -> bool {
+    last_pen_seen.is_some_and(|seen| now - seen <= PALM_REJECTION_WINDOW_SECONDS)
+}
+
 fn is_new_laser_pointer(previous: Option<u32>, incoming: u32) -> bool {
     previous.is_some_and(|previous| previous != incoming)
 }
@@ -2145,6 +2233,7 @@ pub fn pointer_id_from_wparam(wparam: usize) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use super::palm_rejects_touch;
     use super::{
         cover_meets_minimum_size, history_order, laser_action, normalized_monitor_point,
         normalized_pressure, ownership_on_down, shape_endpoint, uses_eraser, HistorySample,
@@ -2256,6 +2345,14 @@ mod tests {
         for (name, has_owner, pressed, expected) in cases {
             assert_eq!(ownership_on_down(has_owner, pressed), expected, "{name}");
         }
+    }
+
+    #[test]
+    fn palm_rejection_window_ignores_touch_only_shortly_after_pen() {
+        assert!(!palm_rejects_touch(None, 10.0));
+        assert!(palm_rejects_touch(Some(10.0), 10.0));
+        assert!(palm_rejects_touch(Some(10.0), 11.0));
+        assert!(!palm_rejects_touch(Some(10.0), 11.01));
     }
 
     #[test]

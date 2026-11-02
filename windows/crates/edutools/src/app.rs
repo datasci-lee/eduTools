@@ -35,7 +35,9 @@ use crate::monitor::{
     monitor_at_point, ConnectionSetOutcome, DisplayChangeState, DisplayConfiguration,
     DisplayTargetKey, Monitor,
 };
-use crate::mousehook::{MouseHook, MouseHookEvent, MouseHookSubscriber, WM_APP_PRESENTER_MOUSE};
+use crate::mousehook::{
+    MouseHook, MouseHookEvent, MouseHookEventKind, MouseHookSubscriber, WM_APP_PRESENTER_MOUSE,
+};
 use crate::music::{
     BreakMusicManager, WM_APP_MUSIC_FOLDER_EVENT, WM_APP_MUSIC_LAUNCH_RESULT,
     WM_APP_MUSIC_PAUSE_RESULT,
@@ -385,6 +387,9 @@ struct App {
     shortcut_recording: bool,
     keyboard_hook: Option<KeyboardHook>,
     mouse_hook: MouseHook,
+    /// 판서 모드 밖에서 전역 키로 켠 레이저. 오버레이는 클릭 통과를 유지하고
+    /// 전역 마우스 훅의 커서 이동으로만 레이저를 그린다.
+    global_laser_enabled: bool,
     presenter: PresenterEffects,
     presenter_frame_pending: bool,
     pass_through_runtime_enabled: bool,
@@ -1613,6 +1618,8 @@ impl App {
             self.apply_display_preset(*index, DisplayApplySource::Manual);
         } else if definition.command == ShortcutCommand::ClearAll {
             self.dispatch_clear_all(&format!("전역 키 {}", definition.id));
+        } else if definition.command == ShortcutCommand::UseLaser {
+            self.handle_global_laser_hotkey(&format!("전역 키 {}", definition.id));
         } else if matches!(
             definition.command,
             ShortcutCommand::ToggleSpotlight
@@ -1662,6 +1669,70 @@ impl App {
                 definition.id, definition.name
             ));
         }
+    }
+
+    /// 전역 레이저 키: 판서 모드 안에서는 core 규칙대로 레이저 도구 선택(이미 레이저면
+    /// 판서 끔), 판서 모드 밖에서는 일반 마우스 조작을 막지 않는 전역 레이저를 켜고 끈다.
+    fn handle_global_laser_hotkey(&mut self, source: &str) {
+        let annotating = self.state.borrow().is_annotation_mode_enabled();
+        self.logger.event(&format!(
+            "{source} 눌림: annotation={annotating} globalLaser={}",
+            self.global_laser_enabled
+        ));
+        if !annotating {
+            self.set_global_laser(!self.global_laser_enabled, source);
+            return;
+        }
+        let context = DispatchContext {
+            scope: ShortcutScope::Global,
+            now: monotonic_seconds(),
+            ..DispatchContext::default()
+        };
+        let result = dispatch(
+            &ShortcutCommand::UseLaser,
+            &mut self.state.borrow_mut(),
+            &self.settings,
+            context,
+        );
+        match result {
+            Ok(effects) => self.apply_effects(effects, source),
+            Err(error) => self
+                .logger
+                .event(&format!("{source} core dispatch 실패: {error}")),
+        }
+    }
+
+    fn set_global_laser(&mut self, enabled: bool, reason: &str) {
+        if self.global_laser_enabled == enabled {
+            return;
+        }
+        if let Err(error) = self
+            .mouse_hook
+            .set_subscriber(MouseHookSubscriber::GlobalLaser, enabled)
+        {
+            let message = format!("전역 레이저 마우스 훅 설치 실패: {error}");
+            self.logger.event(&message);
+            if let Some(tray) = self.tray.as_ref() {
+                tray.show_warning("전역 레이저 오류", &message);
+            }
+            return;
+        }
+        self.global_laser_enabled = enabled;
+        let mut cursor = POINT::default();
+        // SAFETY: cursor is writable storage and the call does not retain it.
+        let screen = (enabled && unsafe { GetCursorPos(&mut cursor) }.is_ok())
+            .then_some((cursor.x, cursor.y));
+        if let Some(overlays) = self.overlays.as_mut() {
+            if let Err(error) = overlays.global_laser_move(screen) {
+                self.logger
+                    .event(&format!("전역 레이저 오버레이 갱신 실패: {error}"));
+            }
+        }
+        self.logger.event(&format!(
+            "전역 레이저 {}: reason={reason} mouseHook={}",
+            if enabled { "켜짐" } else { "꺼짐" },
+            self.mouse_hook.is_installed()
+        ));
     }
 
     fn toggle_annotation(&mut self, source: &str) {
@@ -2058,6 +2129,7 @@ impl App {
                 MouseHookSubscriber::PassThrough,
                 self.state.borrow().is_pass_through_mode_enabled(),
             ),
+            (MouseHookSubscriber::GlobalLaser, self.global_laser_enabled),
         ];
         for (subscriber, enabled) in desired {
             match self.mouse_hook.set_subscriber(subscriber, enabled) {
@@ -2144,6 +2216,14 @@ impl App {
     }
 
     fn handle_presenter_mouse(&mut self, event: MouseHookEvent) {
+        if self.global_laser_enabled && event.kind == MouseHookEventKind::Moved {
+            if let Some(overlays) = self.overlays.as_mut() {
+                if let Err(error) = overlays.global_laser_move(Some((event.x, event.y))) {
+                    self.logger
+                        .event(&format!("전역 레이저 이동 처리 실패: {error}"));
+                }
+            }
+        }
         let radius_adjusted = self.presenter.handle_mouse_event(event);
         if radius_adjusted {
             self.logger.event(&format!(
@@ -2325,6 +2405,10 @@ impl App {
                     }
                 }
                 Effect::AnnotationModeChanged(enabled) => {
+                    if enabled {
+                        // 판서 모드가 레이저를 포함한 모든 입력을 맡는다.
+                        self.set_global_laser(false, "판서 켬");
+                    }
                     if !enabled {
                         self.cancel_text_entry("판서 끔");
                         self.reset_radial_key_caps("판서 끔");
@@ -4846,6 +4930,7 @@ fn run_message_loop(logger: Logger, initial_import_path: Option<PathBuf>) -> Res
         shortcut_recording: false,
         keyboard_hook: None,
         mouse_hook: MouseHook::new(hwnd),
+        global_laser_enabled: false,
         presenter: PresenterEffects::new(hwnd, hinstance, logger.clone()),
         presenter_frame_pending: false,
         pass_through_runtime_enabled: false,
