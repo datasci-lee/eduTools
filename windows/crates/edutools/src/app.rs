@@ -109,7 +109,7 @@ use edutools_core::state::{
 use edutools_core::zoom::{
     stop_or_cancel_preview_action, zoom_gesture_control_locked, Point as ZoomPoint,
     Rect as ZoomRect, Size as ZoomSize, ZoomFollowMode, ZoomGeometry, ZoomGestureControl,
-    ZoomSessionState, ZoomStopAction,
+    ZoomSessionState, ZoomStopAction, ZoomTouchPan, ZoomTouchPanStep,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
@@ -136,7 +136,7 @@ use windows::Win32::UI::HiDpi::{
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON, VK_XBUTTON1, VK_XBUTTON2,
 };
-use windows::Win32::UI::Input::Pointer::EnableMouseInPointer;
+use windows::Win32::UI::Input::Pointer::{EnableMouseInPointer, GetPointerInfo, POINTER_INFO};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow, DispatchMessageW, FindWindowW,
     GetCursorPos, GetForegroundWindow, GetMessageW, GetWindowLongPtrW, IsWindow, KillTimer,
@@ -149,6 +149,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     MSG, SMTO_ABORTIFHUNG, WM_CONTEXTMENU, WM_COPYDATA, WM_DESTROY, WM_DEVICECHANGE,
     WM_DISPLAYCHANGE, WM_DPICHANGED, WM_HOTKEY, WM_KEYDOWN, WM_POWERBROADCAST, WM_RBUTTONUP,
     WM_SETTINGCHANGE, WM_TIMECHANGE, WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    PT_TOUCH, WM_POINTERCAPTURECHANGED, WM_POINTERDOWN, WM_POINTERUP, WM_POINTERUPDATE,
 };
 
 const WINDOW_CLASS: PCWSTR = w!("EduToolsMain");
@@ -431,6 +434,11 @@ struct ZoomRuntime {
     monitor: Monitor,
     previous_foreground: HWND,
     wheel_accumulator: i32,
+    /// 두 손가락 화면 이동(Windows 전용, 터치 화면).
+    touch_pan: ZoomTouchPan,
+    /// 라이브 줌에서 화면 이동을 마친 순간의 커서 위치. 커서가 여기서 움직이기 전까지는
+    /// 따라가기가 옮긴 화면을 커서 쪽으로 되돌리지 않게 멈춘다.
+    touch_pan_follow_hold: Option<ZoomPoint>,
 }
 
 impl Drop for ZoomRuntime {
@@ -2783,6 +2791,13 @@ impl App {
         if crate::text_entry::text_input_active() {
             return true;
         }
+        if self
+            .zoom
+            .as_ref()
+            .is_some_and(|runtime| runtime.touch_pan.is_panning())
+        {
+            return true;
+        }
         let Some(display_id) = self
             .state
             .borrow()
@@ -2899,6 +2914,8 @@ impl App {
                 monitor,
                 previous_foreground,
                 wheel_accumulator: 0,
+                touch_pan: ZoomTouchPan::default(),
+                touch_pan_follow_hold: None,
             })
         })();
         match result {
@@ -3196,7 +3213,8 @@ impl App {
             }
         }
         if !session.is_frozen && !session.is_previewing && !self.zoom_gesture_in_progress() {
-            if let Some(pointer) = self.zoom_pointer_location() {
+            let pointer = self.zoom_pointer_location();
+            if let Some(pointer) = pointer.filter(|pointer| !self.zoom_follow_held(*pointer)) {
                 session.center = ZoomGeometry::followed_center(
                     session.center,
                     pointer,
@@ -3233,7 +3251,7 @@ impl App {
             session.center =
                 ZoomGeometry::clamped_center(point, session.screen_size, session.magnification);
             self.state.borrow_mut().set_zoom_session(session);
-        } else if !session.is_frozen {
+        } else if !session.is_frozen && !self.zoom_follow_held(point) {
             session.center = ZoomGeometry::followed_center(
                 session.center,
                 point,
@@ -3251,6 +3269,9 @@ impl App {
         let Some(session) = self.state.borrow().zoom_session().cloned() else {
             return;
         };
+        if !session.is_previewing && self.handle_zoom_touch_pan(pointer_id, message, &session) {
+            return;
+        }
         if session.is_previewing || !self.state.borrow().is_annotation_mode_enabled() {
             return;
         }
@@ -3265,6 +3286,124 @@ impl App {
                 .logger
                 .event("줌 판서 입력 실패: 오버레이 관리자가 없음"),
         }
+    }
+
+    /// 두 손가락 터치 화면 이동(Windows 전용). true 면 이 입력은 판서로 넘기지 않는다.
+    /// 판서 모드와 무관하게 라이브·정지 줌 모두에서 동작하고, 미리보기 중에는 쓰지 않는다.
+    fn handle_zoom_touch_pan(
+        &mut self,
+        pointer_id: u32,
+        message: u32,
+        session: &ZoomSessionState,
+    ) -> bool {
+        let pan_blocked = message == WM_POINTERDOWN
+            && self
+                .overlays
+                .as_ref()
+                .is_some_and(|overlays| overlays.zoom_touch_pan_blocked(&session.display_id));
+        let Some(runtime) = self.zoom.as_mut() else {
+            return false;
+        };
+        let step = match message {
+            WM_POINTERDOWN | WM_POINTERUPDATE => {
+                let Some(screen) = zoom_touch_screen_point(pointer_id) else {
+                    // 펜·마우스는 그대로 판서로. 읽기에 실패한 추적 중 터치는 판서로 새지 않게 삼킨다.
+                    return runtime.touch_pan.tracks(pointer_id) && runtime.touch_pan.is_panning();
+                };
+                let view = ZoomPoint::new(
+                    f64::from(screen.x - runtime.monitor.rect.left),
+                    f64::from(screen.y - runtime.monitor.rect.top),
+                );
+                if message == WM_POINTERDOWN {
+                    if pan_blocked && !runtime.touch_pan.is_panning() {
+                        return false;
+                    }
+                    runtime.touch_pan.contact_down(pointer_id, view)
+                } else {
+                    runtime.touch_pan.contact_moved(pointer_id, view)
+                }
+            }
+            WM_POINTERUP | WM_POINTERCAPTURECHANGED => {
+                if !runtime.touch_pan.tracks(pointer_id) {
+                    return false;
+                }
+                runtime.touch_pan.contact_up(pointer_id)
+            }
+            _ => return runtime.touch_pan.tracks(pointer_id) && runtime.touch_pan.is_panning(),
+        };
+        match step {
+            ZoomTouchPanStep::Forward => false,
+            ZoomTouchPanStep::Consumed => true,
+            ZoomTouchPanStep::Began => {
+                runtime.touch_pan_follow_hold = None;
+                if let Some(overlays) = self.overlays.as_mut() {
+                    if let Err(error) = overlays.discard_zoom_touch_input(&session.display_id) {
+                        self.report_overlay_error("줌 두 손가락 화면 이동", &error);
+                    }
+                }
+                self.logger.event(&format!(
+                    "줌 두 손가락 화면 이동 시작: monitor={} frozen={}",
+                    session.display_id, session.is_frozen
+                ));
+                self.render_zoom("두 손가락 화면 이동 시작");
+                true
+            }
+            ZoomTouchPanStep::Pan(delta) => {
+                let mut session = session.clone();
+                session.center = ZoomGeometry::panned_center(
+                    session.center,
+                    delta,
+                    session.screen_size,
+                    session.magnification,
+                );
+                self.state.borrow_mut().set_zoom_session(session);
+                self.render_zoom("두 손가락 화면 이동");
+                true
+            }
+            ZoomTouchPanStep::Ended => {
+                let hold = if session.is_frozen {
+                    None
+                } else {
+                    self.zoom_pointer_location()
+                };
+                if let Some(runtime) = self.zoom.as_mut() {
+                    runtime.touch_pan_follow_hold = hold;
+                }
+                let center = self
+                    .state
+                    .borrow()
+                    .zoom_session()
+                    .map(|session| session.source_rect());
+                if let Some(source) = center {
+                    self.logger.event(&format!(
+                        "줌 두 손가락 화면 이동 끝: source=({:.0},{:.0} {:.0}x{:.0}) followHold={}",
+                        source.x,
+                        source.y,
+                        source.width,
+                        source.height,
+                        hold.is_some()
+                    ));
+                }
+                self.render_zoom("두 손가락 화면 이동 끝");
+                true
+            }
+        }
+    }
+
+    /// 라이브 줌에서 두 손가락으로 옮긴 뒤 커서가 그 자리에 머무는 동안은 따라가기를 멈춘다.
+    /// 커서가 움직이면(마우스·펜·새 터치) 멈춤을 풀고 평소처럼 따라간다.
+    fn zoom_follow_held(&mut self, pointer: ZoomPoint) -> bool {
+        let Some(runtime) = self.zoom.as_mut() else {
+            return false;
+        };
+        let Some(hold) = runtime.touch_pan_follow_hold else {
+            return false;
+        };
+        if (pointer.x - hold.x).abs() <= 2.0 && (pointer.y - hold.y).abs() <= 2.0 {
+            return true;
+        }
+        runtime.touch_pan_follow_hold = None;
+        false
     }
 
     fn handle_zoom_wheel(&mut self, delta: i32, control_down: bool) {
@@ -5788,6 +5927,13 @@ fn zoom_control_for_shortcut(command: &ShortcutCommand) -> Option<ZoomGestureCon
         ShortcutCommand::CycleZoomFollowMode => Some(ZoomGestureControl::FollowKey),
         _ => None,
     }
+}
+
+/// 터치 포인터면 화면(물리 픽셀) 좌표, 펜·마우스나 읽기 실패면 None.
+fn zoom_touch_screen_point(pointer_id: u32) -> Option<POINT> {
+    let mut info = POINTER_INFO::default();
+    unsafe { GetPointerInfo(pointer_id, &mut info) }.ok()?;
+    (info.pointerType == PT_TOUCH).then_some(info.ptPixelLocation)
 }
 
 fn warp_zoom_pointer(

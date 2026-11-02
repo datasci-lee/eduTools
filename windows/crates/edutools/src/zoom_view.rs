@@ -658,6 +658,31 @@ impl ZoomRenderer {
             }
         }
 
+        // 포인터 방향: 화살표는 핫스팟에서 아래(+y)로 뻗어야 한다. 고정 상태에서는 표시 좌표가
+        // 원본 좌표와 같고 배율(2)만큼 커진다. 핫스팟 기준 (3,10)은 몸통 안, (3,-10)은 위아래가
+        // 뒤집혔을 때만 칠해지는 자리다.
+        session.is_frozen = true;
+        let hotspot = Point::new(100.0, 60.0);
+        let scale = ZoomGeometry::pointer_scale(&session);
+        self.draw_scene(Some(&source), None, &session, hotspot, None)?;
+        let (pointer_pixels, pointer_pitch) = read_bitmap_bgra(&self.context, &target)?;
+        let sample_at = |dx: f64, dy: f64| {
+            pixel(
+                &pointer_pixels,
+                pointer_pitch,
+                (hotspot.x + dx * scale) as u32,
+                (hotspot.y + dy * scale) as u32,
+            )
+        };
+        let is_pointer_fill = |bgra: [u8; 4]| bgra[..3].iter().all(|channel| *channel < 16);
+        let below = sample_at(3.0, 10.0);
+        let above = sample_at(3.0, -10.0);
+        if !is_pointer_fill(below) || is_pointer_fill(above) {
+            failures.push(format!(
+                "zoom pointer: 화살표가 핫스팟 아래로 그려지지 않음 below(3,10)={below:?} above(3,-10)={above:?}"
+            ));
+        }
+
         session.is_frozen = false;
         session.is_previewing = true;
         self.draw_scene(
@@ -861,6 +886,8 @@ fn make_pointer_geometry(
 ) -> Result<ID2D1PathGeometry> {
     let geometry = unsafe { factory.CreatePathGeometry() }?;
     let sink = unsafe { geometry.Open() }?;
+    // macOS 원본(ZoomController.swift PointerShape)의 좌표는 Core Animation 의 y-up 기준이라
+    // 끝점 (1.8, 22.08)이 화살표 꼭대기다. Direct2D 는 y-down 이므로 y 를 반전해 그린다.
     let base_points = [
         (1.8_f32, 22.08_f32),
         (1.8, 3.84),
@@ -873,7 +900,7 @@ fn make_pointer_geometry(
     let points = base_points.map(|(x, y)| {
         let mut point = windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE::default().point;
         point.X = presented.x as f32 + (x - 1.8) * scale;
-        point.Y = presented.y as f32 + (y - 22.08) * scale;
+        point.Y = presented.y as f32 + (22.08 - y) * scale;
         point
     });
     unsafe {

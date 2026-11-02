@@ -469,6 +469,18 @@ impl InkInputController {
             || self.active_selection.is_some()
     }
 
+    /// 줌 두 손가락 화면 이동을 시작하면 안 되는 상태: 펜·마우스가 획을 긋는 중이거나,
+    /// 펜 사용 중·직후라 터치를 손바닥으로 보는 동안(손바닥 두 점이 화면을 끌지 않게).
+    pub fn touch_pan_blocked(&self) -> bool {
+        let non_touch_owner = self
+            .owner
+            .is_some_and(|owner| owner.device != PointerDevice::Touch);
+        let palm = monotonic_seconds()
+            .map(|now| palm_rejects_touch(self.last_pen_seen, now))
+            .unwrap_or(false);
+        non_touch_owner || palm
+    }
+
     pub fn recognition_timer_needed(&self) -> bool {
         self.recognition_timer_waiting
     }
@@ -676,7 +688,7 @@ impl InkInputController {
         let mut palm_outcome = InputOutcome::default();
         if snapshot.device == PointerDevice::Pen {
             self.last_pen_seen = Some(monotonic_seconds()?);
-            palm_outcome = self.discard_touch_owner();
+            palm_outcome = self.discard_touch_owner("팜 리젝션: 펜 감지");
         } else if snapshot.device == PointerDevice::Touch
             && self
                 .owner
@@ -703,7 +715,12 @@ impl InkInputController {
     /// 펜이 감지되면 그 전에 손바닥(터치)이 시작한 입력을 버린다. 획은 확정하지 않고 폐기하고,
     /// 지우개·선택처럼 이미 화면을 바꾼 입력은 정상 종료한다. 이렇게 해야 손바닥이 쥔 입력
     /// 소유권 때문에 펜 입력이 무시되지 않는다.
-    fn discard_touch_owner(&mut self) -> InputOutcome {
+    /// 줌 두 손가락 화면 이동도 같은 경로로 첫 손가락이 시작한 획을 버린다.
+    pub fn discard_touch_input(&mut self, reason: &str) -> InputOutcome {
+        self.discard_touch_owner(reason)
+    }
+
+    fn discard_touch_owner(&mut self, reason: &str) -> InputOutcome {
         let Some(owner) = self
             .owner
             .filter(|owner| owner.device == PointerDevice::Touch)
@@ -715,7 +732,7 @@ impl InkInputController {
             self.recognition_timer_waiting = false;
             self.recognition_timer_reset_requested = false;
             self.logger.event(&format!(
-                "팜 리젝션: 펜 감지로 터치 획 폐기 monitor={} pointerId={}",
+                "{reason}: 터치 획 폐기 monitor={} pointerId={}",
                 self.monitor_key, owner.pointer_id
             ));
             return InputOutcome {
@@ -723,7 +740,7 @@ impl InkInputController {
                 ..InputOutcome::default()
             };
         }
-        self.finish_owned("팜 리젝션: 펜 감지", true)
+        self.finish_owned(reason, true)
     }
 
     fn handle_down(

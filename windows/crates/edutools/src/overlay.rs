@@ -671,6 +671,20 @@ impl OverlayManager {
             .is_some_and(|overlay| overlay.state.input.gesture_in_progress())
     }
 
+    pub fn zoom_touch_pan_blocked(&self, monitor_key: &str) -> bool {
+        self.overlays
+            .get(monitor_key)
+            .is_some_and(|overlay| overlay.state.input.touch_pan_blocked())
+    }
+
+    /// 줌 두 손가락 화면 이동이 시작되면 첫 손가락이 긋던 획을 확정하지 않고 버린다.
+    pub fn discard_zoom_touch_input(&mut self, display_id: &str) -> Result<()> {
+        match self.overlays.get_mut(display_id) {
+            Some(overlay) => overlay.discard_touch_input("줌 두 손가락 화면 이동"),
+            None => Ok(()),
+        }
+    }
+
     pub fn handle_zoom_input(
         &mut self,
         message: u32,
@@ -1411,6 +1425,13 @@ impl OverlayWindowState {
             .and_then(|()| self.sync_laser_timer(hwnd))
             .and_then(|()| self.sync_recognition_timer(hwnd))
     }
+
+    fn discard_touch_input(&mut self, hwnd: HWND, reason: &str) -> Result<()> {
+        let outcome = self.input.discard_touch_input(reason);
+        self.apply_input_outcome(outcome)?;
+        self.sync_laser_timer(hwnd)?;
+        self.sync_recognition_timer(hwnd)
+    }
 }
 
 struct OverlayWindow {
@@ -1527,6 +1548,10 @@ impl OverlayWindow {
     ) -> Result<()> {
         self.state
             .handle_pointer_message(self.hwnd, message, pointer_id, mapping)
+    }
+
+    fn discard_touch_input(&mut self, reason: &str) -> Result<()> {
+        self.state.discard_touch_input(self.hwnd, reason)
     }
 
     fn monitor(&self) -> &Monitor {
