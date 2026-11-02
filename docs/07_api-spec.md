@@ -77,7 +77,7 @@ IF-01 ~ IF-08(3장). 아래 상세는 외부 계약이 있는 IF-02·03·04·05�
 | IF-02 | 내보내기 / 가져오기 | 설정 → 일반 [내보내기…][가져오기…], 메뉴바·트레이 메뉴, `.pansetting` 더블클릭 |
 | IF-03 | 쓰기 / 읽기 | `<보관 루트>/<yyyy-MM-dd>/<시각>-<해시8>.json`, `<보관 루트>/disconnected/<해시8>.json` |
 | IF-04 | 읽기 | 앱 내장 카탈로그 + `settings.shortcuts.overrides` |
-| IF-05 | 실행 | `edutools[.exe] [<파일>.pansetting]`, `edutools.exe --selftest`(Windows 자체 시험) |
+| IF-05 | 실행 | `edutools[.exe] [<파일>.pansetting]`, `edutools.exe --selftest`(Windows 자체 시험, GUI 서브시스템이라 출력은 파이프로만) |
 | IF-06 | 열기·정지 | `open -a "Google Chrome" <URL>` / `chrome.exe <URL>`, AppleScript 탭 닫기, SMTC 일시정지 |
 | IF-07 | 게시 | `PostMessageW(owner, WM_APP+n, …)` |
 | IF-08 | 저장 | Ctrl+S / Ctrl+C(`⌘S` / `⌘C`), 메뉴 항목 |
