@@ -1,3 +1,7 @@
+// 콘솔 서브시스템이면 실행 시 터미널 창이 붙고, 그 창을 닫으면 앱도 종료된다.
+// 개발용 플래그(--selftest 등)의 출력은 리디렉션·파이프로만 보인다.
+#![windows_subsystem = "windows"]
+
 #[cfg(windows)]
 mod app;
 #[cfg(windows)]

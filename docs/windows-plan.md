@@ -503,11 +503,12 @@ git clone https://github.com/datasci-lee/eduTools.git; cd eduTools\windows
 cargo build                                  # 디버그
 cargo test -p edutools-core                  # 이식 selftest
 cargo run -p edutools                        # 트레이 아이콘 확인, Ctrl+Alt+P
-.\target\debug\edutools.exe --selftest      # 0 종료 = 통과
+.\target\debug\edutools.exe --selftest 2>&1 | Write-Output; $LASTEXITCODE   # 0 = 통과
 cargo build --release --locked               # 배포용
 ```
 
 - 매니페스트(PerMonitorV2·Common Controls v6)·아이콘은 `crates/edutools/build.rs` 에서 `rc.exe` 로 `.res` 를 만들어 링크한다(`cargo:rustc-link-arg=<res>`). 외부 크레이트 불필요.
+- 앱은 GUI 서브시스템(`main.rs` `windows_subsystem`)이라 콘솔 창이 없다. 개발 플래그(`--selftest` 등)의 출력·종료코드는 파이프·리디렉션해야 보인다(파이프 없으면 PowerShell 이 기다리지 않는다).
 - macOS 빌드(`build.sh`)는 Windows 에서 안 된다 — Swift 는 읽기만.
 - macOS 교차 컴파일·폐쇄망 벤더링은 이 계획의 범위 밖.
 - Windows 앱 실행 시험은 Parallels "Windows 11"(ARM64, x64 에뮬레이션) VM에서 `x86_64-pc-windows-msvc` 빌드로 한다.
