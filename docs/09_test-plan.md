@@ -65,7 +65,7 @@ macOS 앱(Swift), Windows 앱(Rust: `edutools-core`·`edutools`), 두 OS 공유 
 - VM 시나리오: `vm-<이름>.ps1`
 
 ### 4.2 기능별 테스트 케이스 목록
-현재 자동 시험: **macOS 100건/31스위트(`./build.sh test`, 경고 0), Rust 155건(`cargo test --workspace`), VM `cargo test -p edutools` 54건 + `--selftest`**. 수동 69항목(PW 필압·GL/RP 팔레트·RE/PE 지우개·ZC/LZ 줌·SR 도형·AI 아이콘·FV 즐겨찾기·SC 키 지정·DP 화면 구성·LC 판서 생명주기·SM 스모크·CR 크래시).
+현재 자동 시험: **macOS 100건/31스위트(`./build.sh test`, 경고 0), Rust 171건(`cargo test --workspace`, 2026-11-02 Windows 호스트 기준 — `music` 경로 구분자 시험 1건은 Windows에서 `\`로 나와 기존부터 실패), VM `cargo test -p edutools` 54건 + `--selftest`(줌 포인터 방향 검사 포함)**. 수동 71항목(PW 필압·GL/RP 팔레트·RE/PE 지우개·ZC/LZ 줌·SR 도형·AI 아이콘·FV 즐겨찾기·SC 키 지정·DP 화면 구성·LC 판서 생명주기·SM 스모크·CR 크래시).
 
 ### 4.3 요구사항 추적표 (기능 ID ↔ 테스트 ID)
 | FR 영역 | 자동 시험(macOS / Windows 코어) | 수동·VM |
@@ -74,7 +74,7 @@ macOS 앱(Swift), Windows 앱(Rust: `edutools-core`·`edutools`), 두 OS 공유 
 | FR-IK | InkGeometryTests, InkSerializationTests, UndoTests, RecognitionTests, SelectionTests / `ink`, `shape` | SR-01, LC-01~04(판서 생명주기), LZ-01~07, VM 판서·전체 지우기 시나리오(`vm-ckey`) |
 | FR-ER | EraserTests / `eraser` | RE-01~04, PE-01~04 |
 | FR-BD | BoardColorTests / `board` | SM 스모크 |
-| FR-ZM | ZoomTests, GeometryTests / `zoom` | ZC-01~06, LZ-01~07, 줌 fps VM 측정 |
+| FR-ZM | ZoomTests, GeometryTests / `zoom`(두 손가락 추적·`panned_center` 포함) | ZC-01~07, LZ-01~08, 줌 fps VM 측정 |
 | FR-PR | KeystrokeDisplay 관련(Windows `keystroke`) | SM 스모크 |
 | FR-TM | TimerTests / `timer` | VM 쉬는 시간 화면 시나리오 |
 | FR-MU | BreakMusicTests, MusicPlaylistTests / `music`(수집·정렬·순서기·실패 연속) | VM `vm-music-*`(이름순·반복·셔플·다음 곡·끄기/켜기·조기 종료), W-16·17(소리·예외) |

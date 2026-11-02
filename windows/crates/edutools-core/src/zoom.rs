@@ -377,6 +377,118 @@ impl ZoomGeometry {
             state.magnification
         }
     }
+
+    /// Windows 전용(macOS 에는 터치 화면이 없다): 두 손가락이 확대 화면에서 `view_delta`
+    /// 만큼 움직이면 손가락 아래 내용이 함께 끌려오도록 중심을 반대 방향으로 옮긴다.
+    /// 확대 화면 1px 은 원본 1/배율 px 이다.
+    pub fn panned_center(
+        center: Point,
+        view_delta: Point,
+        screen_size: Size,
+        magnification: f64,
+    ) -> Point {
+        let current = Self::clamped_center(center, screen_size, magnification);
+        let scale = Self::clamped_magnification(magnification);
+        Self::clamped_center(
+            Point::new(
+                current.x - view_delta.x / scale,
+                current.y - view_delta.y / scale,
+            ),
+            screen_size,
+            magnification,
+        )
+    }
+}
+
+/// 줌 창 터치 입력의 처리 방향.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ZoomTouchPanStep {
+    /// 화면 이동과 무관 — 평소처럼 판서로 넘긴다.
+    Forward,
+    /// 두 번째 손가락이 닿아 화면 이동이 시작됐다. 첫 손가락이 시작한 판서는 버린다.
+    Began,
+    /// 두 손가락 가운데점이 확대 화면 좌표로 이만큼 움직였다.
+    Pan(Point),
+    /// 화면 이동 중인 입력 — 판서로 넘기지 않는다.
+    Consumed,
+    /// 화면 이동 뒤 마지막 손가락이 떨어졌다.
+    Ended,
+}
+
+/// Windows 전용 두 손가락 화면 이동 추적기. 한 번 화면 이동이 시작되면 모든 손가락이
+/// 떨어질 때까지 터치 입력을 판서로 넘기지 않는다(한 손가락만 떼도 남은 손가락이
+/// 획을 긋지 않게).
+#[derive(Clone, Debug, Default)]
+pub struct ZoomTouchPan {
+    contacts: Vec<(u32, Point)>,
+    panning: bool,
+}
+
+impl ZoomTouchPan {
+    pub fn is_panning(&self) -> bool {
+        self.panning
+    }
+
+    pub fn tracks(&self, pointer_id: u32) -> bool {
+        self.contacts.iter().any(|(id, _)| *id == pointer_id)
+    }
+
+    pub fn contact_down(&mut self, pointer_id: u32, point: Point) -> ZoomTouchPanStep {
+        if let Some(contact) = self.contacts.iter_mut().find(|(id, _)| *id == pointer_id) {
+            contact.1 = point;
+        } else {
+            self.contacts.push((pointer_id, point));
+        }
+        if self.panning {
+            ZoomTouchPanStep::Consumed
+        } else if self.contacts.len() >= 2 {
+            self.panning = true;
+            ZoomTouchPanStep::Began
+        } else {
+            ZoomTouchPanStep::Forward
+        }
+    }
+
+    pub fn contact_moved(&mut self, pointer_id: u32, point: Point) -> ZoomTouchPanStep {
+        let before = self.midpoint();
+        let Some(contact) = self.contacts.iter_mut().find(|(id, _)| *id == pointer_id) else {
+            return if self.panning {
+                ZoomTouchPanStep::Consumed
+            } else {
+                ZoomTouchPanStep::Forward
+            };
+        };
+        contact.1 = point;
+        if !self.panning {
+            return ZoomTouchPanStep::Forward;
+        }
+        match (before, self.midpoint()) {
+            (Some(before), Some(after)) if before != after => {
+                ZoomTouchPanStep::Pan(Point::new(after.x - before.x, after.y - before.y))
+            }
+            _ => ZoomTouchPanStep::Consumed,
+        }
+    }
+
+    pub fn contact_up(&mut self, pointer_id: u32) -> ZoomTouchPanStep {
+        self.contacts.retain(|(id, _)| *id != pointer_id);
+        if !self.panning {
+            ZoomTouchPanStep::Forward
+        } else if self.contacts.is_empty() {
+            self.panning = false;
+            ZoomTouchPanStep::Ended
+        } else {
+            ZoomTouchPanStep::Consumed
+        }
+    }
+
+    /// 먼저 닿은 두 손가락의 가운데점. 셋째 손가락부터는 이동량에 쓰지 않는다.
+    fn midpoint(&self) -> Option<Point> {
+        match self.contacts.as_slice() {
+            [(_, a), (_, b), ..] => Some(Point::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0)),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -384,8 +496,93 @@ mod tests {
     use super::{
         stop_or_cancel_preview_action, zoom_control_effect, zoom_gesture_control_locked, Point,
         Rect, Size, ZoomControlEffect, ZoomControlInput, ZoomGeometry, ZoomGestureControl,
-        ZoomInkInputMode, ZoomStopAction,
+        ZoomInkInputMode, ZoomStopAction, ZoomTouchPan, ZoomTouchPanStep,
     };
+
+    #[test]
+    fn panned_center_drags_content_with_fingers_and_clamps() {
+        let screen = Size::new(1_920.0, 1_080.0);
+        // 2배: 손가락이 오른쪽 아래로 (200,100) 움직이면 원본에서 (100,50) 만큼 왼쪽 위를 본다.
+        assert_eq!(
+            ZoomGeometry::panned_center(
+                Point::new(960.0, 540.0),
+                Point::new(200.0, 100.0),
+                screen,
+                2.0
+            ),
+            Point::new(860.0, 490.0)
+        );
+        // 가장자리를 넘으면 원본 화면 안으로 고정된다(2배 뷰포트 960x540 → 중심 최소 480,270).
+        assert_eq!(
+            ZoomGeometry::panned_center(
+                Point::new(500.0, 300.0),
+                Point::new(1_000.0, 1_000.0),
+                screen,
+                2.0
+            ),
+            Point::new(480.0, 270.0)
+        );
+    }
+
+    #[test]
+    fn touch_pan_single_finger_is_forwarded_to_ink() {
+        let mut pan = ZoomTouchPan::default();
+        assert_eq!(
+            pan.contact_down(1, Point::new(10.0, 10.0)),
+            ZoomTouchPanStep::Forward
+        );
+        assert_eq!(
+            pan.contact_moved(1, Point::new(30.0, 10.0)),
+            ZoomTouchPanStep::Forward
+        );
+        assert_eq!(pan.contact_up(1), ZoomTouchPanStep::Forward);
+        assert!(!pan.is_panning());
+    }
+
+    #[test]
+    fn touch_pan_two_fingers_pan_by_midpoint_until_all_lift() {
+        let mut pan = ZoomTouchPan::default();
+        assert_eq!(
+            pan.contact_down(1, Point::new(100.0, 100.0)),
+            ZoomTouchPanStep::Forward
+        );
+        assert_eq!(
+            pan.contact_down(2, Point::new(200.0, 100.0)),
+            ZoomTouchPanStep::Began
+        );
+        // 한 손가락만 20 움직이면 가운데점은 10 움직인다.
+        assert_eq!(
+            pan.contact_moved(1, Point::new(120.0, 100.0)),
+            ZoomTouchPanStep::Pan(Point::new(10.0, 0.0))
+        );
+        assert_eq!(
+            pan.contact_moved(2, Point::new(220.0, 140.0)),
+            ZoomTouchPanStep::Pan(Point::new(10.0, 20.0))
+        );
+        // 제자리 갱신은 이동 없음.
+        assert_eq!(
+            pan.contact_moved(2, Point::new(220.0, 140.0)),
+            ZoomTouchPanStep::Consumed
+        );
+        // 한 손가락을 떼도 남은 손가락은 판서로 가지 않는다.
+        assert_eq!(pan.contact_up(1), ZoomTouchPanStep::Consumed);
+        assert_eq!(
+            pan.contact_moved(2, Point::new(260.0, 140.0)),
+            ZoomTouchPanStep::Consumed
+        );
+        assert_eq!(
+            pan.contact_down(3, Point::new(50.0, 50.0)),
+            ZoomTouchPanStep::Consumed
+        );
+        assert_eq!(pan.contact_up(2), ZoomTouchPanStep::Consumed);
+        assert_eq!(pan.contact_up(3), ZoomTouchPanStep::Ended);
+        assert!(!pan.is_panning());
+        // 끝난 뒤 새 한 손가락은 다시 판서.
+        assert_eq!(
+            pan.contact_down(4, Point::new(10.0, 10.0)),
+            ZoomTouchPanStep::Forward
+        );
+    }
 
     #[test]
     fn zoom_ink_input_mapping_table() {
